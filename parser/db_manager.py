@@ -1,0 +1,295 @@
+"""
+Менеджер БД для хранения товаров и обновления цен.
+"""
+
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+from parser.models import Product
+from utils.logger import logger
+
+
+class DBManager:
+    """Работа с SQLite: товары и цены."""
+
+    def __init__(self, db_path: str) -> None:
+        self.db_path = Path(db_path)
+        self._init_db()
+
+    def _init_db(self) -> None:
+        """Создает таблицы если их нет."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS products (
+                    id TEXT PRIMARY KEY,
+                    uuid TEXT,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    category_id TEXT,
+                    category_name TEXT,
+                    current_price INTEGER,
+                    previous_price INTEGER,
+                    updated_at TEXT,
+                    created_at TEXT
+                )
+            """)
+
+            # Миграция: добавить uuid столбец если его нет
+            cursor = conn.execute("PRAGMA table_info(products)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'uuid' not in columns:
+                try:
+                    conn.execute("ALTER TABLE products ADD COLUMN uuid TEXT")
+                    logger.info("Добавлен столбец uuid в таблицу products")
+                except sqlite3.OperationalError:
+                    pass  # Столбец уже существует
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id TEXT NOT NULL,
+                    price INTEGER,
+                    timestamp TEXT,
+                    FOREIGN KEY (product_id) REFERENCES products (id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS category_state (
+                    category_id TEXT PRIMARY KEY,
+                    category_name TEXT,
+                    last_product_count INTEGER,
+                    last_checked_at TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_subscribers (
+                    user_id TEXT PRIMARY KEY,
+                    subscribed_at TEXT
+                )
+            """)
+            conn.commit()
+        logger.debug("БД инициализирована: %s", self.db_path)
+
+    def upsert_products(self, products: list[Product]) -> int:
+        """
+        Вставляет или обновляет товары.
+        Возвращает количество обновленных записей.
+        """
+        if not products:
+            return 0
+
+        now = datetime.utcnow().isoformat()
+        count = 0
+
+        with sqlite3.connect(self.db_path) as conn:
+            for prod in products:
+                # Ищем по uuid (основной ID товара)
+                cursor = conn.execute(
+                    "SELECT current_price FROM products WHERE uuid = ?",
+                    (prod.uuid,)
+                )
+                existing = cursor.fetchone()
+
+                if existing:
+                    # Обновляем товар
+                    conn.execute("""
+                        UPDATE products
+                        SET id = ?, title = ?, current_price = ?, previous_price = ?,
+                            category_id = ?, category_name = ?, updated_at = ?
+                        WHERE uuid = ?
+                    """, (
+                        prod.id, prod.title, prod.price, prod.price_old,
+                        prod.category_id, prod.category_name, now, prod.uuid
+                    ))
+
+                    # Сохраняем историю цен если изменилась
+                    if existing[0] != prod.price:
+                        conn.execute("""
+                            INSERT INTO price_history (product_id, price, timestamp)
+                            VALUES (?, ?, ?)
+                        """, (prod.uuid, prod.price, now))
+                else:
+                    # Новый товар
+                    conn.execute("""
+                        INSERT INTO products
+                        (id, uuid, title, url, category_id, category_name,
+                         current_price, previous_price, updated_at, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        prod.id, prod.uuid, prod.title, prod.url, prod.category_id,
+                        prod.category_name, prod.price, prod.price_old, now, now
+                    ))
+
+                count += 1
+
+            conn.commit()
+
+        return count
+
+    def get_product_count(self) -> int:
+        """Возвращает количество товаров в БД."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM products")
+            return cursor.fetchone()[0]
+
+    def get_products_by_category(self, category_id: str) -> list[Product]:
+        """Получает товары по категории."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, title, url, category_id, category_name, current_price, previous_price
+                FROM products WHERE category_id = ?
+            """, (category_id,))
+            rows = cursor.fetchall()
+
+        return [
+            Product(
+                id=row[0],
+                title=row[1],
+                url=row[2],
+                category_id=row[3],
+                category_name=row[4],
+                price=row[5],
+                price_old=row[6],
+            )
+            for row in rows
+        ]
+
+    def get_price_drops(self, min_drop_percent: float = 10.0) -> list[dict]:
+        """Получает товары с максимальной скидкой."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, title, current_price, previous_price,
+                       ROUND(100.0 * (previous_price - current_price) / previous_price, 1) as drop_percent
+                FROM products
+                WHERE previous_price > 0 AND current_price < previous_price
+                ORDER BY drop_percent DESC
+                LIMIT 50
+            """)
+            rows = cursor.fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "title": row[1],
+                "current_price": row[2],
+                "previous_price": row[3],
+                "drop_percent": row[4],
+            }
+            for row in rows
+            if row[4] >= min_drop_percent
+        ]
+
+    def get_category_state(self, category_id: str) -> dict | None:
+        """Получает последнее состояние категории."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT category_id, category_name, last_product_count, last_checked_at
+                FROM category_state WHERE category_id = ?
+            """, (category_id,))
+            row = cursor.fetchone()
+
+        if row:
+            return {
+                "category_id": row[0],
+                "category_name": row[1],
+                "last_product_count": row[2],
+                "last_checked_at": row[3],
+            }
+        return None
+
+    def update_category_state(self, category_id: str, category_name: str, product_count: int) -> None:
+        """Обновляет последнее состояние категории."""
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO category_state
+                (category_id, category_name, last_product_count, last_checked_at)
+                VALUES (?, ?, ?, ?)
+            """, (category_id, category_name, product_count, now))
+            conn.commit()
+
+    def get_new_products_in_category(
+        self, category_id: str, all_product_ids: list[str]
+    ) -> list[str]:
+        """
+        Возвращает UUID товаров которых не было в этой категории ранее.
+        all_product_ids - список всех текущих UUID товаров в категории.
+        """
+        if not all_product_ids:
+            return []
+
+        with sqlite3.connect(self.db_path) as conn:
+            placeholders = ",".join("?" * len(all_product_ids))
+            cursor = conn.execute(f"""
+                SELECT uuid FROM products
+                WHERE category_id = ? AND uuid IN ({placeholders})
+            """, [category_id] + all_product_ids)
+            existing_ids = set(row[0] for row in cursor.fetchall())
+
+        # Новые товары = все текущие минус существующие
+        new_ids = [pid for pid in all_product_ids if pid not in existing_ids]
+        return new_ids
+
+    def add_telegram_subscriber(self, user_id: str) -> None:
+        """Добавляет Telegram подписчика."""
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO telegram_subscribers (user_id, subscribed_at)
+                VALUES (?, ?)
+            """, (user_id, now))
+            conn.commit()
+
+    def remove_telegram_subscriber(self, user_id: str) -> None:
+        """Удаляет Telegram подписчика."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                DELETE FROM telegram_subscribers WHERE user_id = ?
+            """, (user_id,))
+            conn.commit()
+
+    def get_telegram_subscribers(self) -> list[str]:
+        """Получает список всех Telegram подписчиков."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT user_id FROM telegram_subscribers
+            """)
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_all_category_states(self) -> dict[str, int]:
+        """Возвращает {category_id: last_product_count} для всех категорий в БД."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT category_id, last_product_count FROM category_state
+            """)
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def close(self) -> None:
+        """Закрывает БД."""
+        pass
+
+    def add_telegram_subscriber(self, user_id: str) -> None:
+        """Добавляет Telegram подписчика."""
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO telegram_subscribers (user_id, subscribed_at)
+                VALUES (?, ?)
+            """, (user_id, now))
+            conn.commit()
+
+    def remove_telegram_subscriber(self, user_id: str) -> None:
+        """Удаляет Telegram подписчика."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                DELETE FROM telegram_subscribers WHERE user_id = ?
+            """, (user_id,))
+            conn.commit()
+
+    def get_telegram_subscribers(self) -> list:
+        """Получает список всех Telegram подписчиков."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT user_id FROM telegram_subscribers
+            """)
+            return [row[0] for row in cursor.fetchall()]

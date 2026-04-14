@@ -1,0 +1,60 @@
+import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
+
+@dataclass
+class Config:
+    telegram_token: str
+    telegram_chat_id: str
+    api_base_url: str
+    cookies_str: str
+    city_id: str
+    city_name: str
+    city_cookie_path: str
+    city_cookie_current: str
+    db_path: str
+    parse_interval: int
+    max_retries: int
+    retry_delay: float
+    dns_login: str
+    dns_password: str
+
+    # Эндпоинты DNS (паттерн по аналогии с products-filters)
+    filters_path: str = "/catalogMarkdown/markdown/products-filters/"
+    products_path: str = "/catalogMarkdown/markdown/products/"
+
+    # Chrome опции
+    chrome_headless: bool = False
+    chrome_profile_dir: str = ""
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        token = os.getenv("TELEGRAM_TOKEN", "").strip()
+        # Telegram token необязателен, но если задан - нужен chat_id
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+        return cls(
+            telegram_token=token,
+            telegram_chat_id=chat_id,
+            api_base_url=os.getenv("API_BASE_URL", "https://www.dns-shop.ru").rstrip("/"),
+            cookies_str=os.getenv("DNS_COOKIES", ""),
+            city_id=os.getenv("CITY_ID", "884019c7-cf52-11de-b72b-00151716f9f5"),
+            city_name=os.getenv("CITY_NAME", "Краснодар"),
+            city_cookie_path=os.getenv("CITY_COOKIE_PATH", "krasnodar"),
+            city_cookie_current=os.getenv("CITY_COOKIE_CURRENT", "c5f58b981d1ed0bad05ae63f54072ea9dcdf57acef965084aa1e42e07b47de20a%3A2%3A%7Bi%3A0%3Bs%3A12%3A%22current_path%22%3Bi%3A1%3Bs%3A133%3A%22%7B%22city%22%3A%22884019c7-cf52-11de-b72b-00151716f9f5%22%2C%22cityName%22%3A%22%5Cu041a%5Cu0440%5Cu0430%5Cu0441%5Cu043d%5Cu043e%5Cu0434%5Cu0430%5Cu0440%22%2C%22method%22%3A%22manual%22%7D%22%3B%7D"),
+            db_path=os.getenv("DB_PATH", "dns_monitor.db"),
+            parse_interval=int(os.getenv("PARSE_INTERVAL", "3600")),  # 1 час
+            max_retries=int(os.getenv("MAX_RETRIES", "4")),
+            retry_delay=float(os.getenv("RETRY_DELAY", "5.0")),
+            dns_login=os.getenv("DNS_LOGIN", ""),
+            dns_password=os.getenv("DNS_PASSWORD", ""),
+            chrome_headless=os.getenv("CHROME_HEADLESS", "false").lower() == "true",
+            chrome_profile_dir=os.getenv("CHROME_PROFILE_DIR", ""),
+        )
+
+
+config = Config.from_env()
