@@ -289,24 +289,26 @@ class SessionManager:
         return False
 
     async def _init_session(self) -> bool:
-        """Полная инициализация: Qrator → базовые куки → город через REST API."""
-        logger.info("[SESSION] Инициализация сессии...")
-        
+        """Полная инициализация: Qrator → базовые куки → город через REST API или программно."""
+        logger.info("[SESSION] Инициализация сессии (без браузера)...")
+
         # 1. Сначала решаем Qrator challenge (иначе главная страница вернет 401)
         await self._resolve_qrator()
-        
+
         # 2. Теперь с qrator_jsid2 получаем базовые куки (PHPSESSID, _csrf и т.д.)
         if not await self._fetch_base_cookies():
             logger.warning("[SESSION] Не удалось получить базовые куки, продолжаем...")
 
-        # 3. Убеждаемся что city_path установлен правильно (current_path приходит от сервера)
-        if 'city_path' not in self._cookies:
-            self._cookies['city_path'] = 'krasnodar'
+        # 3. Устанавливаем город через REST API (предпочтительно)
+        if await self._set_city_via_rest():
+            logger.info("[SESSION] Город установлен через REST API")
+        else:
+            # Fallback: строим city_path и current_path программно
+            logger.warning("[SESSION] REST API не сработал, строю куки города программно...")
+            city_cookies = _build_city_cookie()
+            self._cookies.update(city_cookies)
+            logger.info("[SESSION] Куки города построены программно: %s", list(city_cookies.keys()))
 
-        # 4. Вызываем REST API для установки города (если нужно)
-        if not await self._set_city_via_rest():
-            logger.warning("[SESSION] Не удалось установить город через REST API")
-        
         logger.info(
             "[SESSION] Сессия инициализирована, всего кук: %d (%s)",
             len(self._cookies),

@@ -86,9 +86,10 @@ async def telegram_bot_polling(telegram_bot) -> None:
 
 
 async def main_cycle() -> None:
-    """Главный цикл: обновление кук + парсинг товаров."""
+    """Главный цикл: парсинг товаров с безбраузерной инициализацией кук."""
     logger.info("="*70)
     logger.info("[RUN] Запущен автоматический парсер DNS Shop")
+    logger.info(f"[RUN] Режим: БЕЗ БРАУЗЕРА (Playwright + Node.js для Qrator)")
     logger.info(f"[RUN] Интервал обновления: {config.parse_interval} сек")
     logger.info("="*70)
 
@@ -102,14 +103,11 @@ async def main_cycle() -> None:
         logger.info(f"[RUN] Итерация #{iteration} [{timestamp}]")
         logger.info("="*70)
 
-        # Шаг 1: Обновить куки через браузер
-        if not await run_get_cookies():
-            logger.warning("[RUN] Не удалось обновить куки, пропускаю итерацию")
+        # Запускаем парсер (инициализация кук происходит внутри через SessionManager)
+        if not await run_parser():
+            logger.warning("[RUN] Парсер завершен с ошибкой, пропускаю итерацию")
             await asyncio.sleep(config.parse_interval)
             continue
-
-        # Шаг 2: Парсить товары с новыми куками
-        await run_parser()
 
         # Ждем перед следующей итерацией
         logger.info(f"[RUN] Следующее обновление через {config.parse_interval} сек...")
