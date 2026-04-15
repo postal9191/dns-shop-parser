@@ -154,9 +154,10 @@ python parser.py
   ├─ solve_qrator.js (Node.js) → Решает Qrator challenge → получает qrator_jsid2
   ├─ parser.py инициализирует куки:
   │  ├─ HTTP GET с qrator_jsid2 → получает PHPSESSID
-  │  ├─ _build_city_cookie() → строит current_path и city_path программно
-  │  └─ Проверяет REST API для города
-  ├─ Парсит товары (первый раз, ТГ молчит)
+  │  ├─ _build_city_cookie() → использует предвычисленный current_path из .env
+  │  │   (current_path = SHA256(php_serialized_city_data) для региона)
+  │  └─ Защищает куки города от перезаписи сервером
+  ├─ Парсит товары города (первый раз, ТГ молчит)
   └─ Ждет 3600 сек
 
 Итерация 2:
@@ -167,6 +168,21 @@ python parser.py
 Итерация N:
   └─ (повторяется, Qrator решается только если токен протух)
 ```
+
+## 🔑 Куки города
+
+**Важно:** DNS Store возвращает куки для Москвы по умолчанию. Чтобы получить товары нужного города:
+
+1. **current_path** — PHP-сериализованная JSON с ID города и его названием, хешированная SHA256
+2. **city_path** — простая строка названия города (например, `krasnodar`)
+
+Эти куки строятся один раз и сохраняются в `.env`:
+```env
+CITY_COOKIE_PATH=krasnodar
+CITY_COOKIE_CURRENT=c5f58b981d1ed0bad05ae63f54072ea9dcdf57acef965084aa1e42e07b47de20a%3A2%3A...
+```
+
+**КРИТИЧНО:** Метод `_extract_cookies_from_response()` защищен от перезаписи этих кук сервером.
 
 ## 📱 Telegram уведомления
 

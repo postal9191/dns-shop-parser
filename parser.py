@@ -1,4 +1,4 @@
-"""Парсер DNS товаров (использует куки из get_cookies.py)."""
+"""Парсер DNS товаров (безбраузерный режим с Node.js + Playwright)."""
 
 import sys
 import os
@@ -11,7 +11,6 @@ os.chdir(str(PROJECT_DIR))
 
 import asyncio
 from datetime import datetime
-import pickle
 
 from config import config
 from parser.db_manager import DBManager
@@ -22,8 +21,8 @@ from services.telegram_bot import init_telegram_bot
 from utils.logger import logger
 
 
-class DNSMonitorWithCookies:
-    """Парсер DNS с загрузкой кук из браузера."""
+class DNSMonitorBrowserless:
+    """Парсер DNS без браузера (Node.js + Playwright для Qrator)."""
 
     def __init__(self) -> None:
         self.session_manager = SessionManager()
@@ -37,39 +36,15 @@ class DNSMonitorWithCookies:
         self.parse_interval = config.parse_interval
         self.city_name = config.city_name
 
-    async def load_cookies_from_browser(self) -> bool:
-        """Загружает куки сохранённые браузером."""
-        cookies_file = Path("browser_cookies.pkl")
-        if not cookies_file.exists():
-            logger.error("[MAIN] Файл кук не найден. Запустите: python get_cookies.py")
-            return False
-
+    async def init_session_browserless(self) -> bool:
+        """Инициализирует сессию безбраузерным способом (Node.js + Playwright)."""
         try:
-            with open(cookies_file, "rb") as f:
-                cookies = pickle.load(f)
-
-            logger.info("[MAIN] Загруженкуки из браузера (%d элементов)", len(cookies))
-
-            # Проверяем критичные куки
-            critical_cookies = {}
-            for c in cookies:
-                if c['name'] in ['city_path', 'current_path']:
-                    critical_cookies[c['name']] = c['value']
-
-            if 'city_path' in critical_cookies:
-                logger.info("[MAIN] ✓ city_path = '%s'", critical_cookies['city_path'])
-            if 'current_path' in critical_cookies:
-                cp = critical_cookies['current_path']
-                cp_display = cp[:80] + "..." if len(cp) > 80 else cp
-                logger.info("[MAIN] ✓ current_path = '%s'", cp_display)
-
-            # Инициализируем сессию без Qrator обхода
-            await self.session_manager._init_session_with_cookies(cookies)
-            logger.info("[MAIN] Сессия инициализирована с браузер-кук")
+            logger.info("[MAIN] Инициализация сессии (безбраузерный режим)")
+            await self.session_manager._init_session()
+            logger.info("[MAIN] ✓ Сессия инициализирована успешно")
             return True
-
         except Exception as exc:
-            logger.error("[MAIN] Ошибка загрузки кук: %s", exc)
+            logger.error("[MAIN] Ошибка инициализации сессии: %s", exc)
             return False
 
     async def parse_all(self) -> None:
@@ -88,20 +63,12 @@ class DNSMonitorWithCookies:
         )
 
         try:
-            # Шаг 1: категории
+            # Шаг 1: получить категории
             try:
                 categories = await self.parser.fetch_categories()
             except Exception as exc:
                 logger.error("[PARSE] Ошибка при получении категорий: %s", exc)
-                # Пробуем перезагрузить куки и повторить
-                if await self.load_cookies_from_browser():
-                    try:
-                        categories = await self.parser.fetch_categories()
-                    except Exception as exc2:
-                        logger.error("[PARSE] Повторная ошибка: %s", exc2)
-                        return
-                else:
-                    return
+                return
 
             if not categories:
                 logger.error("[PARSE] Категории не получены")
@@ -218,17 +185,16 @@ class DNSMonitorWithCookies:
         except Exception as exc:
             logger.error("[PARSE] ERR Критическая ошибка в цикле парсинга: %s", exc)
 
-    async def run_forever(self) -> None:
-        """Бесконечный цикл обновления каждые N секунд."""
+    async def run_once(self) -> None:
+        """Парсинг один раз (без цикла) с инициализацией сессии."""
         logger.info(
-            "[MAIN] Запущен DNS Monitor (город: %s, интервал: %d сек)",
+            "[MAIN] Запуск DNS Monitor (город: %s)",
             self.city_name,
-            self.parse_interval,
         )
 
-        # Загружаем куки из браузера
-        if not await self.load_cookies_from_browser():
-            logger.error("[MAIN] Не удалось загрузить куки. Выход.")
+        # Инициализируем сессию безбраузерным способом (Node.js + Playwright)
+        if not await self.init_session_browserless():
+            logger.error("[MAIN] Не удалось инициализировать сессию. Выход.")
             return
 
         # Запускаем Telegram бот в фоновой задаче
@@ -238,28 +204,10 @@ class DNSMonitorWithCookies:
             else None
         )
 
-        iteration = 0
         try:
-            while True:
-                iteration += 1
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                logger.info("")
-                logger.info("=" * 70)
-                logger.info("[%s] Итерация #%d", timestamp, iteration)
-                logger.info("=" * 70)
-
-                await self.parse_all()
-
-                logger.info(
-                    "[MAIN] Следующее обновление через %d сек...",
-                    self.parse_interval,
-                )
-                await asyncio.sleep(self.parse_interval)
-
-        except KeyboardInterrupt:
-            logger.info("[MAIN] Остановлено пользователем (Ctrl+C)")
+            await self.parse_all()
         except Exception as exc:
-            logger.error("[MAIN] ERR Необработанное исключение: %s", exc)
+            logger.error("[MAIN] Ошибка парсинга: %s", exc)
         finally:
             if bot_task:
                 bot_task.cancel()
@@ -270,38 +218,12 @@ class DNSMonitorWithCookies:
             await self.session_manager.close()
             self.db.close()
             await self.tg.close()
-            logger.info("[MAIN] Сессия закрыта")
 
 
 async def main() -> None:
-    """Точка входа - запуск один раз (цикл управляется из run.py)."""
-    monitor = DNSMonitorWithCookies()
-
-    # Загружаем куки
-    if not await monitor.load_cookies_from_browser():
-        logger.error("[MAIN] Не удалось загрузить куки. Выход.")
-        return
-
-    # Запускаем Telegram бот в фоновой задаче
-    bot_task = (
-        asyncio.create_task(monitor.telegram_bot.polling_loop())
-        if monitor.telegram_bot.enabled
-        else None
-    )
-
-    try:
-        # Парсим один раз (без цикла)
-        await monitor.parse_all()
-    finally:
-        if bot_task:
-            bot_task.cancel()
-            try:
-                await bot_task
-            except asyncio.CancelledError:
-                pass
-        await monitor.session_manager.close()
-        monitor.db.close()
-        await monitor.tg.close()
+    """Точка входа - запуск один раз (безбраузерный режим, цикл управляется из run.py)."""
+    monitor = DNSMonitorBrowserless()
+    await monitor.run_once()
 
 
 if __name__ == "__main__":

@@ -101,49 +101,38 @@ def _parse_cookie_str(raw: str) -> dict[str, str]:
 
 def _build_city_cookie() -> dict[str, str]:
     """Создаёт куки города в формате DNS.
-    
-    ВАЖНО: DNS использует JSON с ensure_ascii=True (Unicode escapes \u041a\u0440...)
-    Реальная кука из браузера:
-      current_path=<sha256_hash><urlencoded_php_serialized>
-    
-    Формат PHP сериализации:
-      a:2:{i:0;s:12:"current_path";i:1;s:<len>:"<json>";}
+
+    Использует предвычисленное значение current_path из конфига или генерирует новое.
     """
     cookies = {}
 
-    cookies['city_path'] = 'krasnodar'
+    # Используем значения из конфига (они либо предвычислены, либо генерируются)
+    cookies['city_path'] = config.city_cookie_path
+
+    # Используем предвычисленное значение current_path если оно есть в конфиге
+    if config.city_cookie_current:
+        cookies['current_path'] = config.city_cookie_current
+        logger.info("[COOKIE] Используя предвычисленный current_path для города: %s", config.city_name)
+    else:
+        # Fallback: вычисляем сами (на случай если конфиг не установлен)
+        city_data = {
+            "city": config.city_id,
+            "cityName": config.city_name,
+            "method": "manual"
+        }
+        city_json = json.dumps(city_data, ensure_ascii=True, separators=(',', ':'))
+        php_serialized = f'a:2:{{i:0;s:12:"current_path";i:1;s:{len(city_json)}:"{city_json}";}}'
+        sha256_hash = hashlib.sha256(php_serialized.encode('utf-8')).hexdigest()
+        encoded = quote(php_serialized, safe='')
+        cookies['current_path'] = f'{sha256_hash}{encoded}'
+        logger.info("[COOKIE] Сгенерирован current_path для города: %s (ID=%s)", config.city_name, config.city_id)
 
     # Дополнительные куки которые DNS может проверять
-    # ВАЖНО: IsInterregionalPickupAllowed=true позволяет получать товары из других регионов
     cookies['IsInterregionalPickupAllowed'] = 'true'
     cookies['IsInterregionalCourierAllowed'] = 'false'
 
-    # ВАЖНО: ensure_ascii=True для Unicode escapes (\u041a\u0440...)
-    # separators=(',', ':') чтобы НЕ было пробелов после : и ,
-    city_data = {
-        "city": config.city_id,
-        "cityName": config.city_name,
-        "method": "manual"
-    }
-    city_json = json.dumps(city_data, ensure_ascii=True, separators=(',', ':'))  # <-- ИСПРАВЛЕНО!
-
-    logger.info("[COOKIE] Строю current_path для города: %s (ID=%s)", config.city_name, config.city_id)
-    logger.debug("[COOKIE] city_data JSON: %s", city_json)
-
-    # PHP сериализация: a:2:{i:0;s:12:"current_path";i:1;s:<len>:"<json>";}
-    php_serialized = f'a:2:{{i:0;s:12:"current_path";i:1;s:{len(city_json)}:"{city_json}";}}'
-
-    # SHA256 хеш PHP сериализации
-    sha256_hash = hashlib.sha256(php_serialized.encode('utf-8')).hexdigest()
-
-    # URL-кодирование
-    encoded = quote(php_serialized, safe='')
-
-    # Формат: <hash><encoded_payload>
-    cookies['current_path'] = f'{sha256_hash}{encoded}'
-
-    logger.debug("[COOKIE] current_path сгенерирован: hash=%s, len=%d", sha256_hash[:16], len(cookies['current_path']))
-    logger.debug("[COOKIE] full current_path: %s", cookies['current_path'][:100])
+    logger.debug("[COOKIE] Куки города: city_path=%s, current_path=%s...",
+                 cookies['city_path'], cookies['current_path'][:50] if cookies['current_path'] else '(empty)')
 
     return cookies
 
@@ -158,11 +147,18 @@ class SessionManager:
         self._initialized = False
 
     def _extract_cookies_from_response(self, resp: aiohttp.ClientResponse) -> None:
-        """Извлекает куки из Set-Cookie заголовков ответа и добавляет в self._cookies."""
+        """Извлекает куки из Set-Cookie заголовков ответа и добавляет в self._cookies.
+
+        ВАЖНО: НЕ перезаписываем куки города (current_path, city_path) — они строятся программно!
+        """
+        # Кुки города НЕ должны перезаписываться сервером
+        protected_cookies = {'current_path', 'city_path'}
+
         # Извлекаем куки из resp.cookies (если есть)
         if resp.cookies:
             for cookie in resp.cookies.values():
-                self._cookies[cookie.key] = cookie.value
+                if cookie.key not in protected_cookies:
+                    self._cookies[cookie.key] = cookie.value
 
         # Также проверяем Set-Cookie заголовки напрямую
         set_cookies = resp.headers.getall('Set-Cookie', [])
@@ -171,7 +167,8 @@ class SessionManager:
             pair = sc.split(';')[0].strip()
             if '=' in pair:
                 key, _, value = pair.partition('=')
-                self._cookies[key.strip()] = value.strip()
+                if key.strip() not in protected_cookies:
+                    self._cookies[key.strip()] = value.strip()
 
         if self._cookies:
             logger.debug("[SESSION] Извлечены куки из ответа: %s", list(self._cookies.keys())[:5])
@@ -227,7 +224,7 @@ class SessionManager:
 
             for url in urls_to_try:
                 await HTTPLogger.log_request("GET", url, headers=headers)
-                
+
                 async with temp_session.get(
                     url,
                     headers=headers,
@@ -240,8 +237,10 @@ class SessionManager:
                         pair = sc.split(';')[0].strip()
                         if '=' in pair:
                             k, _, v = pair.partition('=')
-                            new_cookies[k.strip()] = v.strip()
-                            self._cookies[k.strip()] = v.strip()
+                            # ВАЖНО: НЕ перезаписываем куки города (их строим программно!)
+                            if k.strip() not in ['current_path', 'city_path']:
+                                new_cookies[k.strip()] = v.strip()
+                                self._cookies[k.strip()] = v.strip()
 
                     await HTTPLogger.log_response(
                         resp.status, url,
@@ -289,7 +288,7 @@ class SessionManager:
         return False
 
     async def _init_session(self) -> bool:
-        """Полная инициализация: Qrator → базовые куки → город через REST API или программно."""
+        """Полная инициализация: Qrator → базовые куки → город программно."""
         logger.info("[SESSION] Инициализация сессии (без браузера)...")
 
         # 1. Сначала решаем Qrator challenge (иначе главная страница вернет 401)
@@ -299,15 +298,11 @@ class SessionManager:
         if not await self._fetch_base_cookies():
             logger.warning("[SESSION] Не удалось получить базовые куки, продолжаем...")
 
-        # 3. Устанавливаем город через REST API (предпочтительно)
-        if await self._set_city_via_rest():
-            logger.info("[SESSION] Город установлен через REST API")
-        else:
-            # Fallback: строим city_path и current_path программно
-            logger.warning("[SESSION] REST API не сработал, строю куки города программно...")
-            city_cookies = _build_city_cookie()
-            self._cookies.update(city_cookies)
-            logger.info("[SESSION] Куки города построены программно: %s", list(city_cookies.keys()))
+        # 3. ГЛАВНОЕ: строим куки города программно (не доверяем REST API - может вернуть Москву)
+        logger.info("[SESSION] Строю куки города программно для: %s", config.city_name)
+        city_cookies = _build_city_cookie()
+        self._cookies.update(city_cookies)
+        logger.info("[SESSION] Куки города построены: %s", list(city_cookies.keys()))
 
         logger.info(
             "[SESSION] Сессия инициализирована, всего кук: %d (%s)",
