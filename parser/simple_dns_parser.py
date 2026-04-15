@@ -262,10 +262,15 @@ class SimpleDNSParser:
     # Шаг 2: UUID товаров из HTML категории
     # -------------------------------------------------------------------
 
-    async def fetch_product_uuids(self, category_id: str) -> list[str]:
-        """Простой HTTP GET → список UUID товаров из HTML."""
-        logger.debug("[PARSER] Получаю UUID товаров для категории %s (город: %s)",
-                    category_id, config.city_name)
+    async def fetch_product_uuids(self, category_id: str, expected_count: int = None) -> list[str]:
+        """Простой HTTP GET → список UUID товаров из HTML.
+
+        Args:
+            category_id: ID категории
+            expected_count: ожидаемое количество товаров (из API фильтров)
+        """
+        logger.debug("[PARSER] Получаю UUID товаров для категории %s (город: %s, ожидаемо: %s)",
+                    category_id, config.city_name, expected_count or "?")
 
         try:
             html = await self._get_html(
@@ -273,10 +278,25 @@ class SimpleDNSParser:
                 params={"category": category_id},
             )
 
-            uuids = list(dict.fromkeys(
+            all_uuids = list(dict.fromkeys(
                 m.group(0).lower() for m in _UUID_RE.finditer(html)
             ))
-            logger.info("[PARSER] Категория %s: найдено %d товаров", category_id, len(uuids))
+
+            # ВАЖНО: Если найдено больше UUID чем ожидается по API,
+            # это вероятно UUID из рекомендаций/баннеров/навигации.
+            # Используем count из API как максимум.
+            if expected_count is not None and len(all_uuids) > expected_count:
+                logger.warning(
+                    "[PARSER] Категория %s: найдено %d UUID, но API говорит %d. "
+                    "Ограничиваем до %d (вероятно лишние из рекомендаций)",
+                    category_id, len(all_uuids), expected_count, expected_count
+                )
+                uuids = all_uuids[:expected_count]
+            else:
+                uuids = all_uuids
+
+            logger.info("[PARSER] Категория %s: используем %d товаров (найдено %d)",
+                       category_id, len(uuids), len(all_uuids))
             return uuids
 
         except CookiesExpiredError:

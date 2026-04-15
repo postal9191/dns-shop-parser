@@ -2,6 +2,7 @@
 Менеджер БД для хранения товаров и обновления цен.
 """
 
+import hashlib
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +62,17 @@ class DBManager:
                     last_checked_at TEXT
                 )
             """)
+
+            # Миграция: добавить uuid_hash столбец если его нет
+            cursor = conn.execute("PRAGMA table_info(category_state)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'uuid_hash' not in columns:
+                try:
+                    conn.execute("ALTER TABLE category_state ADD COLUMN uuid_hash TEXT")
+                    logger.info("Добавлен столбец uuid_hash в таблицу category_state")
+                except sqlite3.OperationalError:
+                    pass  # Столбец уже существует
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_subscribers (
                     user_id TEXT PRIMARY KEY,
@@ -136,7 +148,7 @@ class DBManager:
         """Получает товары по категории."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT id, title, url, category_id, category_name, current_price, previous_price
+                SELECT id, uuid, title, url, category_id, category_name, current_price, previous_price
                 FROM products WHERE category_id = ?
             """, (category_id,))
             rows = cursor.fetchall()
@@ -144,12 +156,13 @@ class DBManager:
         return [
             Product(
                 id=row[0],
-                title=row[1],
-                url=row[2],
-                category_id=row[3],
-                category_name=row[4],
-                price=row[5],
-                price_old=row[6],
+                uuid=row[1],
+                title=row[2],
+                url=row[3],
+                category_id=row[4],
+                category_name=row[5],
+                price=row[6],
+                price_old=row[7],
             )
             for row in rows
         ]
@@ -183,7 +196,7 @@ class DBManager:
         """Получает последнее состояние категории."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT category_id, category_name, last_product_count, last_checked_at
+                SELECT category_id, category_name, last_product_count, uuid_hash, last_checked_at
                 FROM category_state WHERE category_id = ?
             """, (category_id,))
             row = cursor.fetchone()
@@ -193,19 +206,25 @@ class DBManager:
                 "category_id": row[0],
                 "category_name": row[1],
                 "last_product_count": row[2],
-                "last_checked_at": row[3],
+                "uuid_hash": row[3],
+                "last_checked_at": row[4],
             }
         return None
 
-    def update_category_state(self, category_id: str, category_name: str, product_count: int) -> None:
+    def update_category_state(
+        self, category_id: str, category_name: str, product_count: int, uuids: list[str] = None
+    ) -> None:
         """Обновляет последнее состояние категории."""
+        uuid_hash = None
+        if uuids is not None:
+            uuid_hash = hashlib.md5(','.join(sorted(uuids)).encode()).hexdigest()
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO category_state
-                (category_id, category_name, last_product_count, last_checked_at)
-                VALUES (?, ?, ?, ?)
-            """, (category_id, category_name, product_count, now))
+                (category_id, category_name, last_product_count, uuid_hash, last_checked_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (category_id, category_name, product_count, uuid_hash, now))
             conn.commit()
 
     def get_new_products_in_category(
@@ -267,29 +286,3 @@ class DBManager:
     def close(self) -> None:
         """Закрывает БД."""
         pass
-
-    def add_telegram_subscriber(self, user_id: str) -> None:
-        """Добавляет Telegram подписчика."""
-        now = datetime.utcnow().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT OR IGNORE INTO telegram_subscribers (user_id, subscribed_at)
-                VALUES (?, ?)
-            """, (user_id, now))
-            conn.commit()
-
-    def remove_telegram_subscriber(self, user_id: str) -> None:
-        """Удаляет Telegram подписчика."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                DELETE FROM telegram_subscribers WHERE user_id = ?
-            """, (user_id,))
-            conn.commit()
-
-    def get_telegram_subscribers(self) -> list:
-        """Получает список всех Telegram подписчиков."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT user_id FROM telegram_subscribers
-            """)
-            return [row[0] for row in cursor.fetchall()]

@@ -10,6 +10,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 os.chdir(str(PROJECT_DIR))
 
 import asyncio
+import hashlib
 from datetime import datetime
 
 from config import config
@@ -85,38 +86,44 @@ class DNSMonitorBrowserless:
             total_updated = 0
 
             for i, cat in enumerate(categories, 1):
-                # Проверяем было ли изменение количества товаров в категории
+                # Получаем состояние категории
                 state = self.db.get_category_state(cat.id)
                 last_count = state["last_product_count"] if state else 0
+                last_hash = state["uuid_hash"] if state else None
 
-                if cat.count == last_count and last_count > 0:
-                    # Количество не изменилось, пропускаем
-                    logger.debug(
-                        "[PARSE] Категория %d/%d: %s - без изменений (%d товаров)",
+                try:
+                    # Получаем UUID товаров (всегда загружаем для проверки хэша)
+                    # Передаём ожидаемое количество из API чтобы отфильтровать лишние UUID
+                    uuids = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count)
+                    if not uuids:
+                        logger.debug("[PARSE] Категория %d/%d: %s - товаров не найдено", i, len(categories), cat.label)
+                        self.db.update_category_state(cat.id, cat.label, 0, [])
+                        continue
+
+                    # Вычисляем хэш текущего состава товаров
+                    current_hash = hashlib.md5(','.join(sorted(uuids)).encode()).hexdigest()
+
+                    # Проверяем изменился ли состав товаров в категории
+                    if current_hash == last_hash:
+                        # Состав не изменился - пропускаем загрузку деталей
+                        logger.debug(
+                            "[PARSE] Категория %d/%d: %s - без изменений (хэш совпадает, %d товаров)",
+                            i,
+                            len(categories),
+                            cat.label,
+                            cat.count,
+                        )
+                        continue
+
+                    # Состав изменился - загружаем товары
+                    logger.info(
+                        "[PARSE] Категория %d/%d: %s (было: %d, сейчас: %d, состав изменился)",
                         i,
                         len(categories),
                         cat.label,
-                        cat.count,
+                        last_count,
+                        len(uuids),  # используем реальное количество UUID вместо API count
                     )
-                    continue
-
-                # Количество изменилось или это первый раз - загружаем товары
-                logger.info(
-                    "[PARSE] Категория %d/%d: %s (было: %d, сейчас: %d)",
-                    i,
-                    len(categories),
-                    cat.label,
-                    last_count,
-                    cat.count,
-                )
-
-                try:
-                    # Получаем UUID товаров
-                    uuids = await self.parser.fetch_product_uuids(cat.id)
-                    if not uuids:
-                        logger.debug("[PARSE]   (товаров не найдено)")
-                        self.db.update_category_state(cat.id, cat.label, 0)
-                        continue
 
                     # Проверяем какие товары новые
                     new_uuids = self.db.get_new_products_in_category(cat.id, uuids)
@@ -163,8 +170,8 @@ class DNSMonitorBrowserless:
                         else:
                             logger.debug("[PARSE]   (новых товаров не найдено)")
 
-                    # Обновляем состояние категории
-                    self.db.update_category_state(cat.id, cat.label, cat.count)
+                    # Обновляем состояние категории с хэшем UUID (используем реальное количество)
+                    self.db.update_category_state(cat.id, cat.label, len(uuids), uuids)
 
                     # Задержка между категориями
                     await asyncio.sleep(0.5)
