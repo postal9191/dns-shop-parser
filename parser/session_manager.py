@@ -10,6 +10,7 @@
 
 import hashlib
 import json
+import platform
 import re
 from urllib.parse import quote
 
@@ -63,27 +64,64 @@ class HTTPLogger:
             val_display = value[:30] + '...' if len(value) > 30 else value
             logger.debug("[COOKIES]   %s = %s", key, val_display)
 
-# Заголовки — максимально близко к реальному браузеру
-_BASE_HEADERS = {
-    "accept": "*/*",
-    "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "cache-control": "no-cache",
-    "pragma": "no-cache",
-    "priority": "u=1, i",
-    "referer": f"{config.api_base_url}/catalog/markdown/",
-    "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "user-agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/147.0.0.0 Safari/537.36"
-    ),
-    "x-requested-with": "XMLHttpRequest",
-}
+def _get_platform_ua() -> tuple[str, str]:
+    """Возвращает UserAgent и platform для текущей ОС.
+
+    Если USE_PLATFORM_UA=true, генерирует для текущей платформы.
+    Иначе всегда возвращает Windows (по умолчанию, для совместимости).
+    """
+    system = platform.system()
+
+    if not config.use_platform_ua or system == "Windows":
+        # По умолчанию Windows (работает везде)
+        return (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/147.0.0.0 Safari/537.36',
+            '"Windows"'
+        )
+    elif system == "Darwin":
+        # macOS
+        return (
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/147.0.0.0 Safari/537.36',
+            '"macOS"'
+        )
+    else:
+        # Linux и остальное
+        return (
+            'Mozilla/5.0 (X11; Linux x86_64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/147.0.0.0 Safari/537.36',
+            '"Linux"'
+        )
+
+
+def _get_base_headers() -> dict[str, str]:
+    """Возвращает базовые заголовки с поддержкой кроссплатформенности."""
+    ua, platform_header = _get_platform_ua()
+
+    return {
+        "accept": "*/*",
+        "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "referer": f"{config.api_base_url}/catalog/markdown/",
+        "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": platform_header,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": ua,
+        "x-requested-with": "XMLHttpRequest",
+    }
+
+
+# Кэшируем базовые заголовки один раз при импорте
+_BASE_HEADERS = _get_base_headers()
 
 
 def _parse_cookie_str(raw: str) -> dict[str, str]:

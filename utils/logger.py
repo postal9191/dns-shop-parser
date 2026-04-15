@@ -1,5 +1,6 @@
 import logging
 import logging.handlers
+import os
 from pathlib import Path
 
 
@@ -12,6 +13,10 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     if logger.handlers:
         return logger
 
+    # Получаем уровень логирования из переменной окружения (по умолчанию INFO)
+    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    console_level = getattr(logging, log_level_str, logging.INFO)
+
     fmt_console = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(message)s",
         datefmt="%H:%M:%S",
@@ -22,7 +27,7 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     )
 
     console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
+    console.setLevel(console_level)
     console.setFormatter(fmt_console)
 
     file_handler = logging.handlers.RotatingFileHandler(

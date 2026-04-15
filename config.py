@@ -22,6 +22,7 @@ class Config:
     retry_delay: float
     dns_login: str
     dns_password: str
+    log_level: str
 
     # Эндпоинты DNS (паттерн по аналогии с products-filters)
     filters_path: str = "/catalogMarkdown/markdown/products-filters/"
@@ -30,6 +31,9 @@ class Config:
     # Chrome опции
     chrome_headless: bool = False
     chrome_profile_dir: str = ""
+
+    # Кроссплатформенность
+    use_platform_ua: bool = False  # Использовать реальный UserAgent для ОС
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -52,8 +56,10 @@ class Config:
             retry_delay=float(os.getenv("RETRY_DELAY", "5.0")),
             dns_login=os.getenv("DNS_LOGIN", ""),
             dns_password=os.getenv("DNS_PASSWORD", ""),
+            log_level=os.getenv("LOG_LEVEL", "INFO"),  # INFO, DEBUG
             chrome_headless=os.getenv("CHROME_HEADLESS", "false").lower() == "true",
             chrome_profile_dir=os.getenv("CHROME_PROFILE_DIR", ""),
+            use_platform_ua=os.getenv("USE_PLATFORM_UA", "false").lower() == "true",
         )
 
 
