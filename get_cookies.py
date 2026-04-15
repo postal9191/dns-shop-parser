@@ -1,17 +1,61 @@
 #!/usr/bin/env python3
 """Получить куки Краснодара - подставляем напрямую из config."""
 
+import sys
+import os
+from pathlib import Path
+
+# Добавляем директорию проекта в sys.path для импорта модулей
+PROJECT_DIR = Path(__file__).parent.absolute()
+sys.path.insert(0, str(PROJECT_DIR))
+os.chdir(str(PROJECT_DIR))
+
 import undetected_chromedriver as uc
 import time
 import pickle
-from pathlib import Path
+import platform
+import shutil
 from config import config
 
-print("\n[*] Открываю браузер...")
+print("\n[*] Открываю браузер Chrome...")
 
+# Определяем ОС для поиска Chrome
+system = platform.system()
+browser_executable = None
+
+if system == "Windows":
+    print("    Режим: Windows")
+    chrome_paths = [
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        str(Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"),
+    ]
+    for path in chrome_paths:
+        if Path(path).exists():
+            browser_executable = path
+            break
+
+elif system == "Linux":
+    print("    Режим: Linux")
+    chrome_paths = [
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/opt/google/chrome/chrome",
+        "/snap/bin/google-chrome",
+    ]
+    for path in chrome_paths:
+        if Path(path).exists():
+            browser_executable = path
+            break
+
+# Опции Chrome (одинаковые для всех платформ)
 options = uc.ChromeOptions()
 options.add_argument("--window-size=1920,1080")
 options.add_argument("--lang=ru-RU")
+
+if browser_executable:
+    options.binary_location = browser_executable
+    print(f"    ✓ Найден Chrome: {browser_executable}")
 
 # Headless режим (без окна браузера)
 if config.chrome_headless:
@@ -22,6 +66,7 @@ options.add_experimental_option("prefs", {
     "profile.managed_default_content_settings.geolocation": 2,
 })
 
+# Запускаем Chrome
 driver = uc.Chrome(options=options, use_subprocess=True)
 
 try:

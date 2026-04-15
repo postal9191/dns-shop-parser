@@ -1,8 +1,16 @@
 """Парсер DNS товаров (использует куки из get_cookies.py)."""
 
+import sys
+import os
+from pathlib import Path
+
+# Добавляем директорию проекта в sys.path для импорта модулей
+PROJECT_DIR = Path(__file__).parent.absolute()
+sys.path.insert(0, str(PROJECT_DIR))
+os.chdir(str(PROJECT_DIR))
+
 import asyncio
 from datetime import datetime
-from pathlib import Path
 import pickle
 
 from config import config

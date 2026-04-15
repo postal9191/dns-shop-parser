@@ -6,13 +6,17 @@
 
 import asyncio
 import sys
+import os
 from datetime import datetime
+from pathlib import Path
 
 from config import config
 from parser.db_manager import DBManager
 from services.telegram_bot import init_telegram_bot
 from utils.logger import logger
 
+# Определяем директорию проекта
+PROJECT_DIR = Path(__file__).parent.absolute()
 
 async def run_get_cookies() -> bool:
     """Запускает get_cookies в отдельном процессе асинхронно."""
@@ -24,7 +28,8 @@ async def run_get_cookies() -> bool:
         result = await loop.run_in_executor(
             None,
             lambda: __import__('subprocess').run(
-                [sys.executable, 'get_cookies.py'],
+                [sys.executable, str(PROJECT_DIR / 'get_cookies.py')],
+                cwd=str(PROJECT_DIR),
                 check=False,
                 timeout=600
             )
@@ -54,7 +59,8 @@ async def run_parser() -> bool:
         result = await loop.run_in_executor(
             None,
             lambda: __import__('subprocess').run(
-                [sys.executable, 'parser.py'],
+                [sys.executable, str(PROJECT_DIR / 'parser.py')],
+                cwd=str(PROJECT_DIR),
                 check=False,
                 timeout=600
             )
