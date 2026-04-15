@@ -53,81 +53,65 @@ print_info() {
 # Проверка и установка зависимостей
 ################################################################################
 
-check_chromium() {
-    print_info "Проверка Chrome..."
+check_nodejs() {
+    print_info "Проверка Node.js и npm..."
 
-    if command -v google-chrome &> /dev/null; then
-        print_success "Chrome установлен"
-        return 0
-    elif command -v google-chrome-stable &> /dev/null; then
-        print_success "Chrome установлен"
+    if ! command -v node &> /dev/null; then
+        print_warning "Node.js не найден, установка..."
+
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS=$ID
+        fi
+
+        case $OS in
+            ubuntu|debian)
+                sudo apt-get update -qq
+                sudo apt-get install -y nodejs npm
+                ;;
+            fedora)
+                sudo dnf install -y nodejs npm
+                ;;
+            centos|rhel)
+                sudo yum install -y nodejs npm
+                ;;
+            *)
+                print_error "Неподдерживаемый дистрибутив: $OS"
+                return 1
+                ;;
+        esac
+    fi
+
+    if command -v node &> /dev/null && command -v npm &> /dev/null; then
+        NODE_VERSION=$(node --version)
+        NPM_VERSION=$(npm --version)
+        print_success "Node.js $NODE_VERSION и npm $NPM_VERSION установлены"
         return 0
     else
-        print_warning "Chrome не найден, установка..."
-        install_chrome
+        print_error "Не удалось установить Node.js/npm"
+        return 1
     fi
 }
 
-install_chrome() {
-    # Определяем дистрибутив
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
-    else
-        print_error "Не удалось определить дистрибутив Linux"
-        return 1
+check_playwright() {
+    print_info "Проверка Playwright браузера..."
+
+    # Проверяем что npm зависимости установлены
+    if [ ! -d "$PROJECT_DIR/node_modules" ]; then
+        print_warning "Node.js модули не установлены, установка..."
+        cd "$PROJECT_DIR"
+        npm install --quiet 2>&1 | grep -v "npm warn\|npm notice" || true
     fi
 
-    case $OS in
-        ubuntu|debian)
-            print_info "Установка Chrome для Debian/Ubuntu..."
-            sudo apt-get update -qq
+    # Устанавливаем Playwright браузер
+    cd "$PROJECT_DIR"
+    npx playwright install chromium --with-deps 2>&1 | tail -5
 
-            # Добавляем репозиторий Google Chrome
-            print_info "Добавление репозитория Google Chrome..."
-            sudo apt-get install -y curl wget 2>/dev/null || true
-            curl -s https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add - 2>/dev/null || true
-            echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list 2>/dev/null || true
-            sudo apt-get update -qq
-
-            # Установка Chrome
-            sudo apt-get install -y google-chrome-stable
-
-            # Установка Xvfb для виртуального дисплея
-            print_info "Установка Xvfb (виртуальный дисплей)..."
-            sudo apt-get install -y xvfb
-
-            # Дополнительные зависимости для полной работы
-            print_info "Установка зависимостей Chrome..."
-            sudo apt-get install -y \
-                libglib2.0-0 libgconf-2-4 libappindicator1 libindicator7 \
-                libxss1 libxext6 libxrender1 fonts-liberation \
-                libappindicator3-1 libasound2 libatk-bridge2.0-0 \
-                libatk1.0-0 libcups2 libdbus-1-3 libexpat1 libgcc1 \
-                libgdk-pixbuf2.0-0 libgtk-3-0 libpango-1.0-0 \
-                libpangocairo-1.0-0 libx11-6 libxcb1 libxcomposite1 \
-                libxcursor1 libxdamage1 libxfixes3 libxi6 libxinerama1 \
-                libxrandr2 libxshmfence1 libxtst6 libdrm2 libgbm1 2>/dev/null || true
-            ;;
-        fedora)
-            print_info "Установка Chrome для Fedora..."
-            sudo dnf install -y google-chrome-stable xvfb
-            ;;
-        centos|rhel)
-            print_info "Установка Chrome для CentOS/RHEL..."
-            sudo yum install -y google-chrome-stable xvfb
-            ;;
-        *)
-            print_error "Неподдерживаемый дистрибутив: $OS"
-            print_info "Пожалуйста, установите Chrome вручную"
-            return 1
-            ;;
-    esac
-
-    if [ $? -eq 0 ] || command -v google-chrome &> /dev/null; then
-        print_success "Chrome и Xvfb установлены успешно"
+    if [ $? -eq 0 ]; then
+        print_success "Playwright браузер установлен"
+        return 0
     else
-        print_error "Не удалось установить Chrome"
+        print_error "Не удалось установить Playwright браузер"
         return 1
     fi
 }
@@ -229,58 +213,12 @@ check_pip_dependencies() {
     fi
 }
 
-check_xvfb() {
-    if [ "$(uname)" != "Linux" ]; then
-        return 0  # Xvfb нужен только на Linux
-    fi
-
-    print_info "Проверка Xvfb..."
-
-    if command -v Xvfb &> /dev/null; then
-        print_success "Xvfb установлен"
-        return 0
-    else
-        print_warning "Xvfb не найден, установка..."
-
-        if [ -f /etc/os-release ]; then
-            . /etc/os-release
-            OS=$ID
-        fi
-
-        case $OS in
-            ubuntu|debian)
-                sudo apt-get update -qq
-                sudo apt-get install -y xvfb
-                ;;
-            fedora)
-                sudo dnf install -y xvfb
-                ;;
-            centos|rhel)
-                sudo yum install -y xvfb
-                ;;
-            arch)
-                sudo pacman -S --noconfirm xorg-server-xvfb
-                ;;
-            *)
-                print_warning "Неизвестный дистрибутив, пропускаю установку Xvfb"
-                return 0
-                ;;
-        esac
-
-        if command -v Xvfb &> /dev/null; then
-            print_success "Xvfb установлен успешно"
-        else
-            print_warning "Не удалось установить Xvfb, продолжаю без виртуального дисплея"
-        fi
-    fi
-}
-
 check_all_dependencies() {
     print_header "Проверка всех зависимостей"
 
-    check_chromium || return 1
-    check_xvfb || return 1
+    check_nodejs || return 1
     check_python || return 1
+    check_playwright || return 1
     check_pip_dependencies || return 1
 
     print_success "Все зависимости проверены и установлены!"
@@ -299,22 +237,6 @@ start_service() {
     print_info "Создание папки для логов..."
     mkdir -p "$PROJECT_DIR/logs"
 
-    # Проверяем Xvfb на Linux для виртуального дисплея
-    if [ "$(uname)" == "Linux" ]; then
-        if ! command -v Xvfb &> /dev/null; then
-            print_warning "Xvfb не установлен, но Chrome может работать в headless режиме"
-        else
-            # Проверяем есть ли уже запущенный Xvfb
-            if ! ps aux | grep -q "[X]vfb :99"; then
-                print_info "Запуск виртуального дисплея (Xvfb)..."
-                Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
-                sleep 1
-            fi
-            export DISPLAY=:99
-            print_info "Используется виртуальный дисплей: DISPLAY=:99"
-        fi
-    fi
-
     # Находим python в venv
     local VENV_PYTHON="$VENV_DIR/bin/python3"
     if [ ! -f "$VENV_PYTHON" ]; then
@@ -327,13 +249,10 @@ start_service() {
     fi
 
     print_info "Запуск приложения..."
+    print_info "Режим: Node.js + Playwright (безбраузерный)"
 
-    # Запускаем в фоне с venv python и DISPLAY для Linux
-    if [ "$(uname)" == "Linux" ]; then
-        nohup env DISPLAY=:99 "$VENV_PYTHON" "$PROJECT_DIR/run.py" > "$LOG_FILE" 2>&1 &
-    else
-        nohup "$VENV_PYTHON" "$PROJECT_DIR/run.py" > "$LOG_FILE" 2>&1 &
-    fi
+    # Запускаем в фоне с venv python
+    nohup "$VENV_PYTHON" "$PROJECT_DIR/run.py" > "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 
     sleep 2
@@ -342,9 +261,11 @@ start_service() {
         PID=$(cat "$PID_FILE")
         print_success "Приложение запущено (PID: $PID)"
         print_info "Логи: $LOG_FILE"
+        print_info "Команда для просмотра логов: tail -f $LOG_FILE"
     else
         print_error "Не удалось запустить приложение"
         if [ -f "$LOG_FILE" ]; then
+            print_info "Последние ошибки:"
             tail -20 "$LOG_FILE"
         else
             print_warning "Лог файл не создан, проверьте ошибки выше"
@@ -437,7 +358,7 @@ create_systemd_unit() {
     fi
 
     UNIT_CONTENT="[Unit]
-Description=DNS Shop Parser Service
+Description=DNS Shop Parser Service - безбраузерный парсер (Node.js + Playwright)
 After=network.target
 StartLimitInterval=60
 StartLimitBurst=3
@@ -446,7 +367,7 @@ StartLimitBurst=3
 Type=simple
 User=$(whoami)
 WorkingDirectory=$PROJECT_DIR
-Environment=\"PATH=$VENV_DIR/bin:$PATH\"
+Environment=\"PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:$PATH\"
 ExecStart=$VENV_PYTHON $PROJECT_DIR/run.py
 Restart=on-failure
 RestartSec=10
@@ -662,7 +583,8 @@ show_systemd_menu() {
 show_menu() {
     echo ""
     echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║   DNS Shop Parser - Service Manager   ║${NC}"
+    echo -e "${BLUE}║ DNS Shop Parser - Service Manager    ║${NC}"
+    echo -e "${BLUE}║ Режим: Node.js + Playwright (Linux) ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo ""
     echo "Выберите действие:"
@@ -670,7 +592,7 @@ show_menu() {
     echo "  1 - Запустить приложение"
     echo "  2 - Остановить приложение"
     echo "  3 - Перезапустить приложение"
-    echo "  4 - Показать логи"
+    echo "  4 - Показать логи (tail -f)"
     echo "  5 - Проверить статус"
     echo "  6 - Управление systemd сервисом"
     echo "  0 - Выход"
