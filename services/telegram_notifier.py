@@ -37,22 +37,23 @@ class TelegramNotifier:
             price_old = prod.get('price_old', 0)
             url = prod.get('url', '')
 
-            # Формат: Категория - Название - цена руб. прайс старая_цена
+            # Формат: кликабельная ссылка - цена руб. (зачёркнутая старая цена)
             price_str = f"{price} руб."
             if price_old and price_old > price:
-                price_str += f" прайс {price_old}"
+                price_str += f" <s>{price_old}</s>"
 
-            products_text += f"{title} - {price_str}\n"
             if url:
-                products_text += f"{url}\n"
-            products_text += "\n"
+                products_text += f"• <a href=\"{url}\">{title}</a>\n"
+            else:
+                products_text += f"• {title}\n"
+            products_text += f"  💰 {price_str}\n\n"
 
         if len(new_products) > 10:
-            products_text += f"... и еще {len(new_products) - 10} товаров"
+            products_text += f"<i>... и ещё {len(new_products) - 10} товаров</i>"
 
         message = (
-            f"<b>Новые товары в {category_name}!</b>\n\n"
-            f"<b>Добавлено:</b> {len(new_products)} шт\n\n"
+            f"🆕 <b>Новые товары в {category_name}!</b>\n"
+            f"Добавлено: {len(new_products)} шт\n\n"
             f"{products_text}"
         )
 
