@@ -69,6 +69,50 @@ class TelegramNotifier:
             logger.error("[TG NOTIF] Ошибка при отправке уведомления: %s", exc)
             return False
 
+    async def send_price_changes_notification(self, price_changes: list[dict]) -> bool:
+        """Отправляет единое уведомление об изменениях цен всем подписчикам."""
+        if not self.enabled or not self.bot or not price_changes:
+            return False
+
+        products_text = ""
+        for prod in price_changes[:20]:
+            title = prod['title'][:50]
+            url = prod.get('url', '')
+            new_price = prod['new_price']
+            old_price = prod['old_price']
+            price_old = prod.get('price_old', 0)
+
+            arrow = "↓" if new_price < old_price else "↑"
+            price_str = f"{new_price} руб. {arrow} ({old_price} руб.)"
+            if price_old and price_old > new_price:
+                price_str += f" <s>{price_old}</s>"
+
+            if url:
+                products_text += f"• <a href=\"{url}\">{title}</a>\n"
+            else:
+                products_text += f"• {title}\n"
+            products_text += f"  💰 {price_str}\n\n"
+
+        if len(price_changes) > 20:
+            products_text += f"<i>... и ещё {len(price_changes) - 20} товаров</i>"
+
+        message = (
+            f"📊 <b>Изменение цен</b>\n"
+            f"Товаров: {len(price_changes)} шт\n\n"
+            f"{products_text}"
+        )
+
+        try:
+            sent_count = await self.bot.broadcast_message(message)
+            logger.info(
+                "[TG NOTIF] Уведомление об изменении цен отправлено %d подписчикам",
+                sent_count,
+            )
+            return sent_count > 0
+        except Exception as exc:
+            logger.error("[TG NOTIF] Ошибка при отправке уведомления о ценах: %s", exc)
+            return False
+
     async def close(self) -> None:
         """Закрывает Telegram notifier."""
         if self.bot:

@@ -84,6 +84,7 @@ class DNSMonitorBrowserless:
             # Шаг 2: товары по каждой категории (оптимизировано)
             total_new_products = 0
             total_updated = 0
+            all_price_changes = []
 
             for i, cat in enumerate(categories, 1):
                 # Получаем состояние категории
@@ -103,17 +104,16 @@ class DNSMonitorBrowserless:
                     # Вычисляем хэш текущего состава товаров
                     current_hash = hashlib.md5(','.join(sorted(uuids)).encode()).hexdigest()
 
-                    # Проверяем изменился ли состав товаров в категории
-                    if current_hash == last_hash:
-                        # Состав не изменился - пропускаем загрузку деталей
+                    # Если состав UUID не изменился — новых товаров нет, но цены могут измениться
+                    uuids_unchanged = (current_hash == last_hash)
+                    if uuids_unchanged:
                         logger.debug(
-                            "[PARSE] Категория %d/%d: %s - без изменений (хэш совпадает, %d товаров)",
+                            "[PARSE] Категория %d/%d: %s - UUID без изменений (%d товаров), проверяем цены",
                             i,
                             len(categories),
                             cat.label,
                             cat.count,
                         )
-                        continue
 
                     # Состав изменился - загружаем товары
                     logger.info(
@@ -125,8 +125,12 @@ class DNSMonitorBrowserless:
                         len(uuids),  # используем реальное количество UUID вместо API count
                     )
 
-                    # Проверяем какие товары новые
-                    new_uuids = self.db.get_new_products_in_category(cat.id, uuids)
+                    # Проверяем какие товары новые (если UUID состав не изменился — новых нет)
+                    new_uuids = (
+                        []
+                        if uuids_unchanged
+                        else self.db.get_new_products_in_category(cat.id, uuids)
+                    )
 
                     # Получаем детали товаров
                     products = await self.parser.fetch_products_details(
@@ -134,13 +138,18 @@ class DNSMonitorBrowserless:
                     )
 
                     if products:
-                        saved = self.db.upsert_products(products)
+                        saved, price_changes = self.db.upsert_products(products)
                         total_updated += saved
 
                         logger.info(
                             "[PARSE]   OK Загружено и сохранено %d товаров",
                             saved,
                         )
+
+                        # Собираем изменения цен (кроме первого запуска)
+                        if price_changes and not is_first_run:
+                            logger.info("[PARSE]   PRICE Изменились цены: %d товаров", len(price_changes))
+                            all_price_changes.extend(price_changes)
 
                         # Если есть новые товары и это не первый запуск - отправляем уведомление
                         if new_uuids and not is_first_run:
@@ -180,12 +189,17 @@ class DNSMonitorBrowserless:
                     logger.error("[PARSE]   ERR Ошибка при загрузке категории: %s", exc)
                     continue
 
+            # Отправляем единое уведомление об изменениях цен
+            if all_price_changes:
+                await self.tg.send_price_changes_notification(all_price_changes)
+
             # Итоги цикла
             total_in_db = self.db.get_product_count()
             logger.info(
-                "[PARSE] Цикл завершён: новых %d, обновлено %d, всего в БД: %d",
+                "[PARSE] Цикл завершён: новых %d, обновлено %d, цены изменились %d, всего в БД: %d",
                 total_new_products,
                 total_updated,
+                len(all_price_changes),
                 total_in_db,
             )
 

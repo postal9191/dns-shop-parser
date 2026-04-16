@@ -82,16 +82,17 @@ class DBManager:
             conn.commit()
         logger.debug("БД инициализирована: %s", self.db_path)
 
-    def upsert_products(self, products: list[Product]) -> int:
+    def upsert_products(self, products: list[Product]) -> tuple[int, list[dict]]:
         """
         Вставляет или обновляет товары.
-        Возвращает количество обновленных записей.
+        Возвращает (количество обновленных записей, список изменений цен).
         """
         if not products:
-            return 0
+            return 0, []
 
         now = datetime.utcnow().isoformat()
         count = 0
+        price_changes = []
 
         with sqlite3.connect(self.db_path) as conn:
             for prod in products:
@@ -120,6 +121,13 @@ class DBManager:
                             INSERT INTO price_history (product_id, price, timestamp)
                             VALUES (?, ?, ?)
                         """, (prod.uuid, prod.price, now))
+                        price_changes.append({
+                            "title": prod.title,
+                            "url": prod.url,
+                            "new_price": prod.price,
+                            "old_price": existing[0],
+                            "price_old": prod.price_old,
+                        })
                 else:
                     # Новый товар
                     conn.execute("""
@@ -136,7 +144,7 @@ class DBManager:
 
             conn.commit()
 
-        return count
+        return count, price_changes
 
     def get_product_count(self) -> int:
         """Возвращает количество товаров в БД."""
