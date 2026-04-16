@@ -70,48 +70,64 @@ class TelegramNotifier:
             return False
 
     async def send_price_changes_notification(self, price_changes: list[dict]) -> bool:
-        """Отправляет единое уведомление об изменениях цен всем подписчикам."""
+        """Отправляет уведомления об изменениях цен батчами по 15 товаров."""
         if not self.enabled or not self.bot or not price_changes:
             return False
 
-        products_text = ""
-        for prod in price_changes[:20]:
-            title = prod['title'][:50]
-            url = prod.get('url', '')
-            new_price = prod['new_price']
-            old_price = prod['old_price']
-            price_old = prod.get('price_old', 0)
+        BATCH_SIZE = 15
+        batches = [
+            price_changes[i : i + BATCH_SIZE]
+            for i in range(0, len(price_changes), BATCH_SIZE)
+        ]
+        total_batches = len(batches)
 
-            arrow = "↓" if new_price < old_price else "↑"
-            price_str = f"{new_price} руб. {arrow} ({old_price} руб.)"
-            if price_old and price_old > new_price:
-                price_str += f" <s>{price_old}</s>"
+        for batch_idx, batch in enumerate(batches, 1):
+            products_text = ""
+            for prod in batch:
+                title = prod['title'][:50]
+                url = prod.get('url', '')
+                new_price = prod['new_price']
+                old_price = prod['old_price']
+                price_old = prod.get('price_old', 0)
 
-            if url:
-                products_text += f"• <a href=\"{url}\">{title}</a>\n"
-            else:
-                products_text += f"• {title}\n"
-            products_text += f"  💰 {price_str}\n\n"
+                arrow = "↓" if new_price < old_price else "↑"
+                price_str = f"{new_price} руб. {arrow} ({old_price} руб.)"
+                if price_old and price_old > new_price:
+                    price_str += f" <s>{price_old}</s>"
 
-        if len(price_changes) > 20:
-            products_text += f"<i>... и ещё {len(price_changes) - 20} товаров</i>"
+                if url:
+                    products_text += f"• <a href=\"{url}\">{title}</a>\n"
+                else:
+                    products_text += f"• {title}\n"
+                products_text += f"  💰 {price_str}\n\n"
 
-        message = (
-            f"📊 <b>Изменение цен</b>\n"
-            f"Товаров: {len(price_changes)} шт\n\n"
-            f"{products_text}"
+            # Формируем заголовок с номером батча
+            header = f"📊 <b>Изменение цен</b>"
+            if total_batches > 1:
+                header += f" ({batch_idx}/{total_batches})"
+            # Только в первом батче показываем общее количество товаров
+            if batch_idx == 1:
+                header += f"\nТоваров: {len(price_changes)} шт"
+
+            message = f"{header}\n\n{products_text}"
+
+            try:
+                await self.bot.broadcast_message(message)
+            except Exception as exc:
+                logger.error(
+                    "[TG NOTIF] Ошибка при отправке батча %d/%d: %s",
+                    batch_idx,
+                    total_batches,
+                    exc,
+                )
+                return False
+
+        logger.info(
+            "[TG NOTIF] Уведомления об изменении цен отправлены батчами (%d шт, %d батчей)",
+            len(price_changes),
+            total_batches,
         )
-
-        try:
-            sent_count = await self.bot.broadcast_message(message)
-            logger.info(
-                "[TG NOTIF] Уведомление об изменении цен отправлено %d подписчикам",
-                sent_count,
-            )
-            return sent_count > 0
-        except Exception as exc:
-            logger.error("[TG NOTIF] Ошибка при отправке уведомления о ценах: %s", exc)
-            return False
+        return True
 
     async def close(self) -> None:
         """Закрывает Telegram notifier."""
