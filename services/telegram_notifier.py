@@ -9,6 +9,50 @@ from typing import Optional
 from utils.logger import logger
 
 
+def wrap_text(text: str, width: int = 60) -> str:
+    """Разбивает текст на строки заданной ширины, сохраняя слова целыми."""
+    if len(text) <= width:
+        return text
+
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+
+    for word in words:
+        if current_length + len(word) + 1 > width:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+            current_length = len(word)
+        else:
+            current_line.append(word)
+            current_length += len(word) + 1
+
+    if current_line:
+        lines.append(" ".join(current_line))
+
+    return "\n".join(lines)
+
+
+def group_products(products: list[dict]) -> list[dict]:
+    """Группирует одинаковые товары по названию и цене, подсчитывая количество."""
+    from collections import defaultdict
+
+    groups = defaultdict(lambda: {"count": 0, "product": None})
+
+    for prod in products:
+        key = (prod["title"], prod.get("price", prod.get("new_price")))
+        if groups[key]["product"] is None:
+            groups[key]["product"] = prod.copy()
+        groups[key]["count"] += 1
+
+    return [
+        {**group["product"], "count": group["count"]}
+        for group in groups.values()
+    ]
+
+
 class TelegramNotifier:
     """Отправка уведомлений в Telegram о новых товарах всем подписчикам."""
 
@@ -29,18 +73,24 @@ class TelegramNotifier:
         if not new_products:
             return False
 
-        # Форматируем список новых товаров (максимум 10)
+        # Группируем одинаковые товары и форматируем (максимум 10 групп)
+        grouped_products = group_products(new_products)
         products_text = ""
-        for prod in new_products[:10]:
-            title = prod['title'][:50]
+        for prod in grouped_products[:10]:
+            title = wrap_text(prod['title'])
             price = prod['price']
             price_old = prod.get('price_old', 0)
             url = prod.get('url', '')
+            count = prod.get('count', 1)
+
+            # Добавляем количество в названии, если товар повторяется
+            if count > 1:
+                title = f"{title} (х{count})"
 
             # Формат: кликабельная ссылка - цена руб. (зачёркнутая старая цена)
             price_str = f"{price} руб."
             if price_old and price_old > price:
-                price_str += f" <s>{price_old}</s>"
+                price_str += f" <s>{price_old} руб.</s>"
 
             if url:
                 products_text += f"• <a href=\"{url}\">{title}</a>\n"
@@ -48,8 +98,8 @@ class TelegramNotifier:
                 products_text += f"• {title}\n"
             products_text += f"  💰 {price_str}\n\n"
 
-        if len(new_products) > 10:
-            products_text += f"<i>... и ещё {len(new_products) - 10} товаров</i>"
+        if len(grouped_products) > 10:
+            products_text += f"<i>... и ещё {len(grouped_products) - 10} товаров</i>"
 
         message = (
             f"🆕 <b>Новые товары в {category_name}!</b>\n"
@@ -82,18 +132,25 @@ class TelegramNotifier:
         total_batches = len(batches)
 
         for batch_idx, batch in enumerate(batches, 1):
+            # Группируем одинаковые товары в батче
+            grouped_batch = group_products(batch)
             products_text = ""
-            for prod in batch:
-                title = prod['title'][:50]
+            for prod in grouped_batch:
+                title = wrap_text(prod['title'])
                 url = prod.get('url', '')
                 new_price = prod['new_price']
                 old_price = prod['old_price']
                 price_old = prod.get('price_old', 0)
+                count = prod.get('count', 1)
+
+                # Добавляем количество в названии, если товар повторяется
+                if count > 1:
+                    title = f"{title} (х{count})"
 
                 arrow = "↓" if new_price < old_price else "↑"
                 price_str = f"{new_price} руб. {arrow} ({old_price} руб.)"
                 if price_old and price_old > new_price:
-                    price_str += f" <s>{price_old}</s>"
+                    price_str += f" <s>{price_old} руб.</s>"
 
                 if url:
                     products_text += f"• <a href=\"{url}\">{title}</a>\n"
