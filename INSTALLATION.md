@@ -247,8 +247,8 @@ docker run -v $(pwd):/app --env-file .env dns-parser
 
 ```env
 # Город
-CITY_ID=884019c7-cf52-11de-b72b-00151716f9f5  # Краснодар
-CITY_NAME=Краснодар
+CITY_ID=884019c7-cf52-11....
+CITY_NAME=Москва
 
 # Интервал парсинга (секунды)
 PARSE_INTERVAL=3600  # 1 час

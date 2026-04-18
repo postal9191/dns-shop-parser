@@ -65,6 +65,9 @@ async def main_cycle() -> None:
     logger.info("="*70)
 
     iteration = 0
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+
     while True:
         iteration += 1
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -72,18 +75,32 @@ async def main_cycle() -> None:
         logger.info("")
         logger.info("="*70)
         logger.info(f"[RUN] Итерация #{iteration} [{timestamp}]")
+        if consecutive_errors > 0:
+            logger.warning(f"[RUN] Подряд ошибок: {consecutive_errors}/{max_consecutive_errors}")
         logger.info("="*70)
 
         # Запускаем парсер (инициализация кук происходит внутри через SessionManager)
-        if not await run_parser():
-            logger.warning("[RUN] Парсер завершен с ошибкой, пропускаю итерацию")
-            await asyncio.sleep(config.parse_interval)
-            continue
+        if await run_parser():
+            consecutive_errors = 0
+            logger.info("[RUN] ✅ Парсер завершен успешно")
+        else:
+            consecutive_errors += 1
+            logger.error(f"[RUN] ❌ Парсер завершен с ошибкой ({consecutive_errors}/{max_consecutive_errors})")
+
+            if consecutive_errors >= max_consecutive_errors:
+                logger.critical("[RUN] 🔴 Достигнуто максимальное число подряд идущих ошибок. Требуется вмешательство!")
+                logger.info("[RUN] Рекомендации:")
+                logger.info("  1. Проверить логи в logs/app.log")
+                logger.info("  2. Проверить интернет соединение")
+                logger.info("  3. Проверить установку Node.js и Playwright")
+                logger.info("  4. Проверить не заблокирован ли IP на dns-shop.ru")
+                await asyncio.sleep(60)  # Не спешим, дождёмся вмешательства
 
         # Ждем перед следующей итерацией
-        logger.info(f"[RUN] Следующее обновление через {config.parse_interval} сек...")
+        wait_time = config.parse_interval
+        logger.info(f"[RUN] Следующее обновление через {wait_time} сек...")
         try:
-            await asyncio.sleep(config.parse_interval)
+            await asyncio.sleep(wait_time)
         except KeyboardInterrupt:
             logger.info("[RUN] Остановлено пользователем (Ctrl+C)")
             break

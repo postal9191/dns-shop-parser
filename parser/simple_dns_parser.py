@@ -58,7 +58,7 @@ class SimpleDNSParser:
         self._filters_url = config.api_base_url + config.filters_path
         self._catalog_url = config.api_base_url + "/catalog/markdown/"
         self._product_buy_url = config.api_base_url + "/ajax-state/product-buy/"
-        # ID магазина Краснодара (Уценка Индустр-льный) — фильтр товаров по городу
+        # ID магазина (Уценка Индустр-льный) — фильтр товаров по городу
         self._shop_id = "b6588e3c-c5b1-11ee-913e-00155d7dfe09"
 
     async def close(self) -> None:

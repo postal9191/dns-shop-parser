@@ -8,6 +8,7 @@
 4. При 401/403 → полный цикл заново + логин
 """
 
+import asyncio
 import hashlib
 import json
 import platform
@@ -312,17 +313,23 @@ class SessionManager:
         finally:
             await temp_session.close()
 
-    async def _resolve_qrator(self) -> bool:
-        """Решает Qrator challenge и добавляет qrator_jsid2."""
-        logger.debug("[SESSION] Решаю Qrator challenge...")
-        
+    async def _resolve_qrator(self, retry_count: int = 0, max_retries: int = 3) -> bool:
+        """Решает Qrator challenge и добавляет qrator_jsid2 с повторными попытками."""
+        logger.debug("[SESSION] Решаю Qrator challenge (попытка %d/%d)...", retry_count + 1, max_retries)
+
         qrator_cookies = await resolve_qrator_cookies()
         if qrator_cookies and 'qrator_jsid2' in qrator_cookies:
             self._cookies['qrator_jsid2'] = qrator_cookies['qrator_jsid2']
             logger.info("[SESSION] ✅ Qrator challenge решен, jsid2 добавлена")
             return True
-        
-        logger.error("[SESSION] ❌ Не удалось решить Qrator challenge")
+
+        # Если ошибка и есть повторные попытки - пробуем еще раз
+        if retry_count < max_retries - 1:
+            logger.warning("[SESSION] ⚠️ Не удалось решить Qrator, повторная попытка через 5 сек...")
+            await asyncio.sleep(5)
+            return await self._resolve_qrator(retry_count + 1, max_retries)
+
+        logger.error("[SESSION] ❌ Не удалось решить Qrator challenge после %d попыток", max_retries)
         return False
 
     async def _init_session(self) -> bool:
@@ -330,11 +337,14 @@ class SessionManager:
         logger.info("[SESSION] Инициализация сессии (без браузера)...")
 
         # 1. Сначала решаем Qrator challenge (иначе главная страница вернет 401)
-        await self._resolve_qrator()
+        qrator_success = await self._resolve_qrator()
+        if not qrator_success:
+            logger.error("[SESSION] ❌ Критическая ошибка: не удалось решить Qrator challenge после всех попыток")
+            return False
 
         # 2. Теперь с qrator_jsid2 получаем базовые куки (PHPSESSID, _csrf и т.д.)
         if not await self._fetch_base_cookies():
-            logger.warning("[SESSION] Не удалось получить базовые куки, продолжаем...")
+            logger.warning("[SESSION] ⚠️ Не удалось получить базовые куки через GET, продолжаем...")
 
         # 3. ГЛАВНОЕ: строим куки города программно (не доверяем REST API - может вернуть Москву)
         logger.info("[SESSION] Строю куки города программно для: %s", config.city_name)
@@ -343,7 +353,7 @@ class SessionManager:
         logger.info("[SESSION] Куки города построены: %s", list(city_cookies.keys()))
 
         logger.info(
-            "[SESSION] Сессия инициализирована, всего кук: %d (%s)",
+            "[SESSION] ✅ Сессия инициализирована, всего кук: %d (%s)",
             len(self._cookies),
             ", ".join(list(self._cookies.keys())[:10]),
         )
