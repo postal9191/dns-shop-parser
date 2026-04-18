@@ -22,6 +22,8 @@ PYTHON_CMD="python3"
 LOG_FILE="$PROJECT_DIR/logs/app.log"
 PID_FILE="/tmp/${SERVICE_NAME}.pid"
 VENV_DIR="$PROJECT_DIR/venv"
+DEPS_CHECK_FILE="$PROJECT_DIR/.deps-checked"
+DEPS_CHECK_INTERVAL=86400  # 24 часа в секундах
 
 ################################################################################
 # Функции вывода
@@ -96,15 +98,19 @@ check_nodejs() {
 check_playwright() {
     print_info "Проверка Playwright браузера..."
 
+    cd "$PROJECT_DIR"
+
     # Проверяем что npm зависимости установлены
     if [ ! -d "$PROJECT_DIR/node_modules" ]; then
         print_warning "Node.js модули не установлены, установка..."
-        cd "$PROJECT_DIR"
         npm install --quiet 2>&1 | grep -v "npm warn\|npm notice" || true
     fi
 
+    # Пересобираем native модули (лучше native binding)
+    print_info "Пересборка native модулей..."
+    npm rebuild 2>&1 | grep -v "npm warn\|npm notice\|gyp info" || true
+
     # Устанавливаем Playwright браузер
-    cd "$PROJECT_DIR"
     npx playwright install chromium --with-deps 2>&1 | tail -5
 
     if [ $? -eq 0 ]; then
@@ -199,14 +205,14 @@ check_pip_dependencies() {
         "$VENV_PYTHON" -m ensurepip --upgrade 2>&1 | grep -v "WARNING" || true
     fi
 
-    # Обновляем pip используя venv python напрямую
+    # Обновляем pip используя venv python напрямую (скрываем verbose вывод)
     print_info "Обновление pip..."
-    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel --quiet 2>&1 | grep -v "WARNING" || true
+    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel --quiet 2>&1 | grep -v "WARNING\|Collecting\|Downloading\|Installing\|Preparing" || true
 
     # Устанавливаем зависимости
     if [ -f "$PROJECT_DIR/requirements.txt" ]; then
         print_info "Установка зависимостей из requirements.txt..."
-        "$VENV_PYTHON" -m pip install -r "$PROJECT_DIR/requirements.txt" --quiet 2>&1 | grep -v "WARNING" || true
+        "$VENV_PYTHON" -m pip install -r "$PROJECT_DIR/requirements.txt" --quiet 2>&1 | grep -v "WARNING\|Collecting\|Downloading\|Installing\|Preparing" || true
         print_success "Зависимости установлены"
     else
         print_warning "requirements.txt не найден"
@@ -214,12 +220,28 @@ check_pip_dependencies() {
 }
 
 check_all_dependencies() {
+    # Проверяем нужна ли перепроверка зависимостей
+    local need_check=1
+    if [ -f "$DEPS_CHECK_FILE" ]; then
+        local last_check=$(stat -c %Y "$DEPS_CHECK_FILE" 2>/dev/null || echo 0)
+        local current_time=$(date +%s)
+        local time_diff=$((current_time - last_check))
+
+        if [ $time_diff -lt $DEPS_CHECK_INTERVAL ]; then
+            print_info "Зависимости проверены недавно, пропускаю полную проверку"
+            return 0
+        fi
+    fi
+
     print_header "Проверка всех зависимостей"
 
     check_nodejs || return 1
     check_python || return 1
     check_playwright || return 1
     check_pip_dependencies || return 1
+
+    # Сохраняем время последней проверки
+    touch "$DEPS_CHECK_FILE"
 
     print_success "Все зависимости проверены и установлены!"
 }
@@ -230,6 +252,24 @@ check_all_dependencies() {
 
 start_service() {
     print_header "Запуск DNS Parser"
+
+    # Проверка: не запущено ли уже через systemctl
+    if [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        print_warning "Сервис уже запущен через systemctl!"
+        print_info "Используй: sudo systemctl restart $SERVICE_NAME"
+        return 1
+    fi
+
+    # Проверка: не запущено ли уже через PID-файл
+    if [ -f "$PID_FILE" ]; then
+        if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+            PID=$(cat "$PID_FILE")
+            print_warning "Приложение уже запущено (PID: $PID)"
+            return 1
+        else
+            rm -f "$PID_FILE"
+        fi
+    fi
 
     check_all_dependencies || return 1
 
@@ -277,36 +317,66 @@ start_service() {
 stop_service() {
     print_header "Остановка DNS Parser"
 
+    local stopped=0
+
+    # Останавливаем через systemctl если запущено там
+    if [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        print_info "Остановка сервиса через systemctl..."
+        sudo systemctl stop "$SERVICE_NAME"
+        sleep 1
+        if ! sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            print_success "Сервис остановлен (systemctl)"
+            stopped=1
+        fi
+    fi
+
+    # Останавливаем локальный процесс если запущен
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 $PID 2>/dev/null; then
-            print_info "Остановка процесса (PID: $PID)..."
+            print_info "Остановка локального процесса (PID: $PID)..."
             kill $PID
             sleep 2
 
             if ! kill -0 $PID 2>/dev/null; then
                 print_success "Приложение остановлено"
                 rm -f "$PID_FILE"
+                stopped=1
             else
                 print_warning "Принудительная остановка..."
                 kill -9 $PID
                 rm -f "$PID_FILE"
                 print_success "Приложение остановлено (kill -9)"
+                stopped=1
             fi
         else
-            print_warning "Процесс не найден"
             rm -f "$PID_FILE"
         fi
-    else
-        print_warning "PID файл не найден, процесс может быть остановлен"
+    fi
+
+    if [ $stopped -eq 0 ]; then
+        print_warning "Нет активных процессов"
     fi
 }
 
 restart_service() {
     print_header "Перезапуск DNS Parser"
-    stop_service
-    sleep 1
-    start_service
+
+    if [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        print_info "Перезапуск через systemctl..."
+        sudo systemctl restart "$SERVICE_NAME"
+        sleep 2
+        if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+            print_success "Сервис перезапущен"
+        else
+            print_error "Не удалось перезапустить сервис"
+            return 1
+        fi
+    else
+        stop_service
+        sleep 1
+        start_service
+    fi
 }
 
 show_logs() {
@@ -324,15 +394,31 @@ show_logs() {
 show_status() {
     print_header "Статус DNS Parser"
 
+    local status_found=0
+
+    # Проверяем PID-файл (локальный запуск через пункт 1)
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 $PID 2>/dev/null; then
-            print_success "Статус: ЗАПУЩЕНО (PID: $PID)"
+            print_success "Статус: ЗАПУЩЕНО (локально, PID: $PID)"
             echo -e "  $(ps aux | grep $PID | grep -v grep)"
+            status_found=1
         else
-            print_error "Статус: ОСТАНОВЛЕНО (PID файл устарел)"
+            rm -f "$PID_FILE"
         fi
-    else
+    fi
+
+    # Проверяем systemctl (если установлен)
+    if [ -f "$SERVICE_FILE" ]; then
+        if sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            print_success "Статус: ЗАПУЩЕНО (systemctl)"
+            sudo systemctl status "$SERVICE_NAME" --no-pager 2>/dev/null | grep -E "Active|Main PID"
+            status_found=1
+        fi
+    fi
+
+    # Если ничего не найдено
+    if [ $status_found -eq 0 ]; then
         print_error "Статус: ОСТАНОВЛЕНО"
     fi
 
