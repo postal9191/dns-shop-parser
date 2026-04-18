@@ -79,6 +79,9 @@ class DBManager:
                     subscribed_at TEXT
                 )
             """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_products_uuid ON products(uuid)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id)")
             conn.commit()
         logger.debug("БД инициализирована: %s", self.db_path)
 
@@ -91,20 +94,20 @@ class DBManager:
             return 0, []
 
         now = datetime.utcnow().isoformat()
-        count = 0
         price_changes = []
 
         with sqlite3.connect(self.db_path) as conn:
-            for prod in products:
-                # Ищем по uuid (основной ID товара)
-                cursor = conn.execute(
-                    "SELECT current_price FROM products WHERE uuid = ?",
-                    (prod.uuid,)
-                )
-                existing = cursor.fetchone()
+            # Один batch-SELECT вместо N+1 запросов
+            uuids = [p.uuid for p in products]
+            placeholders = ",".join("?" * len(uuids))
+            cursor = conn.execute(
+                f"SELECT uuid, current_price FROM products WHERE uuid IN ({placeholders})",
+                uuids,
+            )
+            existing = {row[0]: row[1] for row in cursor.fetchall()}
 
-                if existing:
-                    # Обновляем товар
+            for prod in products:
+                if prod.uuid in existing:
                     conn.execute("""
                         UPDATE products
                         SET id = ?, title = ?, current_price = ?, previous_price = ?,
@@ -114,9 +117,7 @@ class DBManager:
                         prod.id, prod.title, prod.price, prod.price_old,
                         prod.category_id, prod.category_name, now, prod.uuid
                     ))
-
-                    # Сохраняем историю цен если изменилась
-                    if existing[0] != prod.price:
+                    if existing[prod.uuid] != prod.price:
                         conn.execute("""
                             INSERT INTO price_history (product_id, price, timestamp)
                             VALUES (?, ?, ?)
@@ -125,11 +126,10 @@ class DBManager:
                             "title": prod.title,
                             "url": prod.url,
                             "new_price": prod.price,
-                            "old_price": existing[0],
+                            "old_price": existing[prod.uuid],
                             "price_old": prod.price_old,
                         })
                 else:
-                    # Новый товар
                     conn.execute("""
                         INSERT INTO products
                         (id, uuid, title, url, category_id, category_name,
@@ -140,11 +140,9 @@ class DBManager:
                         prod.category_name, prod.price, prod.price_old, now, now
                     ))
 
-                count += 1
-
             conn.commit()
 
-        return count, price_changes
+        return len(products), price_changes
 
     def get_product_count(self) -> int:
         """Возвращает количество товаров в БД."""
@@ -183,9 +181,10 @@ class DBManager:
                        ROUND(100.0 * (previous_price - current_price) / previous_price, 1) as drop_percent
                 FROM products
                 WHERE previous_price > 0 AND current_price < previous_price
+                      AND ROUND(100.0 * (previous_price - current_price) / previous_price, 1) >= ?
                 ORDER BY drop_percent DESC
                 LIMIT 50
-            """)
+            """, (min_drop_percent,))
             rows = cursor.fetchall()
 
         return [
@@ -197,7 +196,6 @@ class DBManager:
                 "drop_percent": row[4],
             }
             for row in rows
-            if row[4] >= min_drop_percent
         ]
 
     def get_category_state(self, category_id: str) -> dict | None:

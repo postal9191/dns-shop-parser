@@ -104,7 +104,6 @@ class DNSMonitorBrowserless:
                     # Вычисляем хэш текущего состава товаров
                     current_hash = hashlib.md5(','.join(sorted(uuids)).encode()).hexdigest()
 
-                    # Если состав UUID не изменился — новых товаров нет, но цены могут измениться
                     uuids_unchanged = (current_hash == last_hash)
                     if uuids_unchanged:
                         logger.debug(
@@ -114,16 +113,15 @@ class DNSMonitorBrowserless:
                             cat.label,
                             cat.count,
                         )
-
-                    # Состав изменился - загружаем товары
-                    logger.info(
-                        "[PARSE] Категория %d/%d: %s (было: %d, сейчас: %d, состав изменился)",
-                        i,
-                        len(categories),
-                        cat.label,
-                        last_count,
-                        len(uuids),  # используем реальное количество UUID вместо API count
-                    )
+                    else:
+                        logger.info(
+                            "[PARSE] Категория %d/%d: %s (было: %d, сейчас: %d, состав изменился)",
+                            i,
+                            len(categories),
+                            cat.label,
+                            last_count,
+                            len(uuids),
+                        )
 
                     # Проверяем какие товары новые (если UUID состав не изменился — новых нет)
                     new_uuids = (

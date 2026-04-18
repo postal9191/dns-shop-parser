@@ -5,7 +5,6 @@ Telegram бот для управления подписками на уведо
 import asyncio
 import aiohttp
 from typing import Optional, Set
-from datetime import datetime
 
 from config import config
 from utils.logger import logger
@@ -20,10 +19,15 @@ class TelegramBot:
         self.db = db_manager
         self.enabled = bool(self.token)
         self.subscribed_users: Set[str] = set()
+        self._session: Optional[aiohttp.ClientSession] = None
 
-        # Загружаем подписчиков из БД при инициализации
         if self.db and self.enabled:
             self.subscribed_users = self._load_subscribers()
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
 
     def _load_subscribers(self) -> Set[str]:
         """Загружает список подписчиков из БД."""
@@ -69,13 +73,12 @@ class TelegramBot:
             return False
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.api_url}/sendMessage",
-                    json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    return resp.status == 200
+            async with self._get_session().post(
+                f"{self.api_url}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
         except Exception as exc:
             logger.error("[TG BOT] Ошибка при отправке сообщения: %s", exc)
             return False
@@ -165,41 +168,39 @@ class TelegramBot:
         try:
             while True:
                 try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
-                            f"{self.api_url}/getUpdates",
-                            params={"offset": offset, "timeout": 30, "allowed_updates": ["message"]},
-                            timeout=aiohttp.ClientTimeout(total=35),
-                        ) as resp:
-                            if resp.status == 409:
-                                # 409 Conflict - offset устарел или есть конфликт
-                                logger.warning("[TG BOT] 409 Conflict - сбрасываем offset и получаем свежие обновления")
-                                offset = 0
-                                await asyncio.sleep(1)
-                                continue
+                    async with self._get_session().get(
+                        f"{self.api_url}/getUpdates",
+                        params={"offset": offset, "timeout": 30, "allowed_updates": ["message"]},
+                        timeout=aiohttp.ClientTimeout(total=35),
+                    ) as resp:
+                        if resp.status == 409:
+                            logger.warning("[TG BOT] 409 Conflict - сбрасываем offset и получаем свежие обновления")
+                            offset = 0
+                            await asyncio.sleep(1)
+                            continue
 
-                            if resp.status != 200:
-                                logger.error("[TG BOT] Ошибка API: статус %d", resp.status)
-                                await asyncio.sleep(5)
-                                continue
+                        if resp.status != 200:
+                            logger.error("[TG BOT] Ошибка API: статус %d", resp.status)
+                            await asyncio.sleep(5)
+                            continue
 
-                            data = await resp.json()
-                            if not data.get("ok"):
-                                logger.error("[TG BOT] API вернул ошибку: %s", data.get("description"))
-                                await asyncio.sleep(5)
-                                continue
+                        data = await resp.json()
+                        if not data.get("ok"):
+                            logger.error("[TG BOT] API вернул ошибку: %s", data.get("description"))
+                            await asyncio.sleep(5)
+                            continue
 
-                            updates = data.get("result", [])
-                            if updates:
-                                logger.debug("[TG BOT] Получено %d обновлений", len(updates))
+                        updates = data.get("result", [])
+                        if updates:
+                            logger.debug("[TG BOT] Получено %d обновлений", len(updates))
 
-                                for update in updates:
-                                    try:
-                                        await self.handle_update(update)
-                                    except Exception as exc:
-                                        logger.error("[TG BOT] Ошибка при обработке обновления: %s", exc)
+                            for update in updates:
+                                try:
+                                    await self.handle_update(update)
+                                except Exception as exc:
+                                    logger.error("[TG BOT] Ошибка при обработке обновления: %s", exc)
 
-                                    offset = update.get("update_id", offset) + 1
+                                offset = update.get("update_id", offset) + 1
 
                 except asyncio.TimeoutError:
                     logger.debug("[TG BOT] Timeout при получении обновлений")
@@ -213,7 +214,8 @@ class TelegramBot:
             logger.error("[TG BOT] Критическая ошибка в polling: %s", exc)
 
     async def close(self) -> None:
-        """Закрывает бот."""
+        if self._session and not self._session.closed:
+            await self._session.close()
         logger.debug("[TG BOT] Бот закрыт")
 
 

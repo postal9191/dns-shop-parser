@@ -5,8 +5,8 @@
 """
 
 import asyncio
+import subprocess
 import sys
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -18,66 +18,37 @@ from utils.logger import logger
 # Определяем директорию проекта
 PROJECT_DIR = Path(__file__).parent.absolute()
 
-async def run_get_cookies() -> bool:
-    """Запускает get_cookies в отдельном процессе асинхронно."""
-    logger.info("[RUN] Запускаю: Обновление кук")
-
-    loop = asyncio.get_event_loop()
-
+async def _run_subprocess(script: str, log_name: str) -> bool:
+    """Запускает Python-скрипт в отдельном процессе асинхронно."""
+    logger.info("[RUN] Запускаю: %s", log_name)
+    loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(
             None,
-            lambda: __import__('subprocess').run(
-                [sys.executable, str(PROJECT_DIR / 'get_cookies.py')],
+            lambda: subprocess.run(
+                [sys.executable, str(PROJECT_DIR / script)],
                 cwd=str(PROJECT_DIR),
                 check=False,
-                timeout=600
-            )
+                timeout=600,
+            ),
         )
-
         if result.returncode == 0:
-            logger.info("[RUN] ✓ Обновление кук завершено успешно")
+            logger.info("[RUN] ✓ %s завершено успешно", log_name)
             return True
         else:
-            logger.error(f"[RUN] ✗ get_cookies завершен с кодом {result.returncode}")
+            logger.error("[RUN] ✗ %s завершен с кодом %d", script, result.returncode)
             return False
     except asyncio.TimeoutError:
-        logger.error("[RUN] ✗ get_cookies превышен timeout (10 минут)")
+        logger.error("[RUN] ✗ %s превышен timeout (10 минут)", script)
         return False
     except Exception as e:
-        logger.error(f"[RUN] ✗ Ошибка при выполнении get_cookies: {e}")
+        logger.error("[RUN] ✗ Ошибка при выполнении %s: %s", script, e)
         return False
 
 
 async def run_parser() -> bool:
     """Запускает parser в отдельном процессе асинхронно."""
-    logger.info("[RUN] Запускаю: Парсинг товаров")
-
-    loop = asyncio.get_event_loop()
-
-    try:
-        result = await loop.run_in_executor(
-            None,
-            lambda: __import__('subprocess').run(
-                [sys.executable, str(PROJECT_DIR / 'parser.py')],
-                cwd=str(PROJECT_DIR),
-                check=False,
-                timeout=600
-            )
-        )
-
-        if result.returncode == 0:
-            logger.info("[RUN] ✓ Парсинг товаров завершен успешно")
-            return True
-        else:
-            logger.error(f"[RUN] ✗ parser завершен с кодом {result.returncode}")
-            return False
-    except asyncio.TimeoutError:
-        logger.error("[RUN] ✗ parser превышен timeout (10 минут)")
-        return False
-    except Exception as e:
-        logger.error(f"[RUN] ✗ Ошибка при выполнении parser: {e}")
-        return False
+    return await _run_subprocess("parser.py", "Парсинг товаров")
 
 
 async def telegram_bot_polling(telegram_bot) -> None:

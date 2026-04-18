@@ -3,7 +3,6 @@
 Использует Telegram бот для broadcast уведомлений всем подписчикам.
 """
 
-import asyncio
 from typing import Optional
 
 from utils.logger import logger
@@ -53,6 +52,11 @@ def group_products(products: list[dict]) -> list[dict]:
     ]
 
 
+def _format_product_line(title: str, url: str, price_str: str) -> str:
+    line = f"• <a href=\"{url}\">{title}</a>\n" if url else f"• {title}\n"
+    return line + f"  💰 {price_str}\n\n"
+
+
 class TelegramNotifier:
     """Отправка уведомлений в Telegram о новых товарах всем подписчикам."""
 
@@ -66,40 +70,32 @@ class TelegramNotifier:
         new_products: list[dict],
     ) -> bool:
         """Отправляет уведомление о новых товарах всем подписчикам."""
-        if not self.enabled or not self.bot:
+        if not self.bot:
             logger.debug("[TG NOTIF] Telegram отключен")
             return False
 
         if not new_products:
             return False
 
-        # Группируем одинаковые товары и форматируем (максимум 10 групп)
         grouped_products = group_products(new_products)
+        n = len(grouped_products)
         products_text = ""
         for prod in grouped_products[:10]:
             title = wrap_text(prod['title'])
-            price = prod['price']
-            price_old = prod.get('price_old', 0)
-            url = prod.get('url', '')
             count = prod.get('count', 1)
-
-            # Добавляем количество в названии, если товар повторяется
             if count > 1:
                 title = f"{title} (х{count})"
 
-            # Формат: кликабельная ссылка - цена руб. (зачёркнутая старая цена)
+            price = prod['price']
+            price_old = prod.get('price_old', 0)
             price_str = f"{price} руб."
             if price_old and price_old > price:
                 price_str += f" <s>{price_old} руб.</s>"
 
-            if url:
-                products_text += f"• <a href=\"{url}\">{title}</a>\n"
-            else:
-                products_text += f"• {title}\n"
-            products_text += f"  💰 {price_str}\n\n"
+            products_text += _format_product_line(title, prod.get('url', ''), price_str)
 
-        if len(grouped_products) > 10:
-            products_text += f"<i>... и ещё {len(grouped_products) - 10} товаров</i>"
+        if n > 10:
+            products_text += f"<i>... и ещё {n - 10} товаров</i>"
 
         message = (
             f"🆕 <b>Новые товары в {category_name}!</b>\n"
@@ -121,7 +117,7 @@ class TelegramNotifier:
 
     async def send_price_changes_notification(self, price_changes: list[dict]) -> bool:
         """Отправляет уведомления об изменениях цен батчами по 15 товаров."""
-        if not self.enabled or not self.bot or not price_changes:
+        if not self.bot or not price_changes:
             return False
 
         BATCH_SIZE = 15
@@ -132,31 +128,23 @@ class TelegramNotifier:
         total_batches = len(batches)
 
         for batch_idx, batch in enumerate(batches, 1):
-            # Группируем одинаковые товары в батче
             grouped_batch = group_products(batch)
             products_text = ""
             for prod in grouped_batch:
                 title = wrap_text(prod['title'])
-                url = prod.get('url', '')
-                new_price = prod['new_price']
-                old_price = prod['old_price']
-                price_old = prod.get('price_old', 0)
                 count = prod.get('count', 1)
-
-                # Добавляем количество в названии, если товар повторяется
                 if count > 1:
                     title = f"{title} (х{count})"
 
+                new_price = prod['new_price']
+                old_price = prod['old_price']
+                price_old = prod.get('price_old', 0)
                 arrow = "↓" if new_price < old_price else "↑"
                 price_str = f"{new_price} руб. {arrow} ({old_price} руб.)"
                 if price_old and price_old > new_price:
                     price_str += f" <s>{price_old} руб.</s>"
 
-                if url:
-                    products_text += f"• <a href=\"{url}\">{title}</a>\n"
-                else:
-                    products_text += f"• {title}\n"
-                products_text += f"  💰 {price_str}\n\n"
+                products_text += _format_product_line(title, prod.get('url', ''), price_str)
 
             # Формируем заголовок с номером батча
             header = f"📊 <b>Изменение цен</b>"
