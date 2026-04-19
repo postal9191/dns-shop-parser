@@ -65,23 +65,43 @@ async function resolveQrator() {
 
     try {
       await page.goto(TARGET_URL, {
-        waitUntil: 'networkidle',
+        waitUntil: 'domcontentloaded',
         timeout: TIMEOUT,
       });
     } catch (err) {
       console.error(`[solve_qrator] Timeout или ошибка при переходе: ${err.message}`);
-      // Продолжаем - браузер мог получить куку даже если страница не полностью загрузилась
     }
 
-    // Даём браузеру время на решение Qrator challenge
+    // Ждём появления qrator_jsid2 — polling вместо фиксированного wait
     console.error('[solve_qrator] Ждём решения Qrator challenge...');
-    await page.waitForTimeout(2000);
 
-    // Получаем все куки
+    const MAX_ATTEMPTS = 3;
+    let qratorCookie = null;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const deadline = Date.now() + 30000; // 30 сек на попытку
+      while (Date.now() < deadline) {
+        const cookies = await context.cookies();
+        qratorCookie = cookies.find((c) => c.name === 'qrator_jsid2');
+        if (qratorCookie) break;
+        await page.waitForTimeout(500);
+      }
+
+      if (qratorCookie) break;
+
+      if (attempt < MAX_ATTEMPTS - 1) {
+        console.error(`[solve_qrator] Попытка ${attempt + 1}: qrator_jsid2 не получена, перезагружаем...`);
+        try {
+          await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+        } catch (err) {
+          console.error(`[solve_qrator] Ошибка при перезагрузке: ${err.message}`);
+        }
+      }
+    }
+
+    // Финальная проверка кук для лога
     const cookies = await context.cookies();
     console.error(`[solve_qrator] Всего кук: ${cookies.length}`);
-
-    const qratorCookie = cookies.find((c) => c.name === 'qrator_jsid2');
 
     if (!qratorCookie) {
       console.error('[solve_qrator] ❌ qrator_jsid2 не найдена в куках');

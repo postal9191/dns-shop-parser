@@ -339,8 +339,7 @@ class SessionManager:
         # 1. Сначала решаем Qrator challenge (иначе главная страница вернет 401)
         qrator_success = await self._resolve_qrator()
         if not qrator_success:
-            logger.error("[SESSION] ❌ Критическая ошибка: не удалось решить Qrator challenge после всех попыток")
-            return False
+            logger.warning("[SESSION] ⚠️ Qrator challenge не решён — продолжаем без qrator_jsid2")
 
         # 2. Теперь с qrator_jsid2 получаем базовые куки (PHPSESSID, _csrf и т.д.)
         if not await self._fetch_base_cookies():
