@@ -18,7 +18,7 @@ from urllib.parse import quote
 import aiohttp
 
 from config import config
-from parser.qrator_resolver import resolve_qrator_cookies, _CACHE_FILE
+from parser.qrator_resolver import resolve_qrator_cookies
 from utils.logger import logger
 
 
@@ -313,27 +313,55 @@ class SessionManager:
         finally:
             await temp_session.close()
 
-    async def _resolve_qrator(self, force: bool = False) -> bool:
-        """Решает Qrator challenge и добавляет qrator_jsid2."""
-        logger.debug("[SESSION] Решаю Qrator challenge...")
-        qrator_cookies = await resolve_qrator_cookies(force=force)
-        if qrator_cookies and 'qrator_jsid2' in qrator_cookies:
-            self._cookies['qrator_jsid2'] = qrator_cookies['qrator_jsid2']
-            logger.info("[SESSION] ✅ Qrator challenge решен, jsid2 добавлена")
-            return True
-        logger.error("[SESSION] ❌ Не удалось решить Qrator challenge")
-        return False
+    async def _resolve_qrator(self) -> bool:
+        """Решает Qrator challenge и импортирует ВСЕ куки dns-shop.ru из браузера.
+
+        UA синхронизируется с Python-сессией — Qrator инвалидирует jsid2,
+        если UA в браузере не совпадает с UA последующих HTTP-запросов.
+        """
+        logger.debug("[SESSION] Решаю Qrator challenge (UA синхронизирован с HTTP)...")
+        ua = _BASE_HEADERS["user-agent"]
+        qrator_cookies = await resolve_qrator_cookies(user_agent=ua)
+
+        if not qrator_cookies or 'qrator_jsid2' not in qrator_cookies:
+            logger.error("[SESSION] ❌ Не удалось решить Qrator challenge")
+            return False
+
+        # Защищённые куки строим программно для нужного города —
+        # не позволяем браузеру их перезаписать (он может выбрать Москву).
+        protected = {'city_path', 'current_path'}
+        imported = 0
+        for key, value in qrator_cookies.items():
+            if key not in protected:
+                self._cookies[key] = value
+                imported += 1
+
+        logger.info(
+            "[SESSION] ✅ Qrator решён, импортировано кук: %d (%s)",
+            imported,
+            ", ".join(list(qrator_cookies.keys())[:10]),
+        )
+        return True
 
     async def _init_session(self, force_qrator: bool = False) -> bool:
-        """Полная инициализация: Qrator → базовые куки → город программно."""
+        """Полная инициализация: чистим состояние → Qrator → база → город.
+
+        Параметр force_qrator оставлен для обратной совместимости, но теперь
+        Qrator всегда решается заново (кеш удалён полностью).
+        """
         logger.info("[SESSION] Инициализация сессии (без браузера)...")
 
-        # 1. Сначала решаем Qrator challenge (иначе главная страница вернет 401)
-        qrator_success = await self._resolve_qrator(force=force_qrator)
+        # Всегда стартуем с пустыми куками — исключает «протухшие» jsid2
+        # от прошлой итерации, из-за которых Qrator мог ругаться.
+        self._cookies.clear()
+
+        # 1. Решаем Qrator challenge (иначе главная страница вернет 401)
+        qrator_success = await self._resolve_qrator()
         if not qrator_success:
             logger.warning("[SESSION] ⚠️ Qrator challenge не решён — продолжаем без qrator_jsid2")
 
-        # 2. Теперь с qrator_jsid2 получаем базовые куки (PHPSESSID, _csrf и т.д.)
+        # 2. Догружаем базовые куки обычным HTTP-запросом (контрольная проверка).
+        #    Если браузер уже отдал PHPSESSID/_csrf — они уже в self._cookies.
         if not await self._fetch_base_cookies():
             logger.warning("[SESSION] ⚠️ Не удалось получить базовые куки через GET, продолжаем...")
 

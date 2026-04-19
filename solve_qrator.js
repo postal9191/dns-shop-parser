@@ -3,6 +3,9 @@
 /**
  * Решение Qrator challenge через headless Playwright браузер.
  * Выводит qrator_jsid2 куку в формате, ожидаемом qrator_resolver.py
+ *
+ * UA можно переопределить через env var QRATOR_UA — нужно для синхронизации
+ * с Python-сессией (иначе Qrator инвалидирует jsid2 при смене UA в HTTP).
  */
 
 const { chromium } = require('playwright');
@@ -25,18 +28,16 @@ async function resolveQrator() {
       ],
     });
 
-    // Определяем UserAgent в зависимости от ОС
+    // UA строго по реальной ОС — иначе Qrator палит рассинхрон
+    // (Chromium всё равно шлёт свои client hints для текущей платформы).
     let userAgent;
     const platform = require('os').platform();
 
     if (platform === 'darwin') {
-      // macOS
       userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
     } else if (platform === 'linux') {
-      // Linux
       userAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
     } else {
-      // Windows (по умолчанию)
       userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
     }
 
@@ -118,10 +119,15 @@ async function resolveQrator() {
 
     console.error(`[solve_qrator] ✓ qrator_jsid2 получена: ${qratorCookie.value.substring(0, 20)}...`);
 
-    // Выводим в формате, ожидаемом Python (qrator_resolver.py)
-    const cookiesDict = {
-      qrator_jsid2: qratorCookie.value,
-    };
+    // Собираем все куки dns-shop.ru (jsid2 + PHPSESSID + _csrf) — пригодятся в Python
+    const cookiesDict = {};
+    for (const c of cookies) {
+      if (c.domain && c.domain.toLowerCase().includes('dns-shop.ru')) {
+        cookiesDict[c.name] = c.value;
+      }
+    }
+    // Гарантируем, что jsid2 точно там (даже если domain у неё иной)
+    cookiesDict.qrator_jsid2 = qratorCookie.value;
 
     console.log('__QRATOR_COOKIES__');
     console.log(JSON.stringify(cookiesDict));
