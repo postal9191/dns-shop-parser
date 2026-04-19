@@ -18,7 +18,7 @@ from urllib.parse import quote
 import aiohttp
 
 from config import config
-from parser.qrator_resolver import resolve_qrator_cookies
+from parser.qrator_resolver import resolve_qrator_cookies, _CACHE_FILE
 from utils.logger import logger
 
 
@@ -317,13 +317,14 @@ class SessionManager:
         """Решает Qrator challenge и добавляет qrator_jsid2 с повторными попытками."""
         logger.debug("[SESSION] Решаю Qrator challenge (попытка %d/%d)...", retry_count + 1, max_retries)
 
-        qrator_cookies = await resolve_qrator_cookies()
+        # При повторной попытке кеш может содержать устаревшую куку — принудительно решаем заново
+        force = retry_count > 0
+        qrator_cookies = await resolve_qrator_cookies(force=force)
         if qrator_cookies and 'qrator_jsid2' in qrator_cookies:
             self._cookies['qrator_jsid2'] = qrator_cookies['qrator_jsid2']
             logger.info("[SESSION] ✅ Qrator challenge решен, jsid2 добавлена")
             return True
 
-        # Если ошибка и есть повторные попытки - пробуем еще раз
         if retry_count < max_retries - 1:
             logger.warning("[SESSION] ⚠️ Не удалось решить Qrator, повторная попытка через 5 сек...")
             await asyncio.sleep(5)
