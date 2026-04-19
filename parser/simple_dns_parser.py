@@ -36,9 +36,15 @@ _UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
 )
+# Только UUID товаров (type:4 = product-buy), без рекомендаций (type:3).
+# В сыром JSON кавычки внутри inlineJs экранированы: \"id\":\"<UUID>\",\"type\":4
+_PRODUCT_UUID_RE = re.compile(
+    r'\\"id\\":\\"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\",\\"type\\":4',
+    re.IGNORECASE,
+)
 
 _QRATOR_MARKER = "qauth_handle_validate_success"
-_PRODUCT_BUY_BATCH = 20
+_PRODUCT_BUY_BATCH = 18
 
 
 def _random_container_id() -> str:
@@ -291,10 +297,10 @@ class SimpleDNSParser:
                 html = await self._get_html(self._catalog_url, params=params)
 
                 page_uuids = list(dict.fromkeys(
-                    m.group(0).lower() for m in _UUID_RE.finditer(html)
+                    m.group(1).lower() for m in _PRODUCT_UUID_RE.finditer(html)
                 ))
 
-                # Только UUID, которых ещё не видели (фильтрует nav/рекомендации)
+                # Только UUID, которых ещё не видели
                 new_uuids = [u for u in page_uuids if u not in seen]
 
                 if not new_uuids:
@@ -305,6 +311,10 @@ class SimpleDNSParser:
                 all_uuids.extend(new_uuids)
 
                 logger.debug("[PARSER] Страница %d: +%d UUID (итого %d)", page, len(new_uuids), len(all_uuids))
+
+                if len(new_uuids) < 18:
+                    logger.debug("[PARSER] Страница %d: получено %d UUID < 18 — последняя страница", page, len(new_uuids))
+                    break
 
                 if expected_count is not None and len(all_uuids) >= expected_count:
                     break

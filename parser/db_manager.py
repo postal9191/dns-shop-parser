@@ -157,6 +157,19 @@ class DBManager:
 
         return len(products), price_changes
 
+    def delete_products_not_in_uuids(self, category_id: str, current_uuids: list[str]) -> int:
+        """Удаляет из БД товары категории, которых нет в current_uuids (проданы)."""
+        if not current_uuids:
+            return 0
+        placeholders = ",".join("?" * len(current_uuids))
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"DELETE FROM products WHERE category_id = ? AND uuid NOT IN ({placeholders})",
+                [category_id] + list(current_uuids),
+            )
+            conn.commit()
+            return cursor.rowcount
+
     def get_product_count(self) -> int:
         """Возвращает количество товаров в БД."""
         with sqlite3.connect(self.db_path) as conn:

@@ -176,6 +176,11 @@ class DNSMonitorBrowserless:
                             saved,
                         )
 
+                        if not uuids_unchanged:
+                            deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
+                            if deleted:
+                                logger.info("[PARSE]   DEL Удалено %d проданных товаров", deleted)
+
                         # Собираем изменения цен (кроме первого запуска)
                         if price_changes and not is_first_run:
                             logger.info("[PARSE]   PRICE Изменились цены: %d товаров", len(price_changes))
