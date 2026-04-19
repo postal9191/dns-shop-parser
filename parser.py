@@ -291,27 +291,16 @@ class DNSMonitorBrowserless:
 
         logger.info("[MAIN] ✅ Сессия инициализирована успешно")
 
-        # Запускаем Telegram бот в фоновой задаче
-        bot_task = (
-            asyncio.create_task(self.telegram_bot.polling_loop())
-            if self.telegram_bot.enabled
-            else None
-        )
-
+        # Polling НЕ запускаем — бот живёт постоянно в run.py.
+        # Здесь только отправка уведомлений через broadcast_message (без конфликта).
         try:
             await self.parse_all()
         except Exception as exc:
             logger.error("[MAIN] Ошибка парсинга: %s", exc)
         finally:
-            if bot_task:
-                bot_task.cancel()
-                try:
-                    await bot_task
-                except asyncio.CancelledError:
-                    pass
             await self.session_manager.close()
             self.db.close()
-            await self.tg.close()
+            await self.telegram_bot.close()
 
 
 async def main() -> None:
