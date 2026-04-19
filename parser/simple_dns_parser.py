@@ -262,20 +262,24 @@ class SimpleDNSParser:
     # Шаг 2: UUID товаров из HTML категории
     # -------------------------------------------------------------------
 
-    async def fetch_product_uuids(self, category_id: str, expected_count: int = None) -> list[str]:
+    async def fetch_product_uuids(self, category_id: str, expected_count: int = None, status: Optional[int] = None) -> list[str]:
         """Простой HTTP GET → список UUID товаров из HTML.
 
         Args:
             category_id: ID категории
             expected_count: ожидаемое количество товаров (из API фильтров)
+            status: фильтр по типу товара: 0 = Новый, 1 = Б/У
         """
-        logger.debug("[PARSER] Получаю UUID товаров для категории %s (город: %s, ожидаемо: %s)",
-                    category_id, config.city_name, expected_count or "?")
+        logger.debug("[PARSER] Получаю UUID товаров для категории %s (город: %s, ожидаемо: %s, status: %s)",
+                    category_id, config.city_name, expected_count or "?", status)
 
         try:
+            params: dict = {"category": category_id}
+            if status is not None:
+                params["status"] = str(status)
             html = await self._get_html(
                 self._catalog_url,
-                params={"category": category_id},
+                params=params,
             )
 
             all_uuids = list(dict.fromkeys(
@@ -314,28 +318,29 @@ class SimpleDNSParser:
         uuids: list[str],
         category_id: str = "",
         category_name: str = "",
+        uuid_to_status: Optional[dict] = None,
     ) -> list[Product]:
         """POST ajax-state/product-buy (батчами) → Product list."""
         products: list[Product] = []
-        
-        logger.info("[PARSER] Загружаю детали %d товаров (батчами по %d)", 
+
+        logger.info("[PARSER] Загружаю детали %d товаров (батчами по %d)",
                    len(uuids), _PRODUCT_BUY_BATCH)
 
         for i in range(0, len(uuids), _PRODUCT_BUY_BATCH):
             batch_uuids = uuids[i : i + _PRODUCT_BUY_BATCH]
             batch_num = (i // _PRODUCT_BUY_BATCH) + 1
             total_batches = (len(uuids) + _PRODUCT_BUY_BATCH - 1) // _PRODUCT_BUY_BATCH
-            
-            logger.debug("[PARSER] Батч %d/%d: %d товаров", 
+
+            logger.debug("[PARSER] Батч %d/%d: %d товаров",
                         batch_num, total_batches, len(batch_uuids))
-            
+
             batch_products = await self._fetch_batch(
-                batch_uuids, category_id, category_name
+                batch_uuids, category_id, category_name, uuid_to_status
             )
             products.extend(batch_products)
-            
+
             logger.debug("[PARSER] Батч %d: получено %d товаров", batch_num, len(batch_products))
-            
+
             if i + _PRODUCT_BUY_BATCH < len(uuids):
                 await asyncio.sleep(0.3)
 
@@ -346,6 +351,7 @@ class SimpleDNSParser:
         uuids: list[str],
         category_id: str,
         category_name: str,
+        uuid_to_status: Optional[dict] = None,
     ) -> list[Product]:
         container_map: dict[str, str] = {}
         containers = []
@@ -381,7 +387,7 @@ class SimpleDNSParser:
         logger.debug("[PARSER] product-buy вернул %d состояний", states_count)
         
         for state in resp.get("data", {}).get("states", []):
-            p = self._parse_state(state, container_map, category_id, category_name)
+            p = self._parse_state(state, container_map, category_id, category_name, uuid_to_status)
             if p:
                 products.append(p)
 
@@ -394,6 +400,7 @@ class SimpleDNSParser:
         container_map: dict[str, str],
         category_id: str,
         category_name: str,
+        uuid_to_status: Optional[dict] = None,
     ) -> Optional[Product]:
         try:
             container_id = state.get("id", "")  # "as-upHxKD"
@@ -413,6 +420,8 @@ class SimpleDNSParser:
 
             url = f"{config.api_base_url}/catalog/markdown/{uuid}/"
 
+            status = uuid_to_status.get(uuid, "") if uuid_to_status else ""
+
             return Product(
                 id=container_id,      # короткий ID (as-upHxKD)
                 uuid=uuid,             # UUID товара
@@ -422,6 +431,7 @@ class SimpleDNSParser:
                 url=url,
                 category_id=category_id,
                 category_name=category_name,
+                status=status,
             )
         except Exception as exc:
             logger.warning("Ошибка разбора state: %s | %s", exc, state)

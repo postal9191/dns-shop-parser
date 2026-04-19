@@ -73,6 +73,18 @@ class DBManager:
                 except sqlite3.OperationalError:
                     pass  # Столбец уже существует
 
+            # Миграция: добавить status столбец если его нет
+            cursor = conn.execute("PRAGMA table_info(products)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if 'status' not in columns:
+                try:
+                    conn.execute("ALTER TABLE products ADD COLUMN status TEXT DEFAULT ''")
+                    # Сбрасываем uuid_hash чтобы принудить перефетч и перемаркировку всех товаров
+                    conn.execute("UPDATE category_state SET uuid_hash = NULL")
+                    logger.info("Добавлен столбец status, uuid_hash сброшен для перемаркировки товаров")
+                except sqlite3.OperationalError:
+                    pass  # Столбец уже существует
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_subscribers (
                     user_id TEXT PRIMARY KEY,
@@ -111,11 +123,11 @@ class DBManager:
                     conn.execute("""
                         UPDATE products
                         SET id = ?, title = ?, current_price = ?, previous_price = ?,
-                            category_id = ?, category_name = ?, updated_at = ?
+                            category_id = ?, category_name = ?, status = ?, updated_at = ?
                         WHERE uuid = ?
                     """, (
                         prod.id, prod.title, prod.price, prod.price_old,
-                        prod.category_id, prod.category_name, now, prod.uuid
+                        prod.category_id, prod.category_name, prod.status, now, prod.uuid
                     ))
                     if existing[prod.uuid] != prod.price:
                         conn.execute("""
@@ -128,16 +140,17 @@ class DBManager:
                             "new_price": prod.price,
                             "old_price": existing[prod.uuid],
                             "price_old": prod.price_old,
+                            "status": prod.status,
                         })
                 else:
                     conn.execute("""
                         INSERT INTO products
                         (id, uuid, title, url, category_id, category_name,
-                         current_price, previous_price, updated_at, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         current_price, previous_price, status, updated_at, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         prod.id, prod.uuid, prod.title, prod.url, prod.category_id,
-                        prod.category_name, prod.price, prod.price_old, now, now
+                        prod.category_name, prod.price, prod.price_old, prod.status, now, now
                     ))
 
             conn.commit()

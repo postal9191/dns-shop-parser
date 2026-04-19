@@ -18,3 +18,4 @@ class Product:
     url: str
     category_id: str = ""
     category_name: str = ""
+    status: str = ""   # "Новый" или "Б/У"

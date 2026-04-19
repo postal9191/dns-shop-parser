@@ -112,9 +112,22 @@ class DNSMonitorBrowserless:
                 last_hash = state["uuid_hash"] if state else None
 
                 try:
-                    # Получаем UUID товаров (всегда загружаем для проверки хэша)
-                    # Передаём ожидаемое количество из API чтобы отфильтровать лишние UUID
-                    uuids = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count)
+                    # Получаем UUID раздельно по типу товара для маркировки Новый/Б/У
+                    uuids_new  = await self.parser.fetch_product_uuids(cat.id, status=0)
+                    uuids_used = await self.parser.fetch_product_uuids(cat.id, status=1)
+                    uuid_to_status = {u: "Новый" for u in uuids_new}
+                    uuid_to_status.update({u: "Б/У" for u in uuids_used})
+                    # Дедуплицируем, обрезаем до ожидаемого количества
+                    seen: set = set()
+                    uuids: list = []
+                    for u in (uuids_new + uuids_used):
+                        if u not in seen:
+                            seen.add(u)
+                            uuids.append(u)
+                    if cat.count and len(uuids) > cat.count:
+                        uuids = uuids[:cat.count]
+                        uuid_to_status = {u: uuid_to_status[u] for u in uuids if u in uuid_to_status}
+
                     if not uuids:
                         logger.debug("[PARSE] Категория %d/%d: %s - товаров не найдено", i, len(categories), cat.label)
                         self.db.update_category_state(cat.id, cat.label, 0, [])
@@ -151,7 +164,7 @@ class DNSMonitorBrowserless:
 
                     # Получаем детали товаров
                     products = await self.parser.fetch_products_details(
-                        uuids, cat.id, cat.label
+                        uuids, cat.id, cat.label, uuid_to_status=uuid_to_status
                     )
 
                     if products:
@@ -180,6 +193,7 @@ class DNSMonitorBrowserless:
                                         "price": p.price,
                                         "price_old": p.price_old,
                                         "url": p.url,
+                                        "status": p.status,
                                     }
                                     for p in new_products
                                 ]

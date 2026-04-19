@@ -77,43 +77,48 @@ class TelegramNotifier:
         if not new_products:
             return False
 
+        BATCH_SIZE = 10
         grouped_products = group_products(new_products)
-        n = len(grouped_products)
-        products_text = ""
-        for prod in grouped_products[:10]:
-            title = wrap_text(prod['title'])
-            count = prod.get('count', 1)
-            if count > 1:
-                title = f"{title} (х{count})"
+        total = len(grouped_products)
+        batches = [grouped_products[i : i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+        total_batches = len(batches)
 
-            price = prod['price']
-            price_old = prod.get('price_old', 0)
-            price_str = f"{price} руб."
-            if price_old and price_old > price:
-                price_str += f" <s>{price_old} руб.</s>"
+        for batch_idx, batch in enumerate(batches, 1):
+            products_text = ""
+            for prod in batch:
+                title = wrap_text(prod['title'])
+                count = prod.get('count', 1)
+                if count > 1:
+                    title = f"{title} (х{count})"
 
-            products_text += _format_product_line(title, prod.get('url', ''), price_str)
+                price = prod['price']
+                price_old = prod.get('price_old', 0)
+                price_str = f"{price} руб."
+                if price_old and price_old > price:
+                    price_str += f" <s>{price_old} руб.</s>"
+                status = prod.get('status', '')
+                if status:
+                    price_str += f" (<b>{status}</b>)"
 
-        if n > 10:
-            products_text += f"<i>... и ещё {n - 10} товаров</i>"
+                products_text += _format_product_line(title, prod.get('url', ''), price_str)
 
-        message = (
-            f"🆕 <b>Новые товары в {category_name}!</b>\n"
-            f"Добавлено: {len(new_products)} шт\n\n"
-            f"{products_text}"
-        )
+            header = f"🆕 <b>Новые товары в {category_name}!</b>"
+            if total_batches > 1:
+                header += f" ({batch_idx}/{total_batches})"
+            if batch_idx == 1:
+                header += f"\nДобавлено: {len(new_products)} шт"
 
-        # Отправляем всем подписчикам
-        try:
-            sent_count = await self.bot.broadcast_message(message)
-            logger.info(
-                "[TG NOTIF] Уведомление отправлено %d подписчикам",
-                sent_count,
-            )
-            return sent_count > 0
-        except Exception as exc:
-            logger.error("[TG NOTIF] Ошибка при отправке уведомления: %s", exc)
-            return False
+            message = f"{header}\n\n{products_text}"
+
+            try:
+                sent_count = await self.bot.broadcast_message(message)
+                if batch_idx == 1:
+                    logger.info("[TG NOTIF] Уведомление отправлено %d подписчикам", sent_count)
+            except Exception as exc:
+                logger.error("[TG NOTIF] Ошибка при отправке батча %d/%d: %s", batch_idx, total_batches, exc)
+                return False
+
+        return True
 
     async def send_price_changes_notification(self, price_changes: list[dict]) -> bool:
         """Отправляет уведомления об изменениях цен батчами по 15 товаров."""
@@ -143,6 +148,9 @@ class TelegramNotifier:
                 price_str = f"{new_price} руб. {arrow} ({old_price} руб.)"
                 if price_old and price_old > new_price:
                     price_str += f" <s>{price_old} руб.</s>"
+                status = prod.get('status', '')
+                if status:
+                    price_str += f" (<b>{status}</b>)"
 
                 products_text += _format_product_line(title, prod.get('url', ''), price_str)
 
