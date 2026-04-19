@@ -49,6 +49,142 @@ class DNSMonitorBrowserless:
             logger.error("[MAIN] Ошибка инициализации сессии: %s", exc)
             return False
 
+    async def _process_category(
+        self,
+        cat,
+        i: int,
+        total_categories: int,
+        is_first_run: bool,
+        all_price_changes: list,
+    ) -> tuple[int, int]:
+        """
+        Обрабатывает одну категорию (fetch UUID, детали, сохранение в БД).
+        Возвращает (total_new_products, total_updated).
+        Вызывает CookiesExpiredError если куки устарели.
+        """
+        total_new_products = 0
+        total_updated = 0
+
+        # Получаем состояние категории
+        state = self.db.get_category_state(cat.id)
+        last_count = state["last_product_count"] if state else 0
+        last_hash = state["uuid_hash"] if state else None
+
+        # Получаем UUID раздельно по типу товара для маркировки Новый/Б/У
+        uuids_new = await self.parser.fetch_product_uuids(cat.id, status=0)
+        uuids_used = await self.parser.fetch_product_uuids(cat.id, status=1)
+        uuid_to_status = {u: "Новый" for u in uuids_new}
+        uuid_to_status.update({u: "Б/У" for u in uuids_used})
+
+        # Дедуплицируем, обрезаем до ожидаемого количества
+        seen: set = set()
+        uuids: list = []
+        for u in (uuids_new + uuids_used):
+            if u not in seen:
+                seen.add(u)
+                uuids.append(u)
+        if cat.count and len(uuids) > cat.count:
+            uuids = uuids[: cat.count]
+            uuid_to_status = {u: uuid_to_status[u] for u in uuids if u in uuid_to_status}
+
+        if not uuids:
+            logger.debug(
+                "[PARSE] Категория %d/%d: %s - товаров не найдено",
+                i,
+                total_categories,
+                cat.label,
+            )
+            self.db.update_category_state(cat.id, cat.label, 0, [])
+            return (0, 0)
+
+        # Вычисляем хэш текущего состава товаров
+        current_hash = hashlib.md5(",".join(sorted(uuids)).encode()).hexdigest()
+
+        uuids_unchanged = current_hash == last_hash
+        if uuids_unchanged:
+            logger.debug(
+                "[PARSE] Категория %d/%d: %s - UUID без изменений (%d товаров), проверяем цены",
+                i,
+                total_categories,
+                cat.label,
+                cat.count,
+            )
+        else:
+            logger.info(
+                "[PARSE] Категория %d/%d: %s (было: %d, сейчас: %d, состав изменился)",
+                i,
+                total_categories,
+                cat.label,
+                last_count,
+                len(uuids),
+            )
+
+        # Проверяем какие товары новые (если UUID состав не изменился — новых нет)
+        new_uuids = (
+            []
+            if uuids_unchanged
+            else self.db.get_new_products_in_category(cat.id, uuids)
+        )
+
+        # Получаем детали товаров
+        products = await self.parser.fetch_products_details(
+            uuids, cat.id, cat.label, uuid_to_status=uuid_to_status
+        )
+
+        if products:
+            saved, price_changes = self.db.upsert_products(products)
+            total_updated += saved
+
+            logger.info(
+                "[PARSE]   OK Загружено и сохранено %d товаров",
+                saved,
+            )
+
+            if not uuids_unchanged:
+                deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
+                if deleted:
+                    logger.info("[PARSE]   DEL Удалено %d проданных товаров", deleted)
+
+            # Собираем изменения цен (кроме первого запуска)
+            if price_changes and not is_first_run:
+                logger.info("[PARSE]   PRICE Изменились цены: %d товаров", len(price_changes))
+                all_price_changes.extend(price_changes)
+
+            # Если есть новые товары и это не первый запуск - отправляем уведомление
+            if new_uuids and not is_first_run:
+                new_products = [p for p in products if p.uuid in new_uuids]
+                if new_products:
+                    total_new_products += len(new_products)
+                    new_prods_data = [
+                        {
+                            "category": cat.label,
+                            "title": p.title,
+                            "price": p.price,
+                            "price_old": p.price_old,
+                            "url": p.url,
+                            "status": p.status,
+                        }
+                        for p in new_products
+                    ]
+                    logger.info(
+                        "[PARSE]   NEW Новых товаров: %d",
+                        len(new_products),
+                    )
+                    # Отправляем Telegram уведомление всем подписчикам
+                    await self.tg.send_new_products_notification(cat.label, new_prods_data)
+            elif new_uuids and is_first_run:
+                logger.info("[PARSE]   (пропускаем ТГ на первом запуске)")
+            else:
+                logger.debug("[PARSE]   (новых товаров не найдено)")
+
+        # Обновляем состояние категории с хэшем UUID (используем реальное количество)
+        self.db.update_category_state(cat.id, cat.label, len(uuids), uuids)
+
+        # Задержка между категориями
+        await asyncio.sleep(0.5)
+
+        return (total_new_products, total_updated)
+
     async def parse_all(self) -> None:
         """
         Парсит все категории и товары в текущем городе.
@@ -106,134 +242,49 @@ class DNSMonitorBrowserless:
             all_price_changes = []
 
             for i, cat in enumerate(categories, 1):
-                # Получаем состояние категории
-                state = self.db.get_category_state(cat.id)
-                last_count = state["last_product_count"] if state else 0
-                last_hash = state["uuid_hash"] if state else None
+                # Retry цикл для текущей категории при истечении кук
+                cookie_retries = 0
+                max_cookie_retries = 2
+                while True:
+                    try:
+                        new_prods, upd = await self._process_category(
+                            cat, i, len(categories), is_first_run, all_price_changes
+                        )
+                        total_new_products += new_prods
+                        total_updated += upd
+                        break  # успех — переходим к следующей категории
 
-                try:
-                    # Получаем UUID раздельно по типу товара для маркировки Новый/Б/У
-                    uuids_new  = await self.parser.fetch_product_uuids(cat.id, status=0)
-                    uuids_used = await self.parser.fetch_product_uuids(cat.id, status=1)
-                    uuid_to_status = {u: "Новый" for u in uuids_new}
-                    uuid_to_status.update({u: "Б/У" for u in uuids_used})
-                    # Дедуплицируем, обрезаем до ожидаемого количества
-                    seen: set = set()
-                    uuids: list = []
-                    for u in (uuids_new + uuids_used):
-                        if u not in seen:
-                            seen.add(u)
-                            uuids.append(u)
-                    if cat.count and len(uuids) > cat.count:
-                        uuids = uuids[:cat.count]
-                        uuid_to_status = {u: uuid_to_status[u] for u in uuids if u in uuid_to_status}
-
-                    if not uuids:
-                        logger.debug("[PARSE] Категория %d/%d: %s - товаров не найдено", i, len(categories), cat.label)
-                        self.db.update_category_state(cat.id, cat.label, 0, [])
-                        continue
-
-                    # Вычисляем хэш текущего состава товаров
-                    current_hash = hashlib.md5(','.join(sorted(uuids)).encode()).hexdigest()
-
-                    uuids_unchanged = (current_hash == last_hash)
-                    if uuids_unchanged:
-                        logger.debug(
-                            "[PARSE] Категория %d/%d: %s - UUID без изменений (%d товаров), проверяем цены",
+                    except CookiesExpiredError as exc:
+                        cookie_retries += 1
+                        logger.warning(
+                            "[PARSE]   ⚠️ Куки устарели при загрузке категории %d/%d (попытка %d)",
                             i,
                             len(categories),
-                            cat.label,
-                            cat.count,
+                            cookie_retries,
                         )
-                    else:
-                        logger.info(
-                            "[PARSE] Категория %d/%d: %s (было: %d, сейчас: %d, состав изменился)",
-                            i,
-                            len(categories),
-                            cat.label,
-                            last_count,
-                            len(uuids),
-                        )
-
-                    # Проверяем какие товары новые (если UUID состав не изменился — новых нет)
-                    new_uuids = (
-                        []
-                        if uuids_unchanged
-                        else self.db.get_new_products_in_category(cat.id, uuids)
-                    )
-
-                    # Получаем детали товаров
-                    products = await self.parser.fetch_products_details(
-                        uuids, cat.id, cat.label, uuid_to_status=uuid_to_status
-                    )
-
-                    if products:
-                        saved, price_changes = self.db.upsert_products(products)
-                        total_updated += saved
-
-                        logger.info(
-                            "[PARSE]   OK Загружено и сохранено %d товаров",
-                            saved,
-                        )
-
-                        if not uuids_unchanged:
-                            deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
-                            if deleted:
-                                logger.info("[PARSE]   DEL Удалено %d проданных товаров", deleted)
-
-                        # Собираем изменения цен (кроме первого запуска)
-                        if price_changes and not is_first_run:
-                            logger.info("[PARSE]   PRICE Изменились цены: %d товаров", len(price_changes))
-                            all_price_changes.extend(price_changes)
-
-                        # Если есть новые товары и это не первый запуск - отправляем уведомление
-                        if new_uuids and not is_first_run:
-                            new_products = [p for p in products if p.uuid in new_uuids]
-                            if new_products:
-                                total_new_products += len(new_products)
-                                new_prods_data = [
-                                    {
-                                        "category": cat.label,
-                                        "title": p.title,
-                                        "price": p.price,
-                                        "price_old": p.price_old,
-                                        "url": p.url,
-                                        "status": p.status,
-                                    }
-                                    for p in new_products
-                                ]
-                                logger.info(
-                                    "[PARSE]   NEW Новых товаров: %d",
-                                    len(new_products),
-                                )
-                                # Отправляем Telegram уведомление всем подписчикам
-                                await self.tg.send_new_products_notification(
-                                    cat.label, new_prods_data
-                                )
-                        elif new_uuids and is_first_run:
-                            logger.info("[PARSE]   (пропускаем ТГ на первом запуске)")
+                        if cookie_retries > max_cookie_retries:
+                            logger.error(
+                                "[PARSE]   Исчерпаны попытки обновления кук для категории %d, пропускаем",
+                                i,
+                            )
+                            break
+                        # Переинициализируем сессию
+                        if await self.init_session_browserless():
+                            logger.info(
+                                "[PARSE] Сессия переинициализирована, повтор категории %d...",
+                                i,
+                            )
+                            await asyncio.sleep(3)
+                            # while True продолжится — повторим категорию
                         else:
-                            logger.debug("[PARSE]   (новых товаров не найдено)")
+                            logger.error(
+                                "[PARSE] Не удалось переинициализировать сессию при ошибке куки, пропускаем"
+                            )
+                            break
 
-                    # Обновляем состояние категории с хэшем UUID (используем реальное количество)
-                    self.db.update_category_state(cat.id, cat.label, len(uuids), uuids)
-
-                    # Задержка между категориями
-                    await asyncio.sleep(0.5)
-
-                except CookiesExpiredError as exc:
-                    logger.warning("[PARSE]   ⚠️ Куки устарели при загрузке товаров категории %d/%d", i, len(categories))
-                    logger.warning("[PARSE] Переинициализирую сессию и прерываю цикл товаров для повторной попытки...")
-                    if await self.init_session_browserless():
-                        logger.info("[PARSE] Сессия переинициализирована, повторный запуск цикла...")
-                        # Пробуем повторить весь цикл
-                        raise exc
-                    else:
-                        logger.error("[PARSE] Не удалось переинициализировать сессию при ошибке куки")
-                        return
-                except Exception as exc:
-                    logger.error("[PARSE]   ERR Ошибка при загрузке категории: %s", exc)
-                    continue
+                    except Exception as exc:
+                        logger.error("[PARSE]   ERR Ошибка при загрузке категории: %s", exc)
+                        break  # выходим из retry цикла, переходим к следующей категории
 
             # Отправляем единое уведомление об изменениях цен
             if all_price_changes:
