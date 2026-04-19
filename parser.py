@@ -38,11 +38,11 @@ class DNSMonitorBrowserless:
         self.parse_interval = config.parse_interval
         self.city_name = config.city_name
 
-    async def init_session_browserless(self) -> bool:
+    async def init_session_browserless(self, force_qrator: bool = False) -> bool:
         """Инициализирует сессию безбраузерным способом (Node.js + Playwright)."""
         try:
             logger.info("[MAIN] Инициализация сессии (безбраузерный режим)")
-            await self.session_manager._init_session()
+            await self.session_manager._init_session(force_qrator=force_qrator)
             logger.info("[MAIN] ✓ Сессия инициализирована успешно")
             return True
         except Exception as exc:
@@ -202,29 +202,23 @@ class DNSMonitorBrowserless:
 
         try:
             # Шаг 1: получить категории
-            max_category_retries = 3
             categories = []
-            for cat_attempt in range(max_category_retries):
+            try:
+                categories = await self.parser.fetch_categories()
+            except CookiesExpiredError as exc:
+                logger.warning("[PARSE] ⚠️ Куки устарели при получении категорий: %s", exc)
+                logger.info("[PARSE] Переинициализирую сессию...")
+                if not await self.init_session_browserless(force_qrator=True):
+                    logger.error("[PARSE] Не удалось переинициализировать сессию")
+                    return
                 try:
                     categories = await self.parser.fetch_categories()
-                    break
-                except CookiesExpiredError as exc:
-                    logger.warning("[PARSE] ⚠️ Куки устарели при получении категорий: %s", exc)
-                    if cat_attempt < max_category_retries - 1:
-                        logger.info("[PARSE] Переинициализирую сессию и пытаюсь снова (%d/%d)...",
-                                   cat_attempt + 2, max_category_retries)
-                        if await self.init_session_browserless():
-                            await asyncio.sleep(3)
-                            continue
-                        else:
-                            logger.error("[PARSE] Не удалось переинициализировать сессию")
-                            return
-                    else:
-                        logger.error("[PARSE] Не удалось получить категории после переинициализации кук")
-                        return
-                except Exception as exc:
-                    logger.error("[PARSE] Ошибка при получении категорий: %s", exc)
+                except Exception as exc2:
+                    logger.error("[PARSE] Повторная ошибка при получении категорий: %s", exc2)
                     return
+            except Exception as exc:
+                logger.error("[PARSE] Ошибка при получении категорий: %s", exc)
+                return
 
             if not categories:
                 logger.error("[PARSE] Категории не получены")
@@ -242,49 +236,33 @@ class DNSMonitorBrowserless:
             all_price_changes = []
 
             for i, cat in enumerate(categories, 1):
-                # Retry цикл для текущей категории при истечении кук
-                cookie_retries = 0
-                max_cookie_retries = 2
-                while True:
+                try:
+                    new_prods, upd = await self._process_category(
+                        cat, i, len(categories), is_first_run, all_price_changes
+                    )
+                    total_new_products += new_prods
+                    total_updated += upd
+
+                except CookiesExpiredError as exc:
+                    logger.warning(
+                        "[PARSE]   ⚠️ Куки устарели при загрузке категории %d/%d",
+                        i, len(categories),
+                    )
+                    if not await self.init_session_browserless(force_qrator=True):
+                        logger.error("[PARSE] Не удалось переинициализировать сессию, пропускаем категорию %d", i)
+                        continue
+                    logger.info("[PARSE] Сессия переинициализирована, повтор категории %d...", i)
                     try:
                         new_prods, upd = await self._process_category(
                             cat, i, len(categories), is_first_run, all_price_changes
                         )
                         total_new_products += new_prods
                         total_updated += upd
-                        break  # успех — переходим к следующей категории
+                    except Exception as exc2:
+                        logger.error("[PARSE]   ERR Повторная ошибка категории %d, пропускаем: %s", i, exc2)
 
-                    except CookiesExpiredError as exc:
-                        cookie_retries += 1
-                        logger.warning(
-                            "[PARSE]   ⚠️ Куки устарели при загрузке категории %d/%d (попытка %d)",
-                            i,
-                            len(categories),
-                            cookie_retries,
-                        )
-                        if cookie_retries > max_cookie_retries:
-                            logger.error(
-                                "[PARSE]   Исчерпаны попытки обновления кук для категории %d, пропускаем",
-                                i,
-                            )
-                            break
-                        # Переинициализируем сессию
-                        if await self.init_session_browserless():
-                            logger.info(
-                                "[PARSE] Сессия переинициализирована, повтор категории %d...",
-                                i,
-                            )
-                            await asyncio.sleep(3)
-                            # while True продолжится — повторим категорию
-                        else:
-                            logger.error(
-                                "[PARSE] Не удалось переинициализировать сессию при ошибке куки, пропускаем"
-                            )
-                            break
-
-                    except Exception as exc:
-                        logger.error("[PARSE]   ERR Ошибка при загрузке категории: %s", exc)
-                        break  # выходим из retry цикла, переходим к следующей категории
+                except Exception as exc:
+                    logger.error("[PARSE]   ERR Ошибка при загрузке категории: %s", exc)
 
             # Отправляем единое уведомление об изменениях цен
             if all_price_changes:
@@ -304,28 +282,14 @@ class DNSMonitorBrowserless:
             logger.error("[PARSE] ERR Критическая ошибка в цикле парсинга: %s", exc)
 
     async def run_once(self) -> None:
-        """Парсинг один раз (без цикла) с инициализацией сессии и retry логикой."""
-        logger.info(
-            "[MAIN] Запуск DNS Monitor (город: %s)",
-            self.city_name,
-        )
+        """Парсинг один раз (без цикла) с инициализацией сессии."""
+        logger.info("[MAIN] Запуск DNS Monitor (город: %s)", self.city_name)
 
-        # Инициализируем сессию безбраузерным способом (Node.js + Playwright) с повторными попытками
-        max_init_retries = 3
-        for attempt in range(max_init_retries):
-            logger.info("[MAIN] Попытка инициализации сессии (%d/%d)", attempt + 1, max_init_retries)
+        if not await self.init_session_browserless():
+            logger.error("[MAIN] ❌ Не удалось инициализировать сессию. Выход.")
+            return
 
-            if await self.init_session_browserless():
-                logger.info("[MAIN] ✅ Сессия инициализирована успешно")
-                break
-
-            if attempt < max_init_retries - 1:
-                wait_time = 10 * (attempt + 1)  # 10, 20, 30 сек
-                logger.warning("[MAIN] ⚠️ Инициализация не удалась, повторная попытка через %d сек...", wait_time)
-                await asyncio.sleep(wait_time)
-            else:
-                logger.error("[MAIN] ❌ Не удалось инициализировать сессию после %d попыток. Выход.", max_init_retries)
-                return
+        logger.info("[MAIN] ✅ Сессия инициализирована успешно")
 
         # Запускаем Telegram бот в фоновой задаче
         bot_task = (

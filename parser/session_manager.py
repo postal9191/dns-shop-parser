@@ -313,32 +313,23 @@ class SessionManager:
         finally:
             await temp_session.close()
 
-    async def _resolve_qrator(self, retry_count: int = 0, max_retries: int = 3) -> bool:
-        """Решает Qrator challenge и добавляет qrator_jsid2 с повторными попытками."""
-        logger.debug("[SESSION] Решаю Qrator challenge (попытка %d/%d)...", retry_count + 1, max_retries)
-
-        # При повторной попытке кеш может содержать устаревшую куку — принудительно решаем заново
-        force = retry_count > 0
+    async def _resolve_qrator(self, force: bool = False) -> bool:
+        """Решает Qrator challenge и добавляет qrator_jsid2."""
+        logger.debug("[SESSION] Решаю Qrator challenge...")
         qrator_cookies = await resolve_qrator_cookies(force=force)
         if qrator_cookies and 'qrator_jsid2' in qrator_cookies:
             self._cookies['qrator_jsid2'] = qrator_cookies['qrator_jsid2']
             logger.info("[SESSION] ✅ Qrator challenge решен, jsid2 добавлена")
             return True
-
-        if retry_count < max_retries - 1:
-            logger.warning("[SESSION] ⚠️ Не удалось решить Qrator, повторная попытка через 5 сек...")
-            await asyncio.sleep(5)
-            return await self._resolve_qrator(retry_count + 1, max_retries)
-
-        logger.error("[SESSION] ❌ Не удалось решить Qrator challenge после %d попыток", max_retries)
+        logger.error("[SESSION] ❌ Не удалось решить Qrator challenge")
         return False
 
-    async def _init_session(self) -> bool:
+    async def _init_session(self, force_qrator: bool = False) -> bool:
         """Полная инициализация: Qrator → базовые куки → город программно."""
         logger.info("[SESSION] Инициализация сессии (без браузера)...")
 
         # 1. Сначала решаем Qrator challenge (иначе главная страница вернет 401)
-        qrator_success = await self._resolve_qrator()
+        qrator_success = await self._resolve_qrator(force=force_qrator)
         if not qrator_success:
             logger.warning("[SESSION] ⚠️ Qrator challenge не решён — продолжаем без qrator_jsid2")
 

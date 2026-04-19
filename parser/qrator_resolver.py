@@ -108,7 +108,7 @@ async def resolve_qrator_cookies(force: bool = False) -> dict[str, str] | None:
             [node_exe, str(script_path)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
         )
 
         output = result.stdout + result.stderr

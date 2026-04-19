@@ -162,7 +162,34 @@ class TelegramBot:
             logger.warning("[TG BOT] Telegram бот отключен (нет TELEGRAM_TOKEN)")
             return
 
+        # Удаляем вебхук и получаем начальный offset, чтобы пропустить накопившиеся сообщения
         offset = 0
+        try:
+            async with self._get_session().post(
+                f"{self.api_url}/deleteWebhook",
+                json={"drop_pending_updates": False},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                logger.debug("[TG BOT] deleteWebhook: %d", resp.status)
+        except Exception as exc:
+            logger.debug("[TG BOT] deleteWebhook error: %s", exc)
+
+        # Получаем последний update_id чтобы не обрабатывать старые сообщения
+        try:
+            async with self._get_session().get(
+                f"{self.api_url}/getUpdates",
+                params={"offset": -1, "timeout": 0},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    updates = data.get("result", [])
+                    if updates:
+                        offset = updates[-1]["update_id"] + 1
+                        logger.debug("[TG BOT] Начинаем с offset=%d (пропускаем старые сообщения)", offset)
+        except Exception as exc:
+            logger.debug("[TG BOT] Не удалось получить начальный offset: %s", exc)
+
         logger.info("[TG BOT] Запущен режим polling для получения обновлений...")
 
         try:
@@ -174,9 +201,8 @@ class TelegramBot:
                         timeout=aiohttp.ClientTimeout(total=35),
                     ) as resp:
                         if resp.status == 409:
-                            logger.warning("[TG BOT] 409 Conflict - сбрасываем offset и получаем свежие обновления")
-                            offset = 0
-                            await asyncio.sleep(1)
+                            logger.warning("[TG BOT] 409 Conflict - ждём 30 сек пока предыдущий сеанс завершится")
+                            await asyncio.sleep(30)
                             continue
 
                         if resp.status != 200:
