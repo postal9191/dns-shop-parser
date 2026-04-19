@@ -263,7 +263,7 @@ class SimpleDNSParser:
     # -------------------------------------------------------------------
 
     async def fetch_product_uuids(self, category_id: str, expected_count: int = None, status: Optional[int] = None) -> list[str]:
-        """Простой HTTP GET → список UUID товаров из HTML.
+        """Простой HTTP GET с пагинацией → список UUID товаров из HTML.
 
         Args:
             category_id: ID категории
@@ -273,38 +273,58 @@ class SimpleDNSParser:
         logger.debug("[PARSER] Получаю UUID товаров для категории %s (город: %s, ожидаемо: %s, status: %s)",
                     category_id, config.city_name, expected_count or "?", status)
 
+        _MAX_PAGES = 50
+
         try:
-            params: dict = {"category": category_id}
+            base_params: dict = {"category": category_id}
             if status is not None:
-                params["status"] = str(status)
-            html = await self._get_html(
-                self._catalog_url,
-                params=params,
-            )
+                base_params["status"] = str(status)
 
-            all_uuids = list(dict.fromkeys(
-                m.group(0).lower() for m in _UUID_RE.finditer(html)
-            ))
+            all_uuids: list[str] = []
+            seen: set[str] = set()
 
-            # ВАЖНО: Если найдено больше UUID чем ожидается по API,
-            # это вероятно UUID из рекомендаций/баннеров/навигации.
-            # Используем count из API как максимум.
+            for page in range(1, _MAX_PAGES + 1):
+                params = dict(base_params)
+                if page > 1:
+                    params["p"] = str(page)
+
+                html = await self._get_html(self._catalog_url, params=params)
+
+                page_uuids = list(dict.fromkeys(
+                    m.group(0).lower() for m in _UUID_RE.finditer(html)
+                ))
+
+                # Только UUID, которых ещё не видели (фильтрует nav/рекомендации)
+                new_uuids = [u for u in page_uuids if u not in seen]
+
+                if not new_uuids:
+                    logger.debug("[PARSER] Страница %d: новых UUID нет — пагинация завершена", page)
+                    break
+
+                seen.update(new_uuids)
+                all_uuids.extend(new_uuids)
+
+                logger.debug("[PARSER] Страница %d: +%d UUID (итого %d)", page, len(new_uuids), len(all_uuids))
+
+                if expected_count is not None and len(all_uuids) >= expected_count:
+                    break
+
+                await asyncio.sleep(0.3)
+
+            # Применяем ограничение по expected_count
             if expected_count is not None and len(all_uuids) > expected_count:
                 logger.warning(
                     "[PARSER] Категория %s: найдено %d UUID, но API говорит %d. "
                     "Ограничиваем до %d (вероятно лишние из рекомендаций)",
                     category_id, len(all_uuids), expected_count, expected_count
                 )
-                uuids = all_uuids[:expected_count]
-            else:
-                uuids = all_uuids
+                all_uuids = all_uuids[:expected_count]
 
-            logger.info("[PARSER] Категория %s: используем %d товаров (найдено %d)",
-                       category_id, len(uuids), len(all_uuids))
-            return uuids
+            logger.info("[PARSER] Категория %s: итого %d товаров", category_id, len(all_uuids))
+            return all_uuids
 
         except CookiesExpiredError:
-            raise  # Пробрасываем дальше
+            raise
         except Exception as exc:
             logger.error("Ошибка получения UUID для %s: %s", category_id, exc)
             return []
