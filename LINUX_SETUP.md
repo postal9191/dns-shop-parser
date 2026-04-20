@@ -196,24 +196,29 @@ sudo systemctl disable dns-parser
 
 ## ⚙️ Конфигурация
 
-Перед первым запуском отредактируйте `.env` файл:
+Отредактируйте `.env` файл перед первым запуском:
 
 ```bash
+cp .env.example .env
 nano .env
 ```
 
-Ключевые переменные:
+**Ключевые переменные:**
 
 ```env
-# Telegram бот
+# Telegram уведомления (опционально)
 TELEGRAM_TOKEN=
 TELEGRAM_CHAT_ID=
+
+# Город и региональные куки
+CITY_COOKIE_PATH=moscow
+CITY_COOKIE_CURRENT=c5f58b981d1ed0bad...
 
 # Интервал парсинга (в секундах)
 PARSE_INTERVAL=3600
 
-# Headless режим (false = видимый браузер, true = без UI)
-CHROME_HEADLESS=false
+# Логирование
+LOG_LEVEL=INFO  # DEBUG для подробных логов
 ```
 
 ## 🐛 Troubleshooting
@@ -228,19 +233,20 @@ chmod +x dns-parser.sh
 
 Скрипт использует `sudo` для установки системных пакетов. Убедитесь что ваш пользователь может использовать `sudo` без пароля или у вас готов пароль.
 
-### Chromium не находится
+### Playwright браузер не установлен
 
-Если скрипт не сможет найти Chromium:
+Если парсер не запускается с ошибкой про браузер:
 
 ```bash
-# Установите вручную (Ubuntu/Debian)
-sudo apt-get install chromium-browser
+# Установите Playwright браузер
+npm install
+npx playwright install chromium
 
-# Или (другие дистрибутивы)
-sudo apt-get install chromium          # Debian/Ubuntu
+# Или вручную для системы:
+sudo apt-get install chromium-browser  # Ubuntu/Debian
 sudo dnf install chromium              # Fedora
 sudo yum install chromium              # CentOS/RHEL
-sudo pacman -S chromium                # Arch
+sudo pacman -S chromium                # Arch Linux
 ```
 
 ### Python зависимости не устанавливаются
@@ -285,17 +291,32 @@ journalctl -u dns-parser -n 50 -e
 
 ```
 dns-parser/
-├── dns-parser.sh           # Этот скрипт
-├── run.py                  # Основной файл
-├── config.py               # Конфигурация
-├── get_cookies.py          # Получение cookies
-├── parser.py               # Парсер
-├── .env                    # Переменные окружения
-├── requirements.txt        # Python зависимости
+├── dns-parser.sh                   # Скрипт управления для Linux
+├── run.py                          # Главный скрипт (цикл + админ-панель)
+├── parser.py                       # Парсинг товаров (одноразово)
+├── config.py                       # Конфигурация из .env
+├── solve_qrator.js                 # Node.js скрипт (решение WAF)
+├── .env                            # Переменные окружения
+├── .env.example                    # Шаблон .env
+├── requirements.txt                # Python зависимости
+├── package.json                    # Node.js зависимости
 ├── logs/
-│   └── app.log            # Логи приложения
-├── dns_monitor.db         # SQLite база данных
-└── browser_cookies.pkl    # Сохранённые cookies браузера
+│   └── app.log                    # Логи приложения
+├── dns_monitor.db                 # SQLite база данных (создаётся автоматически)
+│
+├── parser/                         # Модуль парсера
+│   ├── db_manager.py              # Работа с БД
+│   ├── session_manager.py         # HTTP сессии + куки
+│   ├── qrator_resolver.py         # Интеграция с solve_qrator.js
+│   └── simple_dns_parser.py       # Парсер API DNS Shop
+│
+├── services/                       # Сервисы
+│   ├── telegram_notifier.py       # Отправка уведомлений
+│   ├── telegram_bot.py            # Telegram бот для подписки
+│   └── admin_panel.py             # Админ-панель управления
+│
+└── utils/
+    └── logger.py                   # Логирование
 ```
 
 ## 🔐 Безопасность
@@ -399,8 +420,16 @@ pgrep -f run.py                    # PID основного процесса
 - [ ] Убедиться что парсер работает и данные сохраняются в БД
 - [ ] (Опционально) Добавить в systemd: `./dns-parser.sh enable-systemd`
 
+## 📚 Дополнительные материалы
+
+- **[README.md](README.md)** — основная документация проекта
+- **[INSTALLATION.md](INSTALLATION.md)** — детальная инструкция установки
+- Логи приложения: `tail -f logs/app.log`
+- Статус БД: `sqlite3 dns_monitor.db ".tables"`
+
 ---
 
-**Автор:** DNS Shop Parser
-**Лицензия:** MIT
-**Поддерживаемые ОС:** Ubuntu, Debian, Fedora, CentOS, Arch Linux
+**Версия:** 1.2 (2026-04-20)  
+**Лицензия:** MIT  
+**Поддерживаемые ОС:** Ubuntu 20.04+, Debian 11+, Fedora 35+, CentOS 8+, Arch Linux  
+**Требования:** Python 3.8+, Node.js 14+
