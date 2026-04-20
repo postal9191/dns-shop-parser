@@ -64,6 +64,18 @@ async function resolveQrator() {
 
     console.error(`[solve_qrator] Переходим на ${TARGET_URL}...`);
 
+    // Логируем все HTTP ответы для отладки
+    const responses = [];
+    page.on('response', (response) => {
+      responses.push({
+        status: response.status(),
+        url: response.url(),
+        time: new Date().toISOString(),
+      });
+      const status_emoji = {200: '✅', 401: '⚠️', 403: '⚠️'}[response.status()] || '❓';
+      console.error(`[solve_qrator] HTTP ${status_emoji} ${response.status()} ${response.url()}`);
+    });
+
     try {
       await page.goto(TARGET_URL, {
         waitUntil: 'domcontentloaded',
@@ -73,25 +85,41 @@ async function resolveQrator() {
       console.error(`[solve_qrator] Timeout или ошибка при переходе: ${err.message}`);
     }
 
-    // Ждём появления qrator_jsid2 — polling вместо фиксированного wait
-    console.error('[solve_qrator] Ждём решения Qrator challenge...');
+    // Ждём появления главной qrator куки (остальные придут тогда же) — polling
+    console.error('[solve_qrator] Начинаю polling куки...');
 
     const MAX_ATTEMPTS = 3;
     let qratorCookie = null;
+    const pollStartTime = Date.now();
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const deadline = Date.now() + 30000; // 30 сек на попытку
+      const attemptStartTime = Date.now();
+      const deadline = attemptStartTime + 60000; // 60 сек на попытку (Qrator может быть медленным)
+      let checkCount = 0;
       while (Date.now() < deadline) {
         const cookies = await context.cookies();
+        const allCookies = cookies.map((c) => c.name);
+
         qratorCookie = cookies.find((c) => c.name === 'qrator_jsid2');
+        checkCount++;
+
+        // Логируем статус каждые 10 проверок или когда нашли jsid2
+        if (checkCount % 10 === 0 || qratorCookie) {
+          const elapsed = Math.floor((Date.now() - attemptStartTime) / 1000);
+          console.error(`[solve_qrator] Проверка #${checkCount} (${elapsed}s): ${allCookies.length} кук, qrator_jsid2=${qratorCookie ? '✅' : '❌'}`);
+          if (qratorCookie) {
+            console.error(`[solve_qrator] Доступные qrator куки: ${allCookies.filter((n) => n.includes('qrator')).join(', ')}`);
+          }
+        }
+
         if (qratorCookie) break;
-        await page.waitForTimeout(500);
+        await page.waitForTimeout(300);
       }
 
       if (qratorCookie) break;
 
       if (attempt < MAX_ATTEMPTS - 1) {
-        console.error(`[solve_qrator] Попытка ${attempt + 1}: qrator_jsid2 не получена, перезагружаем...`);
+        console.error(`[solve_qrator] Попытка ${attempt + 1}: qrator_jsid2 не получена за 60s, перезагружаем...`);
         try {
           await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
         } catch (err) {
@@ -107,27 +135,32 @@ async function resolveQrator() {
     if (!qratorCookie) {
       console.error('[solve_qrator] ❌ qrator_jsid2 не найдена в куках');
       console.error('[solve_qrator] Доступные куки:', cookies.map((c) => c.name).join(', '));
-
-      // Пытаемся найти хотя бы PHPSESSID
-      const phpSessionCookie = cookies.find((c) => c.name === 'PHPSESSID');
-      if (phpSessionCookie) {
-        console.error('[solve_qrator] ⚠️  Получена PHPSESSID (без qrator_jsid2)');
-      }
-
       process.exit(1);
     }
 
-    console.error(`[solve_qrator] ✓ qrator_jsid2 получена: ${qratorCookie.value.substring(0, 20)}...`);
+    const elapsed_total = Math.floor((Date.now() - pollStartTime) / 1000);
+    console.error(`[solve_qrator] ✓ qrator_jsid2 получена за ${elapsed_total}s`);
 
-    // Собираем все куки dns-shop.ru (jsid2 + PHPSESSID + _csrf) — пригодятся в Python
+    // Собираем все куки dns-shop.ru (3 qrator куки + PHPSESSID + _csrf и т.д.)
     const cookiesDict = {};
+    const qratorCookies = [];
     for (const c of cookies) {
       if (c.domain && c.domain.toLowerCase().includes('dns-shop.ru')) {
         cookiesDict[c.name] = c.value;
+        if (c.name.includes('qrator')) {
+          qratorCookies.push(c.name);
+        }
       }
     }
     // Гарантируем, что jsid2 точно там (даже если domain у неё иной)
-    cookiesDict.qrator_jsid2 = qratorCookie.value;
+    const jsid2Cookie = cookies.find((c) => c.name === 'qrator_jsid2');
+    if (jsid2Cookie) {
+      cookiesDict.qrator_jsid2 = jsid2Cookie.value;
+    }
+
+    console.error(`[solve_qrator] Финально собрано кук: ${Object.keys(cookiesDict).length}`);
+    console.error(`[solve_qrator] Qrator куки (${qratorCookies.length}): ${qratorCookies.join(', ')}`);
+    console.error(`[solve_qrator] Все куки: ${Object.keys(cookiesDict).join(', ')}`);
 
     console.log('__QRATOR_COOKIES__');
     console.log(JSON.stringify(cookiesDict));

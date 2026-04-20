@@ -4,7 +4,6 @@ import pytest
 
 from parser.session_manager import (
     SessionManager,
-    _build_city_cookie,
     _get_base_headers,
     _parse_cookie_str,
 )
@@ -148,33 +147,3 @@ class TestSessionManager:
         sm.set_csrf("token-123")
 
         assert sm._csrf_token == "token-123"
-
-
-class TestBuildCityCookie:
-    def test_build_city_cookie_has_required_fields(self):
-        """_build_city_cookie - содержит обязательные поля."""
-        cookies = _build_city_cookie()
-
-        assert "city_path" in cookies
-        assert "IsInterregionalPickupAllowed" in cookies or "IsInterregionalCourierAllowed" in cookies
-
-    def test_build_city_cookie_city_path_format(self):
-        """_build_city_cookie - city_path имеет правильный формат."""
-        cookies = _build_city_cookie()
-
-        # city_path должен быть строка
-        assert isinstance(cookies["city_path"], str)
-        assert len(cookies["city_path"]) > 0
-
-    def test_build_city_cookie_has_current_path(self):
-        """_build_city_cookie - содержит current_path."""
-        cookies = _build_city_cookie()
-
-        assert "current_path" in cookies
-        assert isinstance(cookies["current_path"], str)
-
-    def test_build_city_cookie_is_dict(self):
-        """_build_city_cookie - возвращает dict."""
-        cookies = _build_city_cookie()
-
-        assert isinstance(cookies, dict)

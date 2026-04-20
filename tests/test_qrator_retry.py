@@ -170,7 +170,7 @@ class TestResolveQratorWithRetry:
 
 
 class TestSessionInitWithRetryAndCleanup:
-    """Тесты логики инициализации сессии с retry и очисткой profile."""
+    """Тесты логики инициализации сессии с retry (cleanup теперь в qrator_resolver)."""
 
     @pytest.mark.asyncio
     async def test_init_session_success_first_try(self):
@@ -180,15 +180,17 @@ class TestSessionInitWithRetryAndCleanup:
         session_mgr = SessionManager()
 
         with patch.object(session_mgr, '_resolve_qrator', new_callable=AsyncMock, return_value=True):
-            with patch.object(session_mgr, '_fetch_base_cookies', new_callable=AsyncMock, return_value=True):
-                result = await session_mgr._init_session()
+            result = await session_mgr._init_session()
 
-                assert result is True
-                assert session_mgr._initialized is True
+            assert result is True
+            assert session_mgr._initialized is True
+            # Проверяем что куки города установлены
+            assert 'city_path' in session_mgr._cookies
+            assert 'current_path' in session_mgr._cookies
 
     @pytest.mark.asyncio
     async def test_init_session_qrator_fails_first_try_succeeds_second(self):
-        """При ошибке Qrator очищает profile и повторяет, со 2-й раз успех."""
+        """При ошибке Qrator повторяет, со 2-й раз успех."""
         from parser.session_manager import SessionManager
 
         session_mgr = SessionManager()
@@ -201,16 +203,13 @@ class TestSessionInitWithRetryAndCleanup:
             return resolve_count > 1
 
         with patch.object(session_mgr, '_resolve_qrator', side_effect=mock_resolve):
-            with patch.object(session_mgr, '_fetch_base_cookies', new_callable=AsyncMock, return_value=True):
-                with patch('parser.session_manager.cleanup_chromium_profile') as mock_cleanup:
-                    with patch('asyncio.sleep', new_callable=AsyncMock):
-                        result = await session_mgr._init_session()
+            with patch('asyncio.sleep', new_callable=AsyncMock):
+                result = await session_mgr._init_session()
 
-                        assert result is True
-                        # Проверяем что cleanup был вызван один раз
-                        assert mock_cleanup.call_count == 1
-                        # Проверяем что resolve был вызван дважды
-                        assert resolve_count == 2
+                assert result is True
+                # Проверяем что resolve был вызван дважды
+                assert resolve_count == 2
+                assert session_mgr._initialized is True
 
     @pytest.mark.asyncio
     async def test_init_session_qrator_fails_twice_returns_false(self):
@@ -220,11 +219,8 @@ class TestSessionInitWithRetryAndCleanup:
         session_mgr = SessionManager()
 
         with patch.object(session_mgr, '_resolve_qrator', new_callable=AsyncMock, return_value=False):
-            with patch('parser.session_manager.cleanup_chromium_profile') as mock_cleanup:
-                with patch('asyncio.sleep', new_callable=AsyncMock):
-                    result = await session_mgr._init_session()
+            with patch('asyncio.sleep', new_callable=AsyncMock):
+                result = await session_mgr._init_session()
 
-                    assert result is False
-                    assert session_mgr._initialized is False
-                    # Cleanup должен быть вызван один раз (при первой ошибке)
-                    assert mock_cleanup.call_count == 1
+                assert result is False
+                assert session_mgr._initialized is False

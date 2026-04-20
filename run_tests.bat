@@ -1,11 +1,17 @@
 @echo off
+setlocal enabledelayedexpansion
+chcp 65001 >nul
 echo Запуск тестов...
-python -m pytest tests/ -v --tb=short
-if %errorlevel% equ 0 (
-    echo.
+echo.
+
+python -m pytest tests/ -v --tb=short -x
+set TEST_RESULT=!errorlevel!
+
+echo.
+if !TEST_RESULT! equ 0 (
     echo ✅ Все тесты пройдены!
 ) else (
-    echo.
-    echo ❌ Некоторые тесты не пройдены
+    echo ❌ Некоторые тесты не пройдены (код ошибки: !TEST_RESULT!)
 )
+echo.
 pause

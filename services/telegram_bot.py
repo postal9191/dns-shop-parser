@@ -130,11 +130,13 @@ class TelegramBot:
         """Обрабатывает обновление от Telegram (сообщения и callback-кнопки)."""
         # Обработка callback-кнопок (inline)
         if "callback_query" in update:
+            logger.info("[TG BOT] ✉️  Получен callback_query")
             await self._handle_callback_query(update["callback_query"])
             return
 
         # Обработка сообщений
         if "message" not in update:
+            logger.debug("[TG BOT] Обновление без message/callback_query: %s", list(update.keys()))
             return
 
         message = update["message"]
@@ -246,9 +248,9 @@ class TelegramBot:
             chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", ""))
             data = callback_query.get("data", "")
 
-            logger.debug(
-                "[TG BOT ADMIN] Получен callback: user=%s, chat=%s, data=%s, admin_id=%s",
-                user_id, chat_id, data, self.admin_id
+            logger.info(
+                "[TG BOT ADMIN] Callback: user=%s, data=%s, admin_id=%s, controller=%s",
+                user_id, data, self.admin_id, "OK" if self.parser_controller else "NONE"
             )
 
             if not self.admin_id:
@@ -268,21 +270,26 @@ class TelegramBot:
 
             # Обработка команд
             if data == "admin_start":
-                if await self.parser_controller.start():
+                result = await self.parser_controller.start()
+                logger.info("[TG BOT ADMIN] admin_start result: %s", result)
+                if result:
                     await self._answer_callback(callback_id, "✅ Парсер запущен")
                 else:
                     await self._answer_callback(callback_id, "⚠️ Парсер уже работает", alert=True)
                 logger.info("[TG BOT ADMIN] Парсер запущен админом %s", user_id)
 
             elif data == "admin_stop":
-                if await self.parser_controller.stop():
+                result = await self.parser_controller.stop()
+                logger.info("[TG BOT ADMIN] admin_stop result: %s", result)
+                if result:
                     await self._answer_callback(callback_id, "✅ Парсер остановлен")
                 else:
                     await self._answer_callback(callback_id, "⚠️ Парсер уже остановлен", alert=True)
                 logger.info("[TG BOT ADMIN] Парсер остановлен админом %s", user_id)
 
             elif data == "admin_restart":
-                await self.parser_controller.restart()
+                result = await self.parser_controller.restart()
+                logger.info("[TG BOT ADMIN] admin_restart result: %s", result)
                 await self._answer_callback(callback_id, "✅ Парсер перезагружен")
                 logger.info("[TG BOT ADMIN] Парсер перезагружен админом %s", user_id)
 
@@ -298,20 +305,26 @@ class TelegramBot:
                 logger.info("[TG BOT ADMIN] Запрос интервала от админа %s", user_id)
 
             elif data == "admin_logs":
+                logger.info("[TG BOT ADMIN] Отправка логов админу %s", user_id)
                 await self._answer_callback(callback_id, "")
                 await self._send_logs(chat_id)
 
             elif data == "admin_status":
+                logger.info("[TG BOT ADMIN] Запрос статуса админом %s", user_id)
                 await self._answer_callback(callback_id, "")
                 status = self.parser_controller.get_status()
                 await self.send_message(
                     chat_id,
                     f"<b>📊 Статус парсера:</b>\n\n{status}"
                 )
-                logger.info("[TG BOT ADMIN] Статус запрошен админом %s", user_id)
+                logger.info("[TG BOT ADMIN] Статус отправлен админу %s", user_id)
+
+            else:
+                logger.error("[TG BOT ADMIN] ❌ Неизвестная команда callback: %s", data)
+                await self._answer_callback(callback_id, "❌ Неизвестная команда", alert=True)
 
         except Exception as exc:
-            logger.error("[TG BOT ADMIN] Ошибка при обработке callback: %s", exc)
+            logger.error("[TG BOT ADMIN] Ошибка при обработке callback: %s", exc, exc_info=True)
 
     async def _handle_interval_input(self, user_id: str, chat_id: str, text: str) -> None:
         """Обработка ввода нового интервала."""
@@ -426,11 +439,13 @@ class TelegramBot:
         try:
             while True:
                 try:
+                    logger.debug("[TG BOT POLLING] Отправляю getUpdates с offset=%d", offset)
                     async with self._get_session().get(
                         f"{self.api_url}/getUpdates",
                         params={"offset": offset, "timeout": 30, "allowed_updates": ["message", "callback_query"]},
                         timeout=aiohttp.ClientTimeout(total=35),
                     ) as resp:
+                        logger.debug("[TG BOT POLLING] Получен ответ статус %d", resp.status)
                         if resp.status == 409:
                             logger.warning("[TG BOT] 409 Conflict - ждём 30 сек пока предыдущий сеанс завершится")
                             await asyncio.sleep(30)
@@ -450,12 +465,19 @@ class TelegramBot:
                         updates = data.get("result", [])
                         if updates:
                             logger.debug("[TG BOT] Получено %d обновлений", len(updates))
+                            logger.debug("[TG BOT] Raw update keys: %s", [list(u.keys()) for u in updates])
 
                             for update in updates:
+                                update_type = "unknown"
+                                if "message" in update:
+                                    update_type = "message"
+                                elif "callback_query" in update:
+                                    update_type = "callback"
+                                logger.info("[TG BOT] Обновление тип: %s", update_type)
                                 try:
                                     await self.handle_update(update)
                                 except Exception as exc:
-                                    logger.error("[TG BOT] Ошибка при обработке обновления: %s", exc)
+                                    logger.error("[TG BOT] Ошибка при обработке обновления: %s", exc, exc_info=True)
 
                                 offset = update.get("update_id", offset) + 1
 

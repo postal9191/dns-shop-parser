@@ -9,16 +9,13 @@
 """
 
 import asyncio
-import hashlib
-import json
 import platform
 import re
-from urllib.parse import quote
 
 import aiohttp
 
 from config import config
-from parser.qrator_resolver import resolve_qrator_cookies, cleanup_chromium_profile
+from parser.qrator_resolver import resolve_qrator_cookies
 from utils.logger import logger
 
 
@@ -138,44 +135,6 @@ def _parse_cookie_str(raw: str) -> dict[str, str]:
     return result
 
 
-def _build_city_cookie() -> dict[str, str]:
-    """Создаёт куки города в формате DNS.
-
-    Использует предвычисленное значение current_path из конфига или генерирует новое.
-    """
-    cookies = {}
-
-    # Используем значения из конфига (они либо предвычислены, либо генерируются)
-    cookies['city_path'] = config.city_cookie_path
-
-    # Используем предвычисленное значение current_path если оно есть в конфиге
-    if config.city_cookie_current:
-        cookies['current_path'] = config.city_cookie_current
-        logger.info("[COOKIE] Используя предвычисленный current_path для города: %s", config.city_name)
-    else:
-        # Fallback: вычисляем сами (на случай если конфиг не установлен)
-        city_data = {
-            "city": config.city_id,
-            "cityName": config.city_name,
-            "method": "manual"
-        }
-        city_json = json.dumps(city_data, ensure_ascii=True, separators=(',', ':'))
-        php_serialized = f'a:2:{{i:0;s:12:"current_path";i:1;s:{len(city_json)}:"{city_json}";}}'
-        sha256_hash = hashlib.sha256(php_serialized.encode('utf-8')).hexdigest()
-        encoded = quote(php_serialized, safe='')
-        cookies['current_path'] = f'{sha256_hash}{encoded}'
-        logger.info("[COOKIE] Сгенерирован current_path для города: %s (ID=%s)", config.city_name, config.city_id)
-
-    # Дополнительные куки которые DNS может проверять
-    cookies['IsInterregionalPickupAllowed'] = 'true'
-    cookies['IsInterregionalCourierAllowed'] = 'false'
-
-    logger.debug("[COOKIE] Куки города: city_path=%s, current_path=%s...",
-                 cookies['city_path'], cookies['current_path'][:50] if cookies['current_path'] else '(empty)')
-
-    return cookies
-
-
 class SessionManager:
     """Управляет HTTP-сессией: куки, CSRF-токен."""
 
@@ -236,83 +195,6 @@ class SessionManager:
             headers["cookie"] = cookie_str
         return headers
 
-    async def _fetch_base_cookies(self) -> bool:
-        """
-        Получает PHPSESSID через каталог (там нет Qrator если есть qrator_jsid2).
-        """
-        logger.debug("[SESSION] Получаю базовые куки через каталог...")
-
-        connector = aiohttp.TCPConnector(ssl=True, limit=5)
-        temp_session = aiohttp.ClientSession(connector=connector)
-
-        try:
-            qrator_id2 = self._cookies.get('qrator_jsid2', '')
-
-            headers = {
-                "User-Agent": _BASE_HEADERS["user-agent"],
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ru-RU,ru;q=0.9",
-                "Cookie": f"qrator_jsid2={qrator_id2}; city_path=krasnodar",
-            }
-
-            # Пробуем каталог — он меньше защищён
-            urls_to_try = [
-                f"{config.api_base_url}/catalog/markdown/",
-                f"{config.api_base_url}/",
-            ]
-
-            for url in urls_to_try:
-                await HTTPLogger.log_request("GET", url, headers=headers)
-
-                async with temp_session.get(
-                    url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                    allow_redirects=True,
-                ) as resp:
-                    set_cookies = resp.headers.getall('Set-Cookie', [])
-                    new_cookies = {}
-                    for sc in set_cookies:
-                        pair = sc.split(';')[0].strip()
-                        if '=' in pair:
-                            k, _, v = pair.partition('=')
-                            # ВАЖНО: НЕ перезаписываем куки города (их строим программно!)
-                            if k.strip() not in ['current_path', 'city_path']:
-                                new_cookies[k.strip()] = v.strip()
-                                self._cookies[k.strip()] = v.strip()
-
-                    await HTTPLogger.log_response(
-                        resp.status, url,
-                        content_type=resp.content_type,
-                        cookies=new_cookies if new_cookies else None
-                    )
-
-                    if resp.status == 200:
-                        logger.debug("[SESSION] Успешный GET %s: %d кук", url, len(self._cookies))
-                        break
-            
-            # Сервер уже отправил current_path в ответе, не перезаписываем
-            # Добавляем city_path и важные куки для региональной фильтрации
-            if 'city_path' not in self._cookies:
-                self._cookies['city_path'] = 'krasnodar'
-
-            self._cookies['IsInterregionalPickupAllowed'] = 'true'
-            self._cookies['IsInterregionalCourierAllowed'] = 'false'
-
-            logger.debug(
-                "[SESSION] Получено %d кук: %s",
-                len(self._cookies),
-                list(self._cookies.keys())[:12],
-            )
-            
-            return 'PHPSESSID' in self._cookies or len(self._cookies) > 3
-                
-        except Exception as exc:
-            logger.error("[SESSION] Ошибка при получении базовых кук: %s", exc)
-            return False
-        finally:
-            await temp_session.close()
-
     async def _resolve_qrator(self) -> bool:
         """Решает Qrator challenge и импортирует ВСЕ куки dns-shop.ru из браузера.
 
@@ -344,42 +226,37 @@ class SessionManager:
         return True
 
     async def _init_session(self, force_qrator: bool = False, _retry_count: int = 0) -> bool:
-        """Полная инициализация: чистим состояние → Qrator → база → город.
+        """Полная инициализация: чистим состояние → Qrator → город куки из .env.
 
         Параметр force_qrator оставлен для обратной совместимости, но теперь
         Qrator всегда решается заново (кеш удалён полностью).
         """
-        logger.info("[SESSION] Инициализация сессии (без браузера)...")
+        logger.info("[SESSION] Инициализация сессии...")
 
         # Всегда стартуем с пустыми куками — исключает «протухшие» jsid2
         # от прошлой итерации, из-за которых Qrator мог ругаться.
         self._cookies.clear()
 
-        # 1. Решаем Qrator challenge (иначе главная страница вернет 401)
+        # 1. Решаем Qrator challenge (браузер получает все куки: qrator_jsid2, qrator_jsr, qrator_ssid2, PHPSESSID, _csrf и т.д.)
         qrator_success = await self._resolve_qrator()
         if not qrator_success:
-            # Если первая попытка не удалась и это не повтор — очищаем profile и повторяем
+            # Если первая попытка не удалась и это не повтор — повторяем
+            # (профиль уже очищен в resolve_qrator_cookies на каждый вызов)
             if _retry_count == 0:
-                logger.warning("[SESSION] ⚠️ Первая попытка Qrator не удалась, очищаю profile и повторяю...")
-                cleanup_chromium_profile()
-                # Даём браузеру время создать новый profile
+                logger.warning("[SESSION] ⚠️ Первая попытка Qrator не удалась, повторяю...")
                 await asyncio.sleep(2)
                 return await self._init_session(force_qrator=force_qrator, _retry_count=1)
             else:
-                logger.error("[SESSION] ❌ КРИТИЧНО: Qrator challenge не решён даже после очистки profile")
+                logger.error("[SESSION] ❌ КРИТИЧНО: Qrator challenge не решён даже после повтора")
                 logger.error("[SESSION] Возможные причины: IP забанен, DNS-Shop усилил защиту, solve_qrator.js неработающий")
                 return False
 
-        # 2. Догружаем базовые куки обычным HTTP-запросом (контрольная проверка).
-        #    Если браузер уже отдал PHPSESSID/_csrf — они уже в self._cookies.
-        if not await self._fetch_base_cookies():
-            logger.warning("[SESSION] ⚠️ Не удалось получить базовые куки через GET, продолжаем...")
-
-        # 3. ГЛАВНОЕ: строим куки города программно (не доверяем REST API - может вернуть Москву)
-        logger.info("[SESSION] Строю куки города программно для: %s", config.city_name)
-        city_cookies = _build_city_cookie()
-        self._cookies.update(city_cookies)
-        logger.info("[SESSION] Куки города построены: %s", list(city_cookies.keys()))
+        # 2. Переписываем куки города из .env (браузер может выбрать иной регион, но мы выбираем нужный)
+        self._cookies['city_path'] = config.city_cookie_path
+        self._cookies['current_path'] = config.city_cookie_current
+        self._cookies['IsInterregionalPickupAllowed'] = 'true'
+        self._cookies['IsInterregionalCourierAllowed'] = 'false'
+        logger.info("[SESSION] Куки города установлены из .env: %s", config.city_name)
 
         logger.info(
             "[SESSION] ✅ Сессия инициализирована, всего кук: %d (%s)",

@@ -73,6 +73,10 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
     Возвращает: {'qrator_jsid2': ..., 'PHPSESSID': ..., '_csrf': ..., ...}
                 или None при ошибке.
     """
+    # Всегда стартуем с чистого профиля — каждый запуск как первый
+    if retry_count == 0:
+        cleanup_chromium_profile()
+
     max_retries = 3
     script_path = get_solve_script_path()
     if not script_path.exists():
