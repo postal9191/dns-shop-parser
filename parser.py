@@ -131,6 +131,7 @@ class DNSMonitorBrowserless:
             uuids, cat.id, cat.label, uuid_to_status=uuid_to_status
         )
 
+        price_changes = []
         if products:
             saved, price_changes = self.db.upsert_products(products)
             total_updated += saved
@@ -139,10 +140,6 @@ class DNSMonitorBrowserless:
                 "[PARSE]   OK Загружено и сохранено %d товаров",
                 saved,
             )
-
-            deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
-            if deleted:
-                logger.info("[PARSE]   DEL Удалено %d проданных товаров", deleted)
 
             # Собираем изменения цен (кроме первого запуска)
             if price_changes and not is_first_run:
@@ -175,6 +172,28 @@ class DNSMonitorBrowserless:
                 logger.info("[PARSE]   (пропускаем ТГ на первом запуске)")
             else:
                 logger.debug("[PARSE]   (новых товаров не найдено)")
+        else:
+            logger.warning("[PARSE]   ⚠️ Товары не получены от сайта (может быть сбой парсинга)")
+
+        # КРИТИЧЕСКОЕ: удаляем товары ВСЕГДА (но безопасно)
+        # Идемпотентность: если процесс упадёт, при следующем цикле всё синхронизируется
+        # Защита: если uuids пуст (сбой парсинга), delete_products_not_in_uuids не удаляет (возвращает 0)
+        before_delete = self.db.get_products_by_category(cat.id)
+        deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
+        after_delete = self.db.get_products_by_category(cat.id)
+
+        if deleted:
+            logger.info(
+                "[PARSE]   DEL Удалено %d проданных товаров (было %d, осталось %d)",
+                deleted, len(before_delete), len(after_delete)
+            )
+        elif before_delete and not uuids:
+            # ЗАЩИТА: получено 0 товаров → не удаляем (может быть свет выключился)
+            # При следующем цикле товары синхронизируются
+            logger.warning(
+                "[PARSE]   ⚠️ Получено 0 товаров, товары в категории не удаляются (защита от сбоя). Синхронизируются при следующем цикле.",
+                len(before_delete)
+            )
 
         # Обновляем состояние категории с хэшем UUID (используем реальное количество)
         self.db.update_category_state(cat.id, cat.label, len(uuids), uuids)
@@ -269,13 +288,26 @@ class DNSMonitorBrowserless:
 
             # Итоги цикла
             total_in_db = self.db.get_product_count()
+            delta = total_in_db - total_before
+
             logger.info(
-                "[PARSE] Цикл завершён: новых %d, обновлено %d, цены изменились %d, всего в БД: %d",
+                "[PARSE] Цикл завершён: новых %d, обновлено %d, цены изменились %d, всего в БД: %d (было %d, изменение: %+d)",
                 total_new_products,
                 total_updated,
                 len(all_price_changes),
                 total_in_db,
+                total_before,
+                delta,
             )
+
+            # Если есть расхождение - логируем дополнительную информацию
+            if delta != total_new_products and total_new_products > 0:
+                logger.warning(
+                    "[PARSE] ⚠️ ВНИМАНИЕ: добавлено %d новых, но в БД +%d товаров (разница: %+d). Проверьте логику delete_products_not_in_uuids",
+                    total_new_products,
+                    delta,
+                    delta - total_new_products,
+                )
 
         except Exception as exc:
             logger.error("[PARSE] ERR Критическая ошибка в цикле парсинга: %s", exc)
