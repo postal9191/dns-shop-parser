@@ -114,6 +114,18 @@ class TelegramBot:
         logger.info("[TG BOT] Сообщение отправлено %d подписчикам", success_count)
         return success_count
 
+    def _get_available_commands(self, user_id: str) -> str:
+        """Возвращает список доступных команд для пользователя."""
+        commands = (
+            "/start - подписаться на уведомления о новых товарах\n"
+            "/stop - отписаться от уведомлений"
+        )
+
+        if user_id == self.admin_id:
+            commands += "\n/admin - панель управления"
+
+        return "Доступные команды:\n" + commands
+
     async def handle_update(self, update: dict) -> None:
         """Обрабатывает обновление от Telegram (сообщения и callback-кнопки)."""
         # Обработка callback-кнопок (inline)
@@ -134,6 +146,11 @@ class TelegramBot:
             return
 
         try:
+            # Если ждем ответ с новым интервалом
+            if user_id in self._waiting_for_interval:
+                await self._handle_interval_input(user_id, chat_id, text)
+                return
+
             # Команда /admin (только для администратора)
             if text == "/admin":
                 await self._handle_admin_command(user_id, chat_id)
@@ -144,46 +161,40 @@ class TelegramBot:
                 if user_id in self.subscribed_users:
                     await self.send_message(
                         chat_id,
-                        "Вы уже подписаны на уведомления о новых товарах!\n"
-                        "Напишите /stop для отписки."
+                        "Вы уже подписаны на уведомления о новых товарах!"
                     )
                 else:
                     self._add_subscriber(user_id)
                     await self.send_message(
                         chat_id,
-                        "Подписка включена! Вы будете получать уведомления о новых товарах!\n"
-                        "Напишите /stop для отписки."
+                        "✅ Подписка включена! Вы будете получать уведомления о новых товарах!"
                     )
 
+                await self.send_message(chat_id, self._get_available_commands(user_id))
+                return
+
             # Команда /stop
-            elif text == "/stop":
+            if text == "/stop":
                 if user_id in self.subscribed_users:
                     self._remove_subscriber(user_id)
                     await self.send_message(
                         chat_id,
-                        "Подписка отключена. Вы больше не будете получать уведомления.\n"
-                        "Напишите /start чтобы снова подписаться."
+                        "✅ Подписка отключена. Вы больше не будете получать уведомления."
                     )
                 else:
                     await self.send_message(
                         chat_id,
-                        "Вы не подписаны на уведомления.\n"
-                        "Напишите /start для подписки."
+                        "Вы не подписаны на уведомления."
                     )
 
-            # Если ждемответ с новым интервалом
-            elif user_id in self._waiting_for_interval:
-                await self._handle_interval_input(user_id, chat_id, text)
+                await self.send_message(chat_id, self._get_available_commands(user_id))
+                return
 
             # Неизвестная команда
-            else:
-                await self.send_message(
-                    chat_id,
-                    "Доступные команды:\n"
-                    "/start - подписаться на уведомления о новых товарах\n"
-                    "/stop - отписаться от уведомлений\n"
-                    "/admin - панель управления (только для админа)"
-                )
+            await self.send_message(
+                chat_id,
+                self._get_available_commands(user_id)
+            )
         except Exception as exc:
             logger.error("[TG BOT] Ошибка при обработке сообщения: %s", exc)
 
