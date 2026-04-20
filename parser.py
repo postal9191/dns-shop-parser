@@ -42,7 +42,11 @@ class DNSMonitorBrowserless:
         """Инициализирует сессию безбраузерным способом (Node.js + Playwright)."""
         try:
             logger.info("[MAIN] Инициализация сессии (безбраузерный режим)")
-            await self.session_manager._init_session(force_qrator=force_qrator)
+            result = await self.session_manager._init_session(force_qrator=force_qrator)
+            if not result:
+                logger.error("[MAIN] ❌ КРИТИЧНО: Сессия не инициализирована (вероятно, Qrator не решился)")
+                logger.error("[MAIN] Решения: 1) Проверить IP (забанен?), 2) Очистить Chromium profile, 3) Проверить solve_qrator.js")
+                return False
             logger.info("[MAIN] ✓ Сессия инициализирована успешно")
             return True
         except Exception as exc:

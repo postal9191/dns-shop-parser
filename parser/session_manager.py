@@ -18,7 +18,7 @@ from urllib.parse import quote
 import aiohttp
 
 from config import config
-from parser.qrator_resolver import resolve_qrator_cookies
+from parser.qrator_resolver import resolve_qrator_cookies, cleanup_chromium_profile
 from utils.logger import logger
 
 
@@ -343,7 +343,7 @@ class SessionManager:
         )
         return True
 
-    async def _init_session(self, force_qrator: bool = False) -> bool:
+    async def _init_session(self, force_qrator: bool = False, _retry_count: int = 0) -> bool:
         """Полная инициализация: чистим состояние → Qrator → база → город.
 
         Параметр force_qrator оставлен для обратной совместимости, но теперь
@@ -358,7 +358,17 @@ class SessionManager:
         # 1. Решаем Qrator challenge (иначе главная страница вернет 401)
         qrator_success = await self._resolve_qrator()
         if not qrator_success:
-            logger.warning("[SESSION] ⚠️ Qrator challenge не решён — продолжаем без qrator_jsid2")
+            # Если первая попытка не удалась и это не повтор — очищаем profile и повторяем
+            if _retry_count == 0:
+                logger.warning("[SESSION] ⚠️ Первая попытка Qrator не удалась, очищаю profile и повторяю...")
+                cleanup_chromium_profile()
+                # Даём браузеру время создать новый profile
+                await asyncio.sleep(2)
+                return await self._init_session(force_qrator=force_qrator, _retry_count=1)
+            else:
+                logger.error("[SESSION] ❌ КРИТИЧНО: Qrator challenge не решён даже после очистки profile")
+                logger.error("[SESSION] Возможные причины: IP забанен, DNS-Shop усилил защиту, solve_qrator.js неработающий")
+                return False
 
         # 2. Догружаем базовые куки обычным HTTP-запросом (контрольная проверка).
         #    Если браузер уже отдал PHPSESSID/_csrf — они уже в self._cookies.

@@ -27,6 +27,20 @@ def get_solve_script_path() -> Path:
     return Path(__file__).parent.parent / "solve_qrator.js"
 
 
+def cleanup_chromium_profile() -> None:
+    """Очищает Chromium profile если он стал невалидным (протухшие куки, грязная кеш)."""
+    profile_dir = Path.home() / '.dns-parser-chromium'
+    if profile_dir.exists():
+        try:
+            logger.warning("[QRATOR] Очищаю Chromium profile: %s", profile_dir)
+            shutil.rmtree(profile_dir)
+            logger.info("[QRATOR] ✓ Profile очищена")
+        except Exception as e:
+            logger.error("[QRATOR] Ошибка при очистке profile: %s", e)
+    else:
+        logger.debug("[QRATOR] Profile не существует: %s", profile_dir)
+
+
 def _find_node_executable() -> str | None:
     node_exe = shutil.which("node")
     if node_exe:
@@ -46,9 +60,9 @@ def _find_node_executable() -> str | None:
     return None
 
 
-async def resolve_qrator_cookies(user_agent: str | None = None) -> dict[str, str] | None:
+async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int = 0) -> dict[str, str] | None:
     """
-    Запускает solve_qrator.js и возвращает словарь всех кук домена dns-shop.ru.
+    Запускает solve_qrator.js с retry логикой. До 3 попыток с экспоненциальной задержкой.
 
     ВАЖНО про user_agent: параметр принимается, но в Node НЕ передаётся.
     Причина — Chromium на каждой ОС шлёт свои client hints
@@ -59,6 +73,7 @@ async def resolve_qrator_cookies(user_agent: str | None = None) -> dict[str, str
     Возвращает: {'qrator_jsid2': ..., 'PHPSESSID': ..., '_csrf': ..., ...}
                 или None при ошибке.
     """
+    max_retries = 3
     script_path = get_solve_script_path()
     if not script_path.exists():
         logger.error("[QRATOR] solve_qrator.js не найден: %s", script_path)
@@ -74,8 +89,9 @@ async def resolve_qrator_cookies(user_agent: str | None = None) -> dict[str, str
     env.setdefault("QRATOR_TARGET", "https://www.dns-shop.ru/catalog/markdown/")
 
     try:
-        logger.debug("[QRATOR] Запускаю: %s %s (UA — авто по ОС Node)",
-                     node_exe, script_path)
+        attempt_label = f"попытка {retry_count + 1}/{max_retries}" if retry_count > 0 else ""
+        logger.debug("[QRATOR] Запускаю: %s %s %s(UA — авто по ОС Node)",
+                     node_exe, script_path, attempt_label)
 
         result = await asyncio.to_thread(
             subprocess.run,
@@ -93,6 +109,16 @@ async def resolve_qrator_cookies(user_agent: str | None = None) -> dict[str, str
             logger.warning("[QRATOR] solve_qrator.js завершился с кодом %d", result.returncode)
             logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-800:])
 
+            # Retry при ошибке (кроме timeout)
+            if retry_count < max_retries - 1:
+                wait_time = 2 ** retry_count  # 1, 2, 4 сек
+                logger.info("[QRATOR] Жду %d сек перед повтором...", wait_time)
+                await asyncio.sleep(wait_time)
+                return await resolve_qrator_cookies(user_agent, retry_count + 1)
+            else:
+                logger.error("[QRATOR] ❌ Qrator не решился после %d попыток", max_retries)
+                return None
+
         match = _COOKIES_PATTERN.search(output)
         if match:
             cookies_json = match.group(1).strip()
@@ -106,6 +132,13 @@ async def resolve_qrator_cookies(user_agent: str | None = None) -> dict[str, str
 
         logger.error("[QRATOR] Куки не найдены в выводе solve_qrator.js")
         logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-400:])
+
+        # Retry если куки не найдены
+        if retry_count < max_retries - 1:
+            wait_time = 2 ** retry_count
+            logger.info("[QRATOR] Жду %d сек перед повтором...", wait_time)
+            await asyncio.sleep(wait_time)
+            return await resolve_qrator_cookies(user_agent, retry_count + 1)
         return None
 
     except subprocess.TimeoutExpired:
