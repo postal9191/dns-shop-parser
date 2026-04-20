@@ -10,6 +10,7 @@ load_dotenv(override=True)
 class Config:
     telegram_token: str
     telegram_chat_id: str
+    telegram_chat_admin: str
     api_base_url: str
     cookies_str: str
     city_id: str
@@ -40,10 +41,12 @@ class Config:
         token = os.getenv("TELEGRAM_TOKEN", "").strip()
         # Telegram token необязателен, но если задан - нужен chat_id
         chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        admin_id = os.getenv("TELEGRAM_CHAT_ADMIN", "").strip()
 
         return cls(
             telegram_token=token,
             telegram_chat_id=chat_id,
+            telegram_chat_admin=admin_id,
             api_base_url=os.getenv("API_BASE_URL", "https://www.dns-shop.ru").rstrip("/"),
             cookies_str=os.getenv("DNS_COOKIES", ""),
             city_id=os.getenv("CITY_ID", "884019c7-cf52-11de-b72b-00151716f9f5"),

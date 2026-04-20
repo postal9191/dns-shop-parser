@@ -13,6 +13,7 @@ from pathlib import Path
 from config import config
 from parser.db_manager import DBManager
 from services.telegram_bot import init_telegram_bot
+from services.admin_panel import ParserController
 from utils.logger import logger
 
 # Определяем директорию проекта
@@ -56,20 +57,28 @@ async def telegram_bot_polling(telegram_bot) -> None:
     await telegram_bot.polling_loop()
 
 
-async def main_cycle() -> None:
-    """Главный цикл: парсинг товаров с безбраузерной инициализацией кук."""
+async def main_cycle(parser_controller: ParserController) -> None:
+    """Главный цикл: парсинг товаров с поддержкой управления админом."""
     logger.info("="*70)
     logger.info("[RUN] Запущен автоматический парсер DNS Shop")
     logger.info(f"[RUN] Режим: БЕЗ БРАУЗЕРА (Playwright + Node.js для Qrator)")
     logger.info(f"[RUN] Интервал обновления: {config.parse_interval} сек")
+    logger.info("[RUN] Админ-панель активна")
     logger.info("="*70)
 
     iteration = 0
     consecutive_errors = 0
     max_consecutive_errors = 5
+    wait_time = config.parse_interval
 
-    while True:
+    while not parser_controller.should_stop():
+        if not parser_controller.state.is_running:
+            logger.info("[RUN] ⏸️  Парсер остановлен админом, ожидание команды...")
+            await asyncio.sleep(5)
+            continue
+
         iteration += 1
+        parser_controller.state.iteration_count = iteration
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         logger.info("")
@@ -79,7 +88,6 @@ async def main_cycle() -> None:
             logger.warning(f"[RUN] Подряд ошибок: {consecutive_errors}/{max_consecutive_errors}")
         logger.info("="*70)
 
-        # Запускаем парсер (инициализация кук происходит внутри через SessionManager)
         if await run_parser():
             consecutive_errors = 0
             logger.info("[RUN] ✅ Парсер завершен успешно")
@@ -88,16 +96,15 @@ async def main_cycle() -> None:
             logger.error(f"[RUN] ❌ Парсер завершен с ошибкой ({consecutive_errors}/{max_consecutive_errors})")
 
             if consecutive_errors >= max_consecutive_errors:
-                logger.critical("[RUN] 🔴 Достигнуто максимальное число подряд идущих ошибок. Требуется вмешательство!")
-                logger.info("[RUN] Рекомендации:")
-                logger.info("  1. Проверить логи в logs/app.log")
-                logger.info("  2. Проверить интернет соединение")
-                logger.info("  3. Проверить установку Node.js и Playwright")
-                logger.info("  4. Проверить не заблокирован ли IP на dns-shop.ru")
-                await asyncio.sleep(60)  # Не спешим, дождёмся вмешательства
+                logger.critical("[RUN] 🔴 Достигнуто максимальное число ошибок. Требуется вмешательство!")
+                await asyncio.sleep(60)
 
-        # Ждем перед следующей итерацией
-        wait_time = config.parse_interval
+        # Ждем перед следующей итерацией с проверкой команд админа
+        new_interval = parser_controller.get_pending_interval()
+        if new_interval:
+            wait_time = new_interval
+            logger.info(f"[RUN] ⏱️  Новый интервал: {wait_time} сек")
+
         logger.info(f"[RUN] Следующее обновление через {wait_time} сек...")
         try:
             await asyncio.sleep(wait_time)
@@ -109,16 +116,20 @@ async def main_cycle() -> None:
 async def main() -> None:
     """Запускает основной цикл и ТГ бота параллельно."""
 
-    # Инициализируем ТГ бота
+    # Инициализируем контроллер парсера и БД
+    parser_controller = ParserController()
     db = DBManager(config.db_path)
-    telegram_bot = init_telegram_bot(db)
+    telegram_bot = init_telegram_bot(db, parser_controller)
+
+    # Автоматический старт парсера при запуске
+    await parser_controller.start()
 
     # Создаем две независимые задачи:
-    # 1. Основной цикл (get_cookies + parser)
+    # 1. Основной цикл (get_cookies + parser) с поддержкой управления
     # 2. ТГ бот (polling - обработка команд)
 
     tasks = [
-        asyncio.create_task(main_cycle()),
+        asyncio.create_task(main_cycle(parser_controller)),
         asyncio.create_task(telegram_bot_polling(telegram_bot)),
     ]
 

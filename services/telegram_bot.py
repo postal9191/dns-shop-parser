@@ -1,25 +1,29 @@
 """
-Telegram бот для управления подписками на уведомления.
+Telegram бот для управления подписками на уведомления и админ-панель.
 """
 
 import asyncio
 import aiohttp
 from typing import Optional, Set
+import json
 
 from config import config
 from utils.logger import logger
 
 
 class TelegramBot:
-    """Telegram бот для управления подписками пользователей."""
+    """Telegram бот для управления подписками и админ-панели."""
 
-    def __init__(self, db_manager=None) -> None:
+    def __init__(self, db_manager=None, parser_controller=None) -> None:
         self.token = config.telegram_token
         self.api_url = f"https://api.telegram.org/bot{self.token}"
         self.db = db_manager
+        self.parser_controller = parser_controller
         self.enabled = bool(self.token)
+        self.admin_id = str(config.telegram_chat_admin) if hasattr(config, 'telegram_chat_admin') else None
         self.subscribed_users: Set[str] = set()
         self._session: Optional[aiohttp.ClientSession] = None
+        self._waiting_for_interval: Set[str] = set()
 
         if self.db and self.enabled:
             self.subscribed_users = self._load_subscribers()
@@ -67,15 +71,23 @@ class TelegramBot:
             logger.error("[TG BOT] Ошибка при удалении подписчика: %s", exc)
             return False
 
-    async def send_message(self, chat_id: str, text: str) -> bool:
-        """Отправляет сообщение пользователю."""
+    async def send_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> bool:
+        """Отправляет сообщение пользователю с опциональной клавиатурой."""
         if not self.enabled:
             return False
 
         try:
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML"
+            }
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+
             async with self._get_session().post(
                 f"{self.api_url}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                json=payload,
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 return resp.status == 200
@@ -103,7 +115,13 @@ class TelegramBot:
         return success_count
 
     async def handle_update(self, update: dict) -> None:
-        """Обрабатывает обновление от Telegram."""
+        """Обрабатывает обновление от Telegram (сообщения и callback-кнопки)."""
+        # Обработка callback-кнопок (inline)
+        if "callback_query" in update:
+            await self._handle_callback_query(update["callback_query"])
+            return
+
+        # Обработка сообщений
         if "message" not in update:
             return
 
@@ -115,46 +133,248 @@ class TelegramBot:
         if not user_id or not text or not chat_id:
             return
 
-        # Команда /start
-        if text == "/start":
-            if user_id in self.subscribed_users:
-                await self.send_message(
-                    chat_id,
-                    "Вы уже подписаны на уведомления о новых товарах!\n"
-                    "Напишите /stop для отписки."
-                )
-            else:
-                self._add_subscriber(user_id)
-                await self.send_message(
-                    chat_id,
-                    "Подписка включена! Вы будете получать уведомления о новых товарах!\n"
-                    "Напишите /stop для отписки."
-                )
+        try:
+            # Команда /admin (только для администратора)
+            if text == "/admin":
+                await self._handle_admin_command(user_id, chat_id)
+                return
 
-        # Команда /stop
-        elif text == "/stop":
-            if user_id in self.subscribed_users:
-                self._remove_subscriber(user_id)
-                await self.send_message(
-                    chat_id,
-                    "Подписка отключена. Вы больше не будете получать уведомления.\n"
-                    "Напишите /start чтобы снова подписаться."
-                )
+            # Команда /start
+            if text == "/start":
+                if user_id in self.subscribed_users:
+                    await self.send_message(
+                        chat_id,
+                        "Вы уже подписаны на уведомления о новых товарах!\n"
+                        "Напишите /stop для отписки."
+                    )
+                else:
+                    self._add_subscriber(user_id)
+                    await self.send_message(
+                        chat_id,
+                        "Подписка включена! Вы будете получать уведомления о новых товарах!\n"
+                        "Напишите /stop для отписки."
+                    )
+
+            # Команда /stop
+            elif text == "/stop":
+                if user_id in self.subscribed_users:
+                    self._remove_subscriber(user_id)
+                    await self.send_message(
+                        chat_id,
+                        "Подписка отключена. Вы больше не будете получать уведомления.\n"
+                        "Напишите /start чтобы снова подписаться."
+                    )
+                else:
+                    await self.send_message(
+                        chat_id,
+                        "Вы не подписаны на уведомления.\n"
+                        "Напишите /start для подписки."
+                    )
+
+            # Если ждемответ с новым интервалом
+            elif user_id in self._waiting_for_interval:
+                await self._handle_interval_input(user_id, chat_id, text)
+
+            # Неизвестная команда
             else:
                 await self.send_message(
                     chat_id,
-                    "Вы не подписаны на уведомления.\n"
-                    "Напишите /start для подписки."
+                    "Доступные команды:\n"
+                    "/start - подписаться на уведомления о новых товарах\n"
+                    "/stop - отписаться от уведомлений\n"
+                    "/admin - панель управления (только для админа)"
                 )
+        except Exception as exc:
+            logger.error("[TG BOT] Ошибка при обработке сообщения: %s", exc)
 
-        # Неизвестная команда
-        else:
+    async def _handle_admin_command(self, user_id: str, chat_id: str) -> None:
+        """Обработка команды /admin с меню управления."""
+        # Проверка прав администратора
+        if user_id != self.admin_id:
+            logger.warning("[TG BOT ADMIN] Попытка доступа к админ-панели от пользователя %s", user_id)
+            await self.send_message(chat_id, "❌ У вас нет доступа к админ-панели")
+            return
+
+        if not self.parser_controller:
+            await self.send_message(chat_id, "❌ Контроллер парсера не инициализирован")
+            return
+
+        # Создаем inline-кнопки
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "▶️ Запустить", "callback_data": "admin_start"},
+                    {"text": "⏹ Остановить", "callback_data": "admin_stop"}
+                ],
+                [
+                    {"text": "🔄 Перезапустить", "callback_data": "admin_restart"},
+                    {"text": "⏱ Интервал", "callback_data": "admin_interval"}
+                ],
+                [
+                    {"text": "📄 Логи", "callback_data": "admin_logs"}
+                ],
+                [
+                    {"text": "📊 Статус", "callback_data": "admin_status"}
+                ]
+            ]
+        }
+
+        logger.info("[TG BOT ADMIN] Админ-панель открыта для %s", user_id)
+        await self.send_message(
+            chat_id,
+            "🎛️ <b>Админ-панель парсера DNS</b>\n\n"
+            "Выберите действие:",
+            reply_markup=markup
+        )
+
+    async def _handle_callback_query(self, callback_query: dict) -> None:
+        """Обработка нажатий inline-кнопок."""
+        try:
+            callback_id = callback_query.get("id", "")
+            user_id = str(callback_query.get("from", {}).get("id", ""))
+            chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", ""))
+            data = callback_query.get("data", "")
+
+            logger.debug(
+                "[TG BOT ADMIN] Получен callback: user=%s, chat=%s, data=%s, admin_id=%s",
+                user_id, chat_id, data, self.admin_id
+            )
+
+            if not self.admin_id:
+                logger.warning("[TG BOT ADMIN] ❌ TELEGRAM_CHAT_ADMIN не установлен в .env")
+                await self._answer_callback(callback_id, "❌ Админ-панель не сконфигурирована", alert=True)
+                return
+
+            if user_id != self.admin_id:
+                logger.warning("[TG BOT ADMIN] Попытка доступа от %s (админ: %s)", user_id, self.admin_id)
+                await self._answer_callback(callback_id, "❌ Нет доступа", alert=True)
+                return
+
+            if not self.parser_controller:
+                logger.error("[TG BOT ADMIN] ❌ parser_controller не инициализирован")
+                await self._answer_callback(callback_id, "❌ Ошибка: контроллер не готов", alert=True)
+                return
+
+            # Обработка команд
+            if data == "admin_start":
+                if await self.parser_controller.start():
+                    await self._answer_callback(callback_id, "✅ Парсер запущен")
+                else:
+                    await self._answer_callback(callback_id, "⚠️ Парсер уже работает", alert=True)
+                logger.info("[TG BOT ADMIN] Парсер запущен админом %s", user_id)
+
+            elif data == "admin_stop":
+                if await self.parser_controller.stop():
+                    await self._answer_callback(callback_id, "✅ Парсер остановлен")
+                else:
+                    await self._answer_callback(callback_id, "⚠️ Парсер уже остановлен", alert=True)
+                logger.info("[TG BOT ADMIN] Парсер остановлен админом %s", user_id)
+
+            elif data == "admin_restart":
+                await self.parser_controller.restart()
+                await self._answer_callback(callback_id, "✅ Парсер перезагружен")
+                logger.info("[TG BOT ADMIN] Парсер перезагружен админом %s", user_id)
+
+            elif data == "admin_interval":
+                self._waiting_for_interval.add(user_id)
+                await self._answer_callback(callback_id, "")
+                await self.send_message(
+                    chat_id,
+                    "⏱️ <b>Установка интервала</b>\n\n"
+                    "Введите новый интервал в секундах (минимум 60):\n"
+                    "<i>Например: 1800</i>"
+                )
+                logger.info("[TG BOT ADMIN] Запрос интервала от админа %s", user_id)
+
+            elif data == "admin_logs":
+                await self._answer_callback(callback_id, "")
+                await self._send_logs(chat_id)
+
+            elif data == "admin_status":
+                await self._answer_callback(callback_id, "")
+                status = self.parser_controller.get_status()
+                await self.send_message(
+                    chat_id,
+                    f"<b>📊 Статус парсера:</b>\n\n{status}"
+                )
+                logger.info("[TG BOT ADMIN] Статус запрошен админом %s", user_id)
+
+        except Exception as exc:
+            logger.error("[TG BOT ADMIN] Ошибка при обработке callback: %s", exc)
+
+    async def _handle_interval_input(self, user_id: str, chat_id: str, text: str) -> None:
+        """Обработка ввода нового интервала."""
+        self._waiting_for_interval.discard(user_id)
+
+        try:
+            interval = int(text.strip())
+            if interval < 60:
+                await self.send_message(
+                    chat_id,
+                    "❌ Интервал должен быть минимум 60 секунд"
+                )
+                return
+
+            if await self.parser_controller.set_interval(interval):
+                await self.send_message(
+                    chat_id,
+                    f"✅ Интервал установлен на {interval} сек\n"
+                    f"(будет применен после следующей итерации)"
+                )
+                logger.info("[TG BOT ADMIN] Интервал изменен на %d сек админом %s", interval, user_id)
+            else:
+                await self.send_message(chat_id, "❌ Ошибка при установке интервала")
+        except ValueError:
             await self.send_message(
                 chat_id,
-                "Доступные команды:\n"
-                "/start - подписаться на уведомления о новых товарах\n"
-                "/stop - отписаться от уведомлений"
+                "❌ Некорректное значение. Введите число секунд"
             )
+
+    async def _send_logs(self, chat_id: str) -> None:
+        """Отправляет последние 100 строк логов."""
+        try:
+            log_file = "logs/app.log"
+            try:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    last_lines = lines[-100:] if len(lines) > 100 else lines
+                    logs_text = "".join(last_lines)
+
+                if len(logs_text) > 4096:
+                    chunks = [logs_text[i:i+4096] for i in range(0, len(logs_text), 4096)]
+                    for chunk in chunks:
+                        await self.send_message(
+                            chat_id,
+                            f"<pre>{chunk}</pre>",
+                        )
+                else:
+                    await self.send_message(
+                        chat_id,
+                        f"<pre>{logs_text}</pre>",
+                    )
+            except FileNotFoundError:
+                await self.send_message(chat_id, "❌ Логи не найдены (logs/app.log)")
+        except Exception as exc:
+            logger.error("[TG BOT ADMIN] Ошибка при отправке логов: %s", exc)
+            await self.send_message(chat_id, f"❌ Ошибка: {exc}")
+
+    async def _answer_callback(self, callback_id: str, text: str, alert: bool = False) -> bool:
+        """Отправляет ответ на callback_query (уведомление)."""
+        try:
+            payload = {
+                "callback_query_id": callback_id,
+                "text": text,
+                "show_alert": alert
+            }
+            async with self._get_session().post(
+                f"{self.api_url}/answerCallbackQuery",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
+        except Exception as exc:
+            logger.error("[TG BOT] Ошибка при отправке callback ответа: %s", exc)
+            return False
 
     async def polling_loop(self) -> None:
         """Бесконечный цикл для получения обновлений от Telegram (polling)."""
@@ -197,7 +417,7 @@ class TelegramBot:
                 try:
                     async with self._get_session().get(
                         f"{self.api_url}/getUpdates",
-                        params={"offset": offset, "timeout": 30, "allowed_updates": ["message"]},
+                        params={"offset": offset, "timeout": 30, "allowed_updates": ["message", "callback_query"]},
                         timeout=aiohttp.ClientTimeout(total=35),
                     ) as resp:
                         if resp.status == 409:
@@ -249,10 +469,10 @@ class TelegramBot:
 telegram_bot: Optional[TelegramBot] = None
 
 
-def init_telegram_bot(db_manager) -> TelegramBot:
+def init_telegram_bot(db_manager, parser_controller=None) -> TelegramBot:
     """Инициализирует Telegram бот."""
     global telegram_bot
-    telegram_bot = TelegramBot(db_manager)
+    telegram_bot = TelegramBot(db_manager, parser_controller)
     return telegram_bot
 
 
