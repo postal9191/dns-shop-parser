@@ -179,27 +179,20 @@ class DNSMonitorBrowserless:
         else:
             logger.warning("[PARSE]   ⚠️ Товары не получены от сайта (может быть сбой парсинга)")
 
-        # КРИТИЧЕСКОЕ: удаляем товары ВСЕГДА (но безопасно)
-        # Идемпотентность: если процесс упадёт, при следующем цикле всё синхронизируется
-        # Защита: если uuids пуст (сбой парсинга), delete_products_not_in_uuids не удаляет (возвращает 0)
-        before_delete = self.db.get_products_by_category(cat.id)
-        deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
-        after_delete = self.db.get_products_by_category(cat.id)
-
-        if deleted:
-            logger.info(
-                "[PARSE]   DEL Удалено %d проданных товаров (было %d, осталось %d)",
-                deleted, len(before_delete), len(after_delete)
-            )
-        elif before_delete and not uuids:
-            # ЗАЩИТА: получено 0 товаров → не удаляем (может быть свет выключился)
-            # При следующем цикле товары синхронизируются
+        # Удаляем проданные только если данные полные
+        fetch_complete = (cat.count == 0) or (len(uuids) >= cat.count * 0.9)
+        if not fetch_complete:
             logger.warning(
-                "[PARSE]   ⚠️ Получено 0 товаров, товары в категории не удаляются (защита от сбоя). Синхронизируются при следующем цикле.",
-                len(before_delete)
+                "[PARSE]   ⚠️ Неполный fetch: получено %d из %d ожидаемых — удаление пропущено, hash не обновляем",
+                len(uuids), cat.count,
             )
+            return (total_new_products, total_updated)
 
-        # Обновляем состояние категории с хэшем UUID (используем реальное количество)
+        deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
+        if deleted:
+            logger.info("[PARSE]   DEL Удалено %d проданных товаров", deleted)
+
+        # Обновляем состояние категории (только при полных данных)
         self.db.update_category_state(cat.id, cat.label, len(uuids), uuids)
 
         # Задержка между категориями

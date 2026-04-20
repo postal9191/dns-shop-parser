@@ -312,10 +312,6 @@ class SimpleDNSParser:
 
                 logger.debug("[PARSER] Страница %d: +%d UUID (итого %d)", page, len(new_uuids), len(all_uuids))
 
-                if len(new_uuids) < 18:
-                    logger.debug("[PARSER] Страница %d: получено %d UUID < 18 — последняя страница", page, len(new_uuids))
-                    break
-
                 if expected_count is not None and len(all_uuids) >= expected_count:
                     break
 
