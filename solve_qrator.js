@@ -9,29 +9,22 @@
  */
 
 const { chromium } = require('playwright');
+const path = require('path');
+const os = require('os');
 
 const TARGET_URL = 'https://www.dns-shop.ru/catalog/markdown/';
 const TIMEOUT = 50000; // 50 сек (Python ждёт 60 сек)
+const USER_DATA_DIR = path.join(os.homedir(), '.dns-parser-chromium');
 
 async function resolveQrator() {
-  let browser = null;
+  let context = null;
   try {
     console.error('[solve_qrator] Запуск Playwright браузера...');
-
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--no-first-run',
-        '--no-default-browser-check',
-      ],
-    });
 
     // UA строго по реальной ОС — иначе Qrator палит рассинхрон
     // (Chromium всё равно шлёт свои client hints для текущей платформы).
     let userAgent;
-    const platform = require('os').platform();
+    const platform = os.platform();
 
     if (platform === 'darwin') {
       userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
@@ -41,10 +34,17 @@ async function resolveQrator() {
       userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
     }
 
-    const context = await browser.newContext({
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+      headless: true,
       userAgent,
       locale: 'ru-RU',
       timezoneId: 'Europe/Moscow',
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
     });
 
     const page = await context.newPage();
@@ -134,16 +134,15 @@ async function resolveQrator() {
     console.log('__END_COOKIES__');
 
     await context.close();
-    await browser.close();
     process.exit(0);
 
   } catch (err) {
     console.error(`[solve_qrator] ❌ Ошибка: ${err.message}`);
     console.error(err.stack);
 
-    if (browser) {
+    if (context) {
       try {
-        await browser.close();
+        await context.close();
       } catch (e) {
         // ignore
       }

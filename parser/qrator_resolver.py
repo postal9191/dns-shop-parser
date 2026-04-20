@@ -1,9 +1,9 @@
 """
 Получение qrator_jsid2 (и сопутствующих кук dns-shop.ru) через Node.js + Playwright.
 
-БЕЗ КЕША: каждый вызов решает Qrator challenge заново.
-Причина — qrator_jsid2 живёт минуты, а «старые» куки на старте следующего цикла
-рушат валидацию (Qrator видит несоответствие fingerprint/UA и блокирует сессию).
+Chromium сохраняет профиль с куками в ~/.dns-parser-chromium/ между запусками.
+На 2м+ цикле браузер загружает сессию с диска — Qrator видит живые куки и не требует challenge.
+Если куки протухли — сайт сам их обновляет, мы забираем свежие.
 """
 
 import asyncio
@@ -21,14 +21,6 @@ _COOKIES_PATTERN = re.compile(
     r"__QRATOR_COOKIES__\s*\n(.*?)\n__END_COOKIES__",
     re.DOTALL,
 )
-
-# Файл устаревшего кеша — больше не используется, удаляется при импорте.
-_LEGACY_CACHE = Path(__file__).parent.parent / ".qrator_cache.json"
-if _LEGACY_CACHE.exists():
-    try:
-        _LEGACY_CACHE.unlink()
-    except Exception:
-        pass
 
 
 def get_solve_script_path() -> Path:
