@@ -118,6 +118,7 @@ class TelegramBot:
         """Возвращает список доступных команд для пользователя."""
         commands = (
             "/start - подписаться на уведомления о новых товарах\n"
+            "/menu - товары со скидками на сегодня\n"
             "/stop - отписаться от уведомлений"
         )
 
@@ -190,6 +191,17 @@ class TelegramBot:
                     )
 
                 await self.send_message(chat_id, self._get_available_commands(user_id))
+                return
+
+            # Команда /menu
+            if text == "/menu":
+                if user_id not in self.subscribed_users:
+                    await self.send_message(
+                        chat_id,
+                        "❌ Команда доступна только подписчикам. Нажмите /start для подписки"
+                    )
+                    return
+                await self._handle_menu_command(chat_id)
                 return
 
             # Неизвестная команда
@@ -399,6 +411,51 @@ class TelegramBot:
         except Exception as exc:
             logger.error("[TG BOT] Ошибка при отправке callback ответа: %s", exc)
             return False
+
+    async def _handle_menu_command(self, chat_id: str) -> None:
+        """Обработка команды /menu - показывает товары со скидками за сегодня."""
+        try:
+            if not self.db:
+                await self.send_message(chat_id, "❌ БД не инициализирована")
+                return
+
+            discounts = self.db.get_today_discounts()
+
+            if not discounts:
+                await self.send_message(
+                    chat_id,
+                    "📭 Сегодня нет товаров со скидками"
+                )
+                return
+
+            message = "🏷️ <b>Товары со скидками на сегодня:</b>\n\n"
+
+            for i, item in enumerate(discounts[:30], 1):
+                title = item["title"][:50]
+                if len(item["title"]) > 50:
+                    title += "..."
+
+                message += (
+                    f"{i}. <b>{title}</b>\n"
+                    f"   Категория: {item['category']}\n"
+                    f"   💰 {item['current_price']}₽ "
+                    f"<s>{item['previous_price']}₽</s> "
+                    f"(-{item['drop_percent']}%)\n"
+                    f"   🔗 <a href='{item['url']}'>Товар</a>\n\n"
+                )
+
+                if len(message) > 4000:
+                    await self.send_message(chat_id, message)
+                    message = ""
+
+            if message:
+                await self.send_message(chat_id, message)
+
+            logger.info("[TG BOT MENU] /menu запрос обработан, товаров: %d", len(discounts))
+
+        except Exception as exc:
+            logger.error("[TG BOT MENU] Ошибка при обработке /menu: %s", exc)
+            await self.send_message(chat_id, f"❌ Ошибка: {exc}")
 
     async def polling_loop(self) -> None:
         """Бесконечный цикл для получения обновлений от Telegram (polling)."""

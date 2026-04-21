@@ -315,6 +315,34 @@ class DBManager:
             """)
             return {row[0]: row[1] for row in cursor.fetchall()}
 
+    def get_today_discounts(self) -> list[dict]:
+        """Получает товары с обновленными ценами за сегодня (была скидка)."""
+        from datetime import date
+        today = date.today().isoformat()
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT id, title, url, current_price, previous_price, category_name,
+                       ROUND(100.0 * (previous_price - current_price) / previous_price, 1) as drop_percent
+                FROM products
+                WHERE DATE(updated_at) = ? AND previous_price > 0 AND current_price < previous_price
+                ORDER BY drop_percent DESC
+            """, (today,))
+            rows = cursor.fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "title": row[1],
+                "url": row[2],
+                "current_price": row[3],
+                "previous_price": row[4],
+                "category": row[5],
+                "drop_percent": row[6],
+            }
+            for row in rows
+        ]
+
     def close(self) -> None:
         """Закрывает БД."""
         pass
