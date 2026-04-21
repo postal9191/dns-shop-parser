@@ -95,23 +95,84 @@ check_nodejs() {
     fi
 }
 
-check_playwright() {
-    print_info "Проверка Playwright браузера..."
+check_google_chrome() {
+    print_info "Проверка Google Chrome stable..."
+
+    if command -v google-chrome &> /dev/null || command -v google-chrome-stable &> /dev/null; then
+        local CHROME_VERSION
+        CHROME_VERSION=$(google-chrome --version 2>/dev/null || google-chrome-stable --version 2>/dev/null)
+        print_success "Google Chrome установлен: $CHROME_VERSION"
+        return 0
+    fi
+
+    print_warning "Google Chrome не найден, установка..."
+
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+    fi
+
+    case $OS in
+        ubuntu|debian)
+            # Официальный репозиторий Google + сам пакет (тянет libnss3, fonts и т.п.)
+            sudo install -d -m 0755 /etc/apt/keyrings
+            wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+                | sudo gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+                | sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y google-chrome-stable
+            ;;
+        fedora|centos|rhel)
+            sudo tee /etc/yum.repos.d/google-chrome.repo > /dev/null <<'EOF'
+[google-chrome]
+name=google-chrome
+baseurl=http://dl.google.com/linux/chrome/rpm/stable/x86_64
+enabled=1
+gpgcheck=1
+gpgkey=https://dl.google.com/linux/linux_signing_key.pub
+EOF
+            if command -v dnf &> /dev/null; then
+                sudo dnf install -y google-chrome-stable
+            else
+                sudo yum install -y google-chrome-stable
+            fi
+            ;;
+        *)
+            print_error "Неподдерживаемый дистрибутив для авто-установки Chrome: $OS"
+            print_info "Установи вручную: https://www.google.com/chrome/"
+            return 1
+            ;;
+    esac
+
+    if command -v google-chrome &> /dev/null; then
+        print_success "Google Chrome установлен: $(google-chrome --version)"
+        return 0
+    else
+        print_error "Не удалось установить Google Chrome"
+        return 1
+    fi
+}
+
+check_node_modules() {
+    print_info "Проверка Node.js модулей (playwright-extra)..."
 
     cd "$PROJECT_DIR"
 
-    # Проверяем что npm зависимости установлены.
-    # Смотрим не только на факт наличия node_modules, но и на ключевые пакеты —
-    # иначе после обновления package.json новые deps (stealth и т.д.) не подтянутся.
+    # Нужны только playwright-core и playwright-extra (channel=chrome использует
+    # системный google-chrome, bundled Chromium-for-Testing не ставим — он палится
+    # по JA3/H2 fingerprint и Qrator отдаёт 403 на /__qrator/validate).
+    # puppeteer-extra-plugin-stealth тоже подтянется, но подключается он только
+    # при QRATOR_STEALTH=1 (на Linux+Chrome stealth наоборот ломает fingerprint).
     local NEED_NPM_INSTALL=0
     if [ ! -d "$PROJECT_DIR/node_modules" ]; then
         NEED_NPM_INSTALL=1
-        print_warning "Node.js модули не установлены, установка..."
+        print_warning "node_modules отсутствует, установка..."
     else
-        for pkg in playwright playwright-extra puppeteer-extra-plugin-stealth; do
+        for pkg in playwright-core playwright-extra; do
             if [ ! -d "$PROJECT_DIR/node_modules/$pkg" ]; then
                 NEED_NPM_INSTALL=1
-                print_warning "Пакет '$pkg' отсутствует в node_modules — переустановка..."
+                print_warning "Пакет '$pkg' отсутствует — переустановка..."
                 break
             fi
         done
@@ -121,20 +182,8 @@ check_playwright() {
         npm install --quiet 2>&1 | grep -v "npm warn\|npm notice" || true
     fi
 
-    # Пересобираем native модули (лучше native binding)
-    print_info "Пересборка native модулей..."
-    npm rebuild 2>&1 | grep -v "npm warn\|npm notice\|gyp info" || true
-
-    # Устанавливаем Playwright браузер
-    npx playwright install chromium --with-deps 2>&1 | tail -5
-
-    if [ $? -eq 0 ]; then
-        print_success "Playwright браузер установлен"
-        return 0
-    else
-        print_error "Не удалось установить Playwright браузер"
-        return 1
-    fi
+    print_success "Node.js модули готовы"
+    return 0
 }
 
 check_python() {
@@ -252,7 +301,8 @@ check_all_dependencies() {
 
     check_nodejs || return 1
     check_python || return 1
-    check_playwright || return 1
+    check_google_chrome || return 1
+    check_node_modules || return 1
     check_pip_dependencies || return 1
 
     # Сохраняем время последней проверки
