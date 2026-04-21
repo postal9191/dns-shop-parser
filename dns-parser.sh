@@ -316,25 +316,7 @@ check_all_dependencies() {
 ################################################################################
 
 start_service() {
-    print_header "Запуск DNS Parser"
-
-    # Проверка: не запущено ли уже через systemctl
-    if [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        print_warning "Сервис уже запущен через systemctl!"
-        print_info "Используй: sudo systemctl restart $SERVICE_NAME"
-        return 1
-    fi
-
-    # Проверка: не запущено ли уже через PID-файл
-    if [ -f "$PID_FILE" ]; then
-        if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-            PID=$(cat "$PID_FILE")
-            print_warning "Приложение уже запущено (PID: $PID)"
-            return 1
-        else
-            rm -f "$PID_FILE"
-        fi
-    fi
+    print_header "Запуск парсера (однократно)"
 
     check_all_dependencies || return 1
 
@@ -353,94 +335,219 @@ start_service() {
         return 1
     fi
 
-    print_info "Запуск приложения..."
+    print_info "Запуск парсера (в фоне)..."
     print_info "Режим: Node.js + Playwright (безбраузерный)"
 
-    # Запускаем в фоне с venv python
-    nohup "$VENV_PYTHON" "$PROJECT_DIR/run.py" > "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
+    # Запускаем parser.py в фоне
+    nohup "$VENV_PYTHON" "$PROJECT_DIR/parser.py" >> "$LOG_FILE" 2>&1 &
+    local PID=$!
 
-    sleep 2
+    sleep 1
 
-    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        PID=$(cat "$PID_FILE")
-        print_success "Приложение запущено (PID: $PID)"
-        print_info "Логи: $LOG_FILE"
-        print_info "Команда для просмотра логов: tail -f $LOG_FILE"
+    if kill -0 $PID 2>/dev/null; then
+        print_success "Парсер запущен в фоне (PID: $PID)"
+        print_info "Логи: tail -f $LOG_FILE"
     else
-        print_error "Не удалось запустить приложение"
+        print_error "Не удалось запустить парсер"
         if [ -f "$LOG_FILE" ]; then
-            print_info "Последние ошибки:"
-            tail -20 "$LOG_FILE"
-        else
-            print_warning "Лог файл не создан, проверьте ошибки выше"
+            print_info "Ошибка:"
+            tail -5 "$LOG_FILE"
         fi
         return 1
     fi
 }
 
-stop_service() {
-    print_header "Остановка DNS Parser"
+parse_env_interval() {
+    # Читает PARSE_INTERVAL из .env и преобразует в cron формат
+    local env_file="$PROJECT_DIR/.env"
+    local parse_interval=3600  # по умолчанию 1 час
 
-    local stopped=0
-
-    # Останавливаем через systemctl если запущено там
-    if [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        print_info "Остановка сервиса через systemctl..."
-        sudo systemctl stop "$SERVICE_NAME"
-        sleep 1
-        if ! sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-            print_success "Сервис остановлен (systemctl)"
-            stopped=1
-        fi
+    if [ -f "$env_file" ]; then
+        # Извлекаем PARSE_INTERVAL из .env
+        parse_interval=$(grep "^PARSE_INTERVAL=" "$env_file" 2>/dev/null | cut -d'=' -f2 | tr -d ' ')
     fi
 
-    # Останавливаем локальный процесс если запущен
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if kill -0 $PID 2>/dev/null; then
-            print_info "Остановка локального процесса (PID: $PID)..."
-            kill $PID
-            sleep 2
+    # Преобразуем секунды в cron формат
+    if [ -z "$parse_interval" ]; then
+        parse_interval=3600
+    fi
 
-            if ! kill -0 $PID 2>/dev/null; then
-                print_success "Приложение остановлено"
-                rm -f "$PID_FILE"
-                stopped=1
+    case $parse_interval in
+        60)
+            echo "* * * * *"  # каждую минуту
+            ;;
+        300)
+            echo "*/5 * * * *"  # каждые 5 минут
+            ;;
+        600)
+            echo "*/10 * * * *"  # каждые 10 минут
+            ;;
+        900)
+            echo "*/15 * * * *"  # каждые 15 минут
+            ;;
+        1800)
+            echo "*/30 * * * *"  # каждые 30 минут
+            ;;
+        3600)
+            echo "0 * * * *"  # каждый час
+            ;;
+        7200)
+            echo "0 */2 * * *"  # каждые 2 часа
+            ;;
+        86400)
+            echo "0 0 * * *"  # каждый день в 00:00
+            ;;
+        *)
+            # Для любого другого интервала - вычисляем минуты
+            local minutes=$((parse_interval / 60))
+            if [ $minutes -lt 60 ]; then
+                echo "*/$minutes * * * *"
             else
-                print_warning "Принудительная остановка..."
-                kill -9 $PID
-                rm -f "$PID_FILE"
-                print_success "Приложение остановлено (kill -9)"
-                stopped=1
+                local hours=$((minutes / 60))
+                echo "0 */$hours * * *"
             fi
-        else
-            rm -f "$PID_FILE"
-        fi
+            ;;
+    esac
+}
+
+setup_cron_hourly() {
+    print_header "Установка Cron (из PARSE_INTERVAL в .env)"
+
+    # Читаем интервал из .env
+    local PARSE_INTERVAL=3600
+    if [ -f "$PROJECT_DIR/.env" ]; then
+        PARSE_INTERVAL=$(grep "^PARSE_INTERVAL=" "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | tr -d ' ')
     fi
 
-    if [ $stopped -eq 0 ]; then
-        print_warning "Нет активных процессов"
+    if [ -z "$PARSE_INTERVAL" ]; then
+        PARSE_INTERVAL=3600
+        print_warning "PARSE_INTERVAL не найден в .env, используется значение по умолчанию: 3600 сек (1 час)"
+    else
+        print_info "PARSE_INTERVAL из .env: $PARSE_INTERVAL сек"
+    fi
+
+    # Преобразуем в cron формат
+    local CRON_SCHEDULE=$(parse_env_interval)
+    local CRON_CMD="cd $PROJECT_DIR && $VENV_DIR/bin/python3 $PROJECT_DIR/parser.py >> $LOG_FILE 2>&1"
+
+    # Описание расписания для вывода
+    local schedule_desc="каждый час"
+    case "$PARSE_INTERVAL" in
+        60) schedule_desc="каждую минуту" ;;
+        300) schedule_desc="каждые 5 минут" ;;
+        600) schedule_desc="каждые 10 минут" ;;
+        900) schedule_desc="каждые 15 минут" ;;
+        1800) schedule_desc="каждые 30 минут" ;;
+        3600) schedule_desc="каждый час" ;;
+        7200) schedule_desc="каждые 2 часа" ;;
+        86400) schedule_desc="каждый день" ;;
+        *) schedule_desc="каждые $((PARSE_INTERVAL / 60)) минут" ;;
+    esac
+
+    # Проверяем есть ли уже такой cron
+    if crontab -l 2>/dev/null | grep -q "$PROJECT_DIR/parser.py"; then
+        print_warning "Cron уже установлен для этого проекта"
+        print_info "Текущее расписание:"
+        crontab -l | grep "$PROJECT_DIR/parser.py" || true
+        print_info ""
+        print_info "Чтобы обновить расписание, удалите старый cron (пункт 4) и установите новый"
+        return 0
+    fi
+
+    # Создаём временный файл для cron
+    local CRON_FILE="/tmp/dns-parser-cron-$$.txt"
+    (crontab -l 2>/dev/null || true; echo "$CRON_SCHEDULE $CRON_CMD") > "$CRON_FILE"
+
+    # Устанавливаем новый cron
+    if crontab "$CRON_FILE" 2>/dev/null; then
+        print_success "Cron установлен"
+        print_info "Расписание: $schedule_desc"
+        print_info "Cron выражение: $CRON_SCHEDULE"
+        print_info "Команда: $CRON_CMD"
+        print_info ""
+        print_info "Проверить cron: crontab -l"
+        print_info "Удалить cron: через пункт меню 4"
+        rm -f "$CRON_FILE"
+        return 0
+    else
+        print_error "Не удалось установить cron"
+        rm -f "$CRON_FILE"
+        return 1
+    fi
+}
+
+remove_cron() {
+    print_header "Удаление Cron"
+
+    if ! crontab -l 2>/dev/null | grep -q "$PROJECT_DIR/parser.py"; then
+        print_warning "Cron не установлен"
+        return 0
+    fi
+
+    # Создаём новый cron без наших команд
+    local CRON_FILE="/tmp/dns-parser-cron-remove-$$.txt"
+    crontab -l 2>/dev/null | grep -v "$PROJECT_DIR/parser.py" > "$CRON_FILE" || true
+
+    # Устанавливаем обновленный cron
+    if [ -s "$CRON_FILE" ]; then
+        crontab "$CRON_FILE"
+    else
+        crontab -r 2>/dev/null || true
+    fi
+
+    print_success "Cron удален"
+    rm -f "$CRON_FILE"
+}
+
+show_cron_status() {
+    print_header "Статус Cron"
+
+    if crontab -l 2>/dev/null | grep -q "$PROJECT_DIR/parser.py"; then
+        print_success "Cron установлен"
+        print_info "Ваше расписание:"
+        crontab -l | grep "$PROJECT_DIR/parser.py"
+    else
+        print_warning "Cron не установлен"
+    fi
+    echo ""
+}
+
+stop_service() {
+    print_header "Остановка сервиса (systemd)"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        print_warning "Сервис не установлен в systemd"
+        return 0
+    fi
+
+    print_info "Остановка сервиса..."
+    sudo systemctl stop "$SERVICE_NAME" || true
+    sleep 1
+
+    if ! sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        print_success "Сервис остановлен"
+    else
+        print_warning "Не удалось остановить сервис"
     fi
 }
 
 restart_service() {
-    print_header "Перезапуск DNS Parser"
+    print_header "Перезапуск сервиса (systemd)"
 
-    if [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        print_info "Перезапуск через systemctl..."
-        sudo systemctl restart "$SERVICE_NAME"
-        sleep 2
-        if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
-            print_success "Сервис перезапущен"
-        else
-            print_error "Не удалось перезапустить сервис"
-            return 1
-        fi
+    if [ ! -f "$SERVICE_FILE" ]; then
+        print_warning "Сервис не установлен в systemd"
+        return 1
+    fi
+
+    print_info "Перезапуск сервиса..."
+    sudo systemctl restart "$SERVICE_NAME"
+    sleep 2
+
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Сервис перезапущен"
     else
-        stop_service
-        sleep 1
-        start_service
+        print_error "Не удалось перезапустить сервис"
+        return 1
     fi
 }
 
@@ -746,9 +853,90 @@ show_menu() {
     echo "  4 - Показать логи (tail -f)"
     echo "  5 - Проверить статус"
     echo "  6 - Управление systemd сервисом"
+    echo "  7 - Управление cron"
     echo "  0 - Выход"
     echo ""
     echo -n "Ваш выбор: "
+}
+
+kill_parser() {
+    print_header "Остановка парсера (принудительно)"
+
+    local killed=0
+
+    # Ищем процессы парсера
+    if pgrep -f "parser.py" > /dev/null; then
+        print_info "Найдены процессы парсера, остановка..."
+        pkill -f "parser.py"
+        sleep 1
+
+        if ! pgrep -f "parser.py" > /dev/null; then
+            print_success "Парсер остановлен"
+            killed=1
+        else
+            print_warning "Принудительная остановка..."
+            pkill -9 -f "parser.py"
+            print_success "Парсер остановлен (kill -9)"
+            killed=1
+        fi
+    else
+        print_warning "Процессов парсера не найдено"
+    fi
+
+    # Очищаем процессы Node.js
+    if pgrep -f "node" > /dev/null; then
+        print_info "Остановка Node.js процессов..."
+        pkill -f "node" || true
+        print_success "Node.js процессы остановлены"
+    fi
+}
+
+show_cron_menu() {
+    while true; do
+        echo ""
+        echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+        echo -e "${BLUE}║       Управление Cron (Linux)         ║${NC}"
+        echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+        echo ""
+        echo "  1 - Запустить парсер (однократно)"
+        echo "  2 - Остановить парсер (принудительно)"
+        echo "  3 - Показать логи (tail -f)"
+        echo "  4 - Установить cron (каждый час)"
+        echo "  5 - Удалить cron"
+        echo "  6 - Проверить статус cron"
+        echo "  0 - Назад в главное меню"
+        echo ""
+        echo -n "Ваш выбор: "
+
+        read -r choice
+
+        case $choice in
+            1)
+                start_service
+                ;;
+            2)
+                kill_parser
+                ;;
+            3)
+                show_logs
+                ;;
+            4)
+                setup_cron_hourly
+                ;;
+            5)
+                remove_cron
+                ;;
+            6)
+                show_cron_status
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Неверный выбор. Пожалуйста, выберите 0-6"
+                ;;
+        esac
+    done
 }
 
 main_loop() {
@@ -775,12 +963,15 @@ main_loop() {
             6)
                 show_systemd_menu
                 ;;
+            7)
+                show_cron_menu
+                ;;
             0)
                 print_info "До свидания!"
                 exit 0
                 ;;
             *)
-                print_error "Неверный выбор. Пожалуйста, выберите 0-6"
+                print_error "Неверный выбор. Пожалуйста, выберите 0-7"
                 ;;
         esac
     done
