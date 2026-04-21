@@ -100,9 +100,24 @@ check_playwright() {
 
     cd "$PROJECT_DIR"
 
-    # Проверяем что npm зависимости установлены
+    # Проверяем что npm зависимости установлены.
+    # Смотрим не только на факт наличия node_modules, но и на ключевые пакеты —
+    # иначе после обновления package.json новые deps (stealth и т.д.) не подтянутся.
+    local NEED_NPM_INSTALL=0
     if [ ! -d "$PROJECT_DIR/node_modules" ]; then
+        NEED_NPM_INSTALL=1
         print_warning "Node.js модули не установлены, установка..."
+    else
+        for pkg in playwright playwright-extra puppeteer-extra-plugin-stealth; do
+            if [ ! -d "$PROJECT_DIR/node_modules/$pkg" ]; then
+                NEED_NPM_INSTALL=1
+                print_warning "Пакет '$pkg' отсутствует в node_modules — переустановка..."
+                break
+            fi
+        done
+    fi
+
+    if [ $NEED_NPM_INSTALL -eq 1 ]; then
         npm install --quiet 2>&1 | grep -v "npm warn\|npm notice" || true
     fi
 

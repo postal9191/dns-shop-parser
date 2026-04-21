@@ -8,7 +8,12 @@
  * с Python-сессией (иначе Qrator инвалидирует jsid2 при смене UA в HTTP).
  */
 
-const { chromium } = require('playwright');
+// playwright-extra как фреймворк — без stealth плагина.
+// stealth патчит canvas/WebGL таким образом, что Qrator видит
+// несоответствие fingerprint и отдаёт 403 на /__qrator/validate.
+// Чистый headless Chromium 147 проходит Qrator challenge без плагинов.
+const { chromium } = require('playwright-extra');
+
 const path = require('path');
 const os = require('os');
 
@@ -47,6 +52,17 @@ async function resolveQrator() {
       ],
     });
 
+    // Очищаем старые qrator куки из контекста перед навигацией.
+    // Если в профиле протухшие/мусорные qrator куки — Qrator видит jsid2,
+    // пропускает full challenge и не выдаёт новый валидный jsid2.
+    // Чистый старт гарантирует полный challenge → свежий jsid2.
+    try {
+      await context.clearCookies({ name: /^qrator/ });
+      console.error('[solve_qrator] Старые qrator куки очищены (принудительный fresh challenge)');
+    } catch (e) {
+      console.error('[solve_qrator] clearCookies недоступен, продолжаем:', e.message);
+    }
+
     const page = await context.newPage();
 
     // Логирование консоли браузера для отладки
@@ -66,6 +82,10 @@ async function resolveQrator() {
 
     // Логируем все HTTP ответы для отладки
     const responses = [];
+    // Флаги, которые видит основной цикл: Qrator отклонил решение challenge
+    // (validate → 403 или редирект на /qrerror/403.html). Это явный сигнал
+    // headless detection — дальше ждать jsid2 нет смысла.
+    let validateRejected = false;
     page.on('response', (response) => {
       responses.push({
         status: response.status(),
@@ -74,6 +94,12 @@ async function resolveQrator() {
       });
       const status_emoji = {200: '✅', 401: '⚠️', 403: '⚠️'}[response.status()] || '❓';
       console.error(`[solve_qrator] HTTP ${status_emoji} ${response.status()} ${response.url()}`);
+
+      const url = response.url();
+      if (response.status() === 403 &&
+          (url.includes('/__qrator/validate') || url.includes('/qrerror/403'))) {
+        validateRejected = true;
+      }
     });
 
     try {
@@ -100,7 +126,7 @@ async function resolveQrator() {
         const cookies = await context.cookies();
         const allCookies = cookies.map((c) => c.name);
 
-        qratorCookie = cookies.find((c) => c.name === 'qrator_jsid2');
+        qratorCookie = cookies.find((c) => c.name === 'qrator_jsid2' && c.value.startsWith('v2.'));
         checkCount++;
 
         // Логируем статус каждые 10 проверок или когда нашли jsid2
@@ -113,10 +139,19 @@ async function resolveQrator() {
         }
 
         if (qratorCookie) break;
+
+        // Qrator отклонил решение challenge — дальше jsid2 не появится.
+        // Выходим рано, чтобы не сжигать 180 сек впустую.
+        if (validateRejected) {
+          console.error('[solve_qrator] ❌ Challenge отклонён (validate 403 / qrerror/403). Headless detection — нужен stealth.');
+          process.exit(2);
+        }
+
         await page.waitForTimeout(300);
       }
 
       if (qratorCookie) break;
+      if (validateRejected) break;
 
       if (attempt < MAX_ATTEMPTS - 1) {
         console.error(`[solve_qrator] Попытка ${attempt + 1}: qrator_jsid2 не получена за 60s, перезагружаем...`);

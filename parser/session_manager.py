@@ -15,7 +15,7 @@ import re
 import aiohttp
 
 from config import config
-from parser.qrator_resolver import resolve_qrator_cookies
+from parser.qrator_resolver import resolve_qrator_cookies, cleanup_chromium_profile
 from utils.logger import logger
 
 
@@ -228,14 +228,21 @@ class SessionManager:
     async def _init_session(self, force_qrator: bool = False, _retry_count: int = 0) -> bool:
         """Полная инициализация: чистим состояние → Qrator → город куки из .env.
 
-        Параметр force_qrator оставлен для обратной совместимости, но теперь
-        Qrator всегда решается заново (кеш удалён полностью).
+        force_qrator=True означает, что API вернул 401/403 — предыдущая сессия
+        мертва. Чистим Chromium profile, чтобы resolve_qrator не использовал
+        протухшую сессию.
         """
         logger.info("[SESSION] Инициализация сессии...")
 
         # Всегда стартуем с пустыми куками — исключает «протухшие» jsid2
         # от прошлой итерации, из-за которых Qrator мог ругаться.
         self._cookies.clear()
+
+        # Если API явно сказал, что куки протухли — чистим Chromium profile,
+        # иначе solve_qrator будет переиспользовать мёртвую сессию.
+        if force_qrator and _retry_count == 0:
+            logger.info("[SESSION] force_qrator=True → чищу Chromium profile")
+            cleanup_chromium_profile()
 
         # 1. Решаем Qrator challenge (браузер получает все куки: qrator_jsid2, qrator_jsr, qrator_ssid2, PHPSESSID, _csrf и т.д.)
         qrator_success = await self._resolve_qrator()

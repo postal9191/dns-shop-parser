@@ -73,8 +73,12 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
     Возвращает: {'qrator_jsid2': ..., 'PHPSESSID': ..., '_csrf': ..., ...}
                 или None при ошибке.
     """
-    # Всегда стартуем с чистого профиля — каждый запуск как первый
-    if retry_count == 0:
+    # На первой попытке ПЕРЕИСПОЛЬЗУЕМ сохранённый профиль Chromium.
+    # В нём живут qrator_ssid2 (до 30 дней) и qrator_jsid2 — Qrator видит
+    # "vetted visitor" и пропускает challenge либо даёт тривиальный.
+    # Чистим только на retry: значит, сохранённая сессия протухла, пробуем как новый визитор.
+    if retry_count > 0:
+        logger.info("[QRATOR] Retry: чищу профиль и пробую как новый визитор")
         cleanup_chromium_profile()
 
     max_retries = 3
@@ -111,7 +115,7 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
 
         if result.returncode != 0:
             logger.warning("[QRATOR] solve_qrator.js завершился с кодом %d", result.returncode)
-            logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-800:])
+            logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-4000:])
 
             # Retry при ошибке (кроме timeout)
             if retry_count < max_retries - 1:
@@ -135,7 +139,7 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
             return cookies
 
         logger.error("[QRATOR] Куки не найдены в выводе solve_qrator.js")
-        logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-400:])
+        logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-4000:])
 
         # Retry если куки не найдены
         if retry_count < max_retries - 1:
