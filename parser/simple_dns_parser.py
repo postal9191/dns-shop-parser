@@ -44,7 +44,6 @@ _PRODUCT_UUID_RE = re.compile(
 )
 
 _QRATOR_MARKER = "qauth_handle_validate_success"
-_PRODUCT_BUY_BATCH = 18
 
 
 def _random_container_id() -> str:
@@ -346,39 +345,9 @@ class SimpleDNSParser:
         category_name: str = "",
         uuid_to_status: Optional[dict] = None,
     ) -> list[Product]:
-        """POST ajax-state/product-buy (батчами) → Product list."""
-        products: list[Product] = []
+        """POST ajax-state/product-buy одним запросом для всех UUID."""
+        logger.info("[PARSER] Загружаю детали %d товаров одним запросом", len(uuids))
 
-        logger.info("[PARSER] Загружаю детали %d товаров (батчами по %d)",
-                   len(uuids), _PRODUCT_BUY_BATCH)
-
-        for i in range(0, len(uuids), _PRODUCT_BUY_BATCH):
-            batch_uuids = uuids[i : i + _PRODUCT_BUY_BATCH]
-            batch_num = (i // _PRODUCT_BUY_BATCH) + 1
-            total_batches = (len(uuids) + _PRODUCT_BUY_BATCH - 1) // _PRODUCT_BUY_BATCH
-
-            logger.debug("[PARSER] Батч %d/%d: %d товаров",
-                        batch_num, total_batches, len(batch_uuids))
-
-            batch_products = await self._fetch_batch(
-                batch_uuids, category_id, category_name, uuid_to_status
-            )
-            products.extend(batch_products)
-
-            logger.debug("[PARSER] Батч %d: получено %d товаров", batch_num, len(batch_products))
-
-            if i + _PRODUCT_BUY_BATCH < len(uuids):
-                await asyncio.sleep(0.3)
-
-        return products
-
-    async def _fetch_batch(
-        self,
-        uuids: list[str],
-        category_id: str,
-        category_name: str,
-        uuid_to_status: Optional[dict] = None,
-    ) -> list[Product]:
         container_map: dict[str, str] = {}
         containers = []
         for uuid in uuids:
@@ -396,12 +365,10 @@ class SimpleDNSParser:
         payload_obj = {"type": "product-buy", "containers": containers}
         raw_data = "data=" + json.dumps(payload_obj, ensure_ascii=False)
 
-        logger.debug("[PARSER] POST /ajax-state/product-buy/ с %d товарами", len(uuids))
-
         try:
             resp = await self._post_form(self._product_buy_url, raw_data)
         except (RetryError, Exception) as exc:
-            logger.error("[PARSER] Ошибка батча product-buy: %s", exc)
+            logger.error("[PARSER] Ошибка product-buy: %s", exc)
             return []
 
         if not (isinstance(resp, dict) and resp.get("result")):
@@ -409,15 +376,12 @@ class SimpleDNSParser:
             return []
 
         products: list[Product] = []
-        states_count = len(resp.get("data", {}).get("states", []))
-        logger.debug("[PARSER] product-buy вернул %d состояний", states_count)
-        
         for state in resp.get("data", {}).get("states", []):
             p = self._parse_state(state, container_map, category_id, category_name, uuid_to_status)
             if p:
                 products.append(p)
 
-        logger.debug("[PARSER] Разобрано %d товаров из %d состояний", len(products), states_count)
+        logger.info("[PARSER] Получено %d товаров", len(products))
         return products
 
     def _parse_state(
