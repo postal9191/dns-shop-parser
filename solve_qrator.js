@@ -17,6 +17,7 @@ const { chromium } = require('playwright-extra');
 
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 
 function shouldUseStealth() {
   const raw = (process.env.QRATOR_STEALTH || '').trim().toLowerCase();
@@ -47,7 +48,12 @@ function resolveHeadlessMode() {
 
 const TARGET_URL = 'https://www.dns-shop.ru/catalog/markdown/';
 const TIMEOUT = 50000; // 50 сек (Python ждёт 60 сек)
-const USER_DATA_DIR = path.join(os.homedir(), '.dns-parser-chromium');
+const isLinux = os.platform() === 'linux';
+// На Linux: временная директория — каждый запуск как новый визитор для Qrator
+// На Windows/macOS: постоянный профиль — Qrator не требует повторного challenge
+const USER_DATA_DIR = isLinux
+  ? path.join(os.tmpdir(), `.dns-parser-chromium-${Date.now()}`)
+  : path.join(os.homedir(), '.dns-parser-chromium');
 
 async function resolveQrator() {
   let context = null;
@@ -239,6 +245,9 @@ async function resolveQrator() {
     console.log('__END_COOKIES__');
 
     await context.close();
+    if (isLinux) {
+      try { fs.rmSync(USER_DATA_DIR, { recursive: true, force: true }); } catch {}
+    }
     process.exit(0);
 
   } catch (err) {
@@ -246,11 +255,10 @@ async function resolveQrator() {
     console.error(err.stack);
 
     if (context) {
-      try {
-        await context.close();
-      } catch (e) {
-        // ignore
-      }
+      try { await context.close(); } catch {}
+    }
+    if (isLinux) {
+      try { fs.rmSync(USER_DATA_DIR, { recursive: true, force: true }); } catch {}
     }
 
     process.exit(1);
