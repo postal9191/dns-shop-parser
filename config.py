@@ -19,8 +19,6 @@ class Config:
     parse_interval: int
     max_retries: int
     retry_delay: float
-    dns_login: str
-    dns_password: str
     log_level: str
 
     # Параллельная обработка
@@ -53,8 +51,6 @@ class Config:
             parse_concurrency=int(os.getenv("PARSE_CONCURRENCY", "5")),
             max_retries=int(os.getenv("MAX_RETRIES", "4")),
             retry_delay=float(os.getenv("RETRY_DELAY", "5.0")),
-            dns_login=os.getenv("DNS_LOGIN", ""),
-            dns_password=os.getenv("DNS_PASSWORD", ""),
             log_level=os.getenv("LOG_LEVEL", "INFO"),  # INFO, DEBUG
             use_platform_ua=os.getenv("USE_PLATFORM_UA", "false").lower() == "true",
         )
