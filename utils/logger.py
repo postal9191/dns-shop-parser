@@ -8,7 +8,6 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     Path("logs").mkdir(exist_ok=True)
 
     logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
 
     if logger.handlers:
         return logger
@@ -16,6 +15,9 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     # Получаем уровень логирования из переменной окружения (по умолчанию INFO)
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
     console_level = getattr(logging, log_level_str, logging.INFO)
+
+    # Логгер на DEBUG чтобы файл получал всё, консоль фильтруется отдельно
+    logger.setLevel(logging.DEBUG)
 
     fmt_console = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(message)s",

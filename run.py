@@ -7,7 +7,7 @@
 import asyncio
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import config
@@ -45,6 +45,32 @@ async def _run_subprocess(script: str, log_name: str) -> bool:
     except Exception as e:
         logger.error("[RUN] ✗ Ошибка при выполнении %s: %s", script, e)
         return False
+
+
+def is_night_time() -> bool:
+    """Проверяет если сейчас ночное время (22:00-6:00 МСК)."""
+    now = datetime.now()
+    hour = now.hour
+    # 22:00-23:59 или 00:00-5:59 = ночь
+    return hour >= 22 or hour < 6
+
+
+def calculate_next_sync_sleep(interval_sec: int) -> int:
+    """Рассчитывает сколько спать до следующего синхронного времени (как крон).
+
+    Если интервал 3600 (час), то запускать в 0, 60, 120 минут
+    Если интервал 1800 (30 мин), то запускать в 0, 30 минут часа
+    Если интервал 900 (15 мин), то запускать в 0, 15, 30, 45 минут часа
+    """
+    now = datetime.now()
+    now_seconds = now.hour * 3600 + now.minute * 60 + now.second
+
+    # Следующее синхронное время
+    # Расстояние до следующего кратного интервалу момента времени
+    remainder = now_seconds % interval_sec
+    if remainder == 0:
+        return interval_sec  # Если ровно на границе, ждем полный интервал
+    return interval_sec - remainder
 
 
 async def run_parser() -> bool:
@@ -99,15 +125,33 @@ async def main_cycle(parser_controller: ParserController) -> None:
                 logger.critical("[RUN] 🔴 Достигнуто максимальное число ошибок. Требуется вмешательство!")
                 await asyncio.sleep(60)
 
-        # Ждем перед следующей итерацией с проверкой команд админа
+        # Проверяем новый интервал (если админ изменил)
         new_interval = parser_controller.get_pending_interval()
         if new_interval:
             wait_time = new_interval
             logger.info(f"[RUN] ⏱️  Новый интервал: {wait_time} сек")
 
-        logger.info(f"[RUN] Следующее обновление через {wait_time} сек...")
+        # Проверяем ночное время (22:00-6:00)
+        if is_night_time():
+            now = datetime.now()
+            next_morning = now.replace(hour=6, minute=0, second=0, microsecond=0)
+            if now.hour >= 22:
+                # После 22:00 - спим до 6:00 следующего дня
+                next_morning += timedelta(days=1)
+            sleep_seconds = int((next_morning - now).total_seconds())
+            logger.info(f"[RUN] 🌙 Ночное время (22:00-6:00), ожидание до 6:00 ({sleep_seconds} сек)...")
+            try:
+                await asyncio.sleep(sleep_seconds)
+            except KeyboardInterrupt:
+                logger.info("[RUN] Остановлено пользователем (Ctrl+C)")
+                break
+            continue
+
+        # Синхронизируем запуски с крон (как будто настроен крон с интервалом)
+        sync_sleep = calculate_next_sync_sleep(wait_time)
+        logger.info(f"[RUN] Синхронный запуск через {sync_sleep} сек (интервал {wait_time} сек)...")
         try:
-            await asyncio.sleep(wait_time)
+            await asyncio.sleep(sync_sleep)
         except KeyboardInterrupt:
             logger.info("[RUN] Остановлено пользователем (Ctrl+C)")
             break
