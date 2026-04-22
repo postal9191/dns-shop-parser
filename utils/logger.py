@@ -33,18 +33,15 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     console = logging.StreamHandler()
     console.setLevel(console_level)
     console.setFormatter(fmt_console)
-    console.addFilter(lambda record: record.levelno >= console_level)  # Двойная фильтрация
 
-    # Файловый уровень: чуть ниже консольного чтобы INFO писал INFO+, DEBUG писал DEBUG+
-    # Если LOG_LEVEL=INFO → файл тоже INFO (не DEBUG), иначе 100 МБ/день от HTTP логов
-    file_level = console_level
+    # Файловый уровень: DEBUG для файла, но консоль контролируется LOG_LEVEL
     file_handler = logging.handlers.RotatingFileHandler(
         "logs/app.log",
         maxBytes=10 * 1024 * 1024,  # 10 MB
         backupCount=5,
         encoding="utf-8",
     )
-    file_handler.setLevel(file_level)
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(fmt_file)
 
     logger.addHandler(console)

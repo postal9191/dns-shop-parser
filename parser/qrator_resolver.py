@@ -60,6 +60,16 @@ def _find_node_executable() -> str | None:
     return None
 
 
+async def _retry_qrator(retry_count: int, max_retries: int) -> bool:
+    """Логирует и выполняет ожидание перед повтором. Возвращает True если нужен retry."""
+    if retry_count < max_retries - 1:
+        wait_time = 2 ** retry_count
+        logger.info("[QRATOR] Жду %d сек перед повтором...", wait_time)
+        await asyncio.sleep(wait_time)
+        return True
+    return False
+
+
 async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int = 0) -> dict[str, str] | None:
     """
     Запускает solve_qrator.js с retry логикой. До 3 попыток с экспоненциальной задержкой.
@@ -117,11 +127,7 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
             logger.warning("[QRATOR] solve_qrator.js завершился с кодом %d", result.returncode)
             logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-4000:])
 
-            # Retry при ошибке (кроме timeout)
-            if retry_count < max_retries - 1:
-                wait_time = 2 ** retry_count  # 1, 2, 4 сек
-                logger.info("[QRATOR] Жду %d сек перед повтором...", wait_time)
-                await asyncio.sleep(wait_time)
+            if await _retry_qrator(retry_count, max_retries):
                 return await resolve_qrator_cookies(user_agent, retry_count + 1)
             else:
                 logger.error("[QRATOR] ❌ Qrator не решился после %d попыток", max_retries)
@@ -141,11 +147,7 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
         logger.error("[QRATOR] Куки не найдены в выводе solve_qrator.js")
         logger.debug("[QRATOR] Stderr (конец): %s", result.stderr[-4000:])
 
-        # Retry если куки не найдены
-        if retry_count < max_retries - 1:
-            wait_time = 2 ** retry_count
-            logger.info("[QRATOR] Жду %d сек перед повтором...", wait_time)
-            await asyncio.sleep(wait_time)
+        if await _retry_qrator(retry_count, max_retries):
             return await resolve_qrator_cookies(user_agent, retry_count + 1)
         return None
 
