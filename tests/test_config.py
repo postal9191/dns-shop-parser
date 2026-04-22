@@ -14,7 +14,6 @@ def test_config_defaults(monkeypatch):
 
     assert config.filters_path == "/catalogMarkdown/markdown/products-filters/"
     assert config.products_path == "/catalogMarkdown/markdown/products/"
-    assert config.chrome_headless is False
     assert config.use_platform_ua is False
 
 
@@ -36,24 +35,6 @@ def test_config_retry_delay_as_float(monkeypatch):
 
     assert config.retry_delay == 2.5
     assert isinstance(config.retry_delay, float)
-
-
-def test_config_chrome_headless_true(monkeypatch):
-    """chrome_headless=True при CHROME_HEADLESS=true."""
-    monkeypatch.setenv("CHROME_HEADLESS", "true")
-
-    config = Config.from_env()
-
-    assert config.chrome_headless is True
-
-
-def test_config_chrome_headless_false(monkeypatch):
-    """chrome_headless=False при CHROME_HEADLESS=false."""
-    monkeypatch.setenv("CHROME_HEADLESS", "false")
-
-    config = Config.from_env()
-
-    assert config.chrome_headless is False
 
 
 def test_config_use_platform_ua_true(monkeypatch):
