@@ -3,6 +3,7 @@
 Использует Telegram бот для broadcast уведомлений всем подписчикам.
 """
 
+from collections import defaultdict
 from typing import Optional
 
 from utils.logger import logger
@@ -36,7 +37,6 @@ def wrap_text(text: str, width: int = 60) -> str:
 
 def group_products(products: list[dict]) -> list[dict]:
     """Группирует одинаковые товары по названию и цене, подсчитывая количество."""
-    from collections import defaultdict
 
     groups = defaultdict(lambda: {"count": 0, "product": None})
 
