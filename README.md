@@ -331,7 +331,9 @@ Error: browserType.launch: Executable doesn't exist
 
 ## 📦 История версий
 
-### v1.6 (2026-04-22) — ✅ Cleanup & Code Quality
+<details>
+<summary><b>v1.6 (2026-04-22) — ✅ Cleanup & Code Quality</b></summary>
+
 **Полная очистка ненужного кода, оптимизация логирования и удаление неиспользуемых зависимостей**
 
 #### Что изменилось в v1.6:
@@ -357,7 +359,11 @@ Error: browserType.launch: Executable doesn't exist
 - Python 3.8+ ✅
 - Node.js 14+ ✅
 
-### v1.5 (2026-04-22) — ✅ Optimizations & Smart Scheduling
+</details>
+
+<details>
+<summary><b>v1.5 (2026-04-22) — ✅ Optimizations & Smart Scheduling</b></summary>
+
 **Полная оптимизация логирования, ночной режим и синхронизация запусков по часам**
 
 #### Что изменилось в v1.5:
@@ -373,7 +379,11 @@ Error: browserType.launch: Executable doesn't exist
 - `solve_qrator.js`: Использует bundled Chromium с временным профилем на Linux
 - `dns-parser.sh`: Проверка и установка bundled Chromium через npm
 
-### v1.3 (2026-04-20) — ✅ Упрощённая инициализация кук
+</details>
+
+<details>
+<summary><b>v1.3 (2026-04-20) — ✅ Упрощённая инициализация кук</b></summary>
+
 **Переработана логика получения кук: браузер → всё, окружение → только регион**
 
 #### Что изменилось в v1.3:
@@ -383,7 +393,11 @@ Error: browserType.launch: Executable doesn't exist
 - ✅ **Подробное логирование** в solve_qrator.js (HTTP статусы, polling прогресс)
 - ✅ **Все 132 теста проходят** с новой архитектурой
 
-### v1.2 (2026-04-20) — Администрирование и реттай
+</details>
+
+<details>
+<summary><b>v1.2 (2026-04-20) — Администрирование и реттай</b></summary>
+
 **Полная функциональность с админ-панелью, telegram ботом и retry логикой**
 
 #### Ключевые особенности v1.2:
@@ -400,6 +414,8 @@ Error: browserType.launch: Executable doesn't exist
 - Linux (Ubuntu 20.04+, Debian 11+) ✅
 - Python 3.8+ ✅
 - Node.js 14+ ✅
+
+</details>
 
 ## 📄 Лицензия
 
