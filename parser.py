@@ -2,7 +2,6 @@
 
 import sys
 import os
-import subprocess
 from pathlib import Path
 
 # Добавляем директорию проекта в sys.path для импорта модулей
@@ -315,16 +314,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     finally:
-        # Завершаем любые оставшиеся процессы Node.js
-        try:
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/IM", "node.exe"],
-                             capture_output=True, timeout=2)
-            else:
-                subprocess.run(["pkill", "-f", "node"],
-                             capture_output=True, timeout=2)
-        except Exception:
-            pass
-
-        # Гарантированный выход процесса
         sys.exit(0)
