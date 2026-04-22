@@ -89,8 +89,8 @@ async def main_cycle(parser_controller: ParserController) -> None:
     """Главный цикл: парсинг товаров с поддержкой управления админом."""
     logger.info("="*70)
     logger.info("[RUN] Запущен автоматический парсер DNS Shop")
-    logger.info(f"[RUN] Режим: БЕЗ БРАУЗЕРА (Playwright + Node.js для Qrator)")
-    logger.info(f"[RUN] Интервал обновления: {config.parse_interval} сек")
+    logger.info("[RUN] Режим: БЕЗ БРАУЗЕРА (Playwright + Node.js для Qrator)")
+    logger.info("[RUN] Интервал обновления: %d сек", config.parse_interval)
     logger.info("[RUN] Админ-панель активна")
     logger.info("="*70)
 
@@ -111,9 +111,9 @@ async def main_cycle(parser_controller: ParserController) -> None:
 
         logger.info("")
         logger.info("="*70)
-        logger.info(f"[RUN] Итерация #{iteration} [{timestamp}]")
+        logger.info("[RUN] Итерация #%d [%s]", iteration, timestamp)
         if consecutive_errors > 0:
-            logger.warning(f"[RUN] Подряд ошибок: {consecutive_errors}/{max_consecutive_errors}")
+            logger.warning("[RUN] Подряд ошибок: %d/%d", consecutive_errors, max_consecutive_errors)
         logger.info("="*70)
 
         if await run_parser():
@@ -121,7 +121,7 @@ async def main_cycle(parser_controller: ParserController) -> None:
             logger.info("[RUN] ✅ Парсер завершен успешно")
         else:
             consecutive_errors += 1
-            logger.error(f"[RUN] ❌ Парсер завершен с ошибкой ({consecutive_errors}/{max_consecutive_errors})")
+            logger.error("[RUN] ❌ Парсер завершен с ошибкой (%d/%d)", consecutive_errors, max_consecutive_errors)
 
             if consecutive_errors >= max_consecutive_errors:
                 logger.critical("[RUN] 🔴 Достигнуто максимальное число ошибок. Требуется вмешательство!")
@@ -131,7 +131,7 @@ async def main_cycle(parser_controller: ParserController) -> None:
         new_interval = parser_controller.get_pending_interval()
         if new_interval:
             wait_time = new_interval
-            logger.info(f"[RUN] ⏱️  Новый интервал: {wait_time} сек")
+            logger.info("[RUN] ⏱️  Новый интервал: %d сек", wait_time)
 
         # Проверяем ночное время (22:00-6:00)
         if is_night_time():
@@ -141,7 +141,7 @@ async def main_cycle(parser_controller: ParserController) -> None:
                 # После 22:00 - спим до 6:00 следующего дня
                 next_morning += timedelta(days=1)
             sleep_seconds = int((next_morning - now).total_seconds())
-            logger.info(f"[RUN] 🌙 Ночное время (22:00-6:00), ожидание до 6:00 ({sleep_seconds} сек)...")
+            logger.info("[RUN] 🌙 Ночное время (22:00-6:00), ожидание до 6:00 (%d сек)...", sleep_seconds)
             try:
                 await asyncio.sleep(sleep_seconds)
             except KeyboardInterrupt:
@@ -151,7 +151,7 @@ async def main_cycle(parser_controller: ParserController) -> None:
 
         # Синхронизируем запуски с крон (как будто настроен крон с интервалом)
         sync_sleep = calculate_next_sync_sleep(wait_time)
-        logger.info(f"[RUN] Синхронный запуск через {sync_sleep} сек (интервал {wait_time} сек)...")
+        logger.info("[RUN] Синхронный запуск через %d сек (интервал %d сек)...", sync_sleep, wait_time)
         try:
             await asyncio.sleep(sync_sleep)
         except KeyboardInterrupt:
@@ -206,5 +206,5 @@ if __name__ == "__main__":
         logger.info("[RUN] Выход")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"[RUN] Критическая ошибка: {e}")
+        logger.error("[RUN] Критическая ошибка: %s", e)
         sys.exit(1)
