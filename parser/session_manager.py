@@ -40,17 +40,15 @@ class HTTPLogger:
             logger.debug("[HTTP]    Body: %s", data_str)
 
     @staticmethod
-    async def log_response(status: int, url: str, content_type: str = None, 
-                          content_length: int = None, cookies: dict = None) -> None:
+    async def log_response(status: int, url: str, content_type: str = None,
+                          cookies: dict = None) -> None:
         """Логирует ответ."""
         status_emoji = {200: "✅", 201: "✅", 400: "❌", 401: "⚠️", 403: "⚠️", 404: "❌", 429: "⚠️", 500: "❌"}
         emoji = status_emoji.get(status, "❓")
-        
+
         logger.debug("[HTTP] %s ← %d %s", emoji, status, url)
         if content_type:
             logger.debug("[HTTP]    Content-Type: %s", content_type)
-        if content_length:
-            logger.debug("[HTTP]    Content-Length: %s", content_length)
         if cookies:
             logger.debug("[HTTP]    New Cookies: %s", list(cookies.keys()))
 

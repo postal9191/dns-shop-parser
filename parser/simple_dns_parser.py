@@ -87,7 +87,6 @@ class SimpleDNSParser:
             await HTTPLogger.log_response(
                 resp.status, url,
                 content_type=resp.content_type,
-                content_length=resp.content_length
             )
 
             self._check_status(resp, url)
@@ -120,7 +119,6 @@ class SimpleDNSParser:
             await HTTPLogger.log_response(
                 resp.status, url,
                 content_type=resp.content_type,
-                content_length=resp.content_length
             )
 
             self._check_status(resp, url)
@@ -150,7 +148,6 @@ class SimpleDNSParser:
             await HTTPLogger.log_response(
                 resp.status, url,
                 content_type=resp.content_type,
-                content_length=resp.content_length
             )
 
             self._check_status(resp, url)
