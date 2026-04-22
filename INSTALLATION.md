@@ -1,4 +1,4 @@
-# 📖 Руководство по установке DNS Shop Parser v1.0
+# 📖 Руководство по установке DNS Shop Parser v1.5
 
 ## 🪟 Windows
 

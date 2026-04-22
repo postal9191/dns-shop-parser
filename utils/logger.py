@@ -17,8 +17,8 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
     console_level = getattr(logging, log_level_str, logging.INFO)
 
-    # Логгер на DEBUG чтобы файл получал всё, консоль фильтруется отдельно
-    logger.setLevel(logging.DEBUG)
+    # Логгер на минимальный уровень — хендлеры фильтруют сами через setLevel
+    logger.setLevel(console_level)
     logger.propagate = False  # Не распространяем логи родительским логгерам
 
     fmt_console = logging.Formatter(
@@ -35,13 +35,16 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     console.setFormatter(fmt_console)
     console.addFilter(lambda record: record.levelno >= console_level)  # Двойная фильтрация
 
+    # Файловый уровень: чуть ниже консольного чтобы INFO писал INFO+, DEBUG писал DEBUG+
+    # Если LOG_LEVEL=INFO → файл тоже INFO (не DEBUG), иначе 100 МБ/день от HTTP логов
+    file_level = console_level
     file_handler = logging.handlers.RotatingFileHandler(
         "logs/app.log",
         maxBytes=10 * 1024 * 1024,  # 10 MB
         backupCount=5,
         encoding="utf-8",
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(file_level)
     file_handler.setFormatter(fmt_file)
 
     logger.addHandler(console)
