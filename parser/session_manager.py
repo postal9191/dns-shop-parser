@@ -273,30 +273,6 @@ class SessionManager:
         self._initialized = True
         return True
 
-    async def _init_session_with_cookies(self, browser_cookies: list[dict]) -> bool:
-        """Загружает куки полученные из браузера (где уже выбран правильный город)."""
-        logger.info("[SESSION] Загружаю куки из браузера...")
-
-        # Конвертируем куки из формата браузера в наш формат
-        for cookie in browser_cookies:
-            self._cookies[cookie["name"]] = cookie["value"]
-
-        logger.info(
-            "[SESSION] Загружено %d кук из браузера: %s",
-            len(self._cookies),
-            ", ".join(list(self._cookies.keys())[:10]),
-        )
-
-        # Убеждаемся что есть основные куки
-        required_cookies = ["PHPSESSID", "city_path"]
-        missing = [c for c in required_cookies if c not in self._cookies]
-        if missing:
-            logger.warning("[SESSION] Отсутствуют куки: %s", missing)
-            return False
-
-        self._initialized = True
-        return True
-
     async def _set_city_via_rest(self) -> bool:
         """Вызывает REST API DNS для установки города."""
         logger.debug("[SESSION] Устанавливаю город через REST API")
