@@ -74,28 +74,39 @@ class TelegramBot:
             return False
 
     async def send_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> bool:
-        """Отправляет сообщение пользователю с опциональной клавиатурой."""
+        """Отправляет сообщение пользователю с retry (до 3 попыток, обработка 429)."""
         if not self.enabled:
             return False
 
-        try:
-            payload = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML"
-            }
-            if reply_markup:
-                payload["reply_markup"] = reply_markup
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
 
-            async with self._get_session().post(
-                f"{self.api_url}/sendMessage",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                return resp.status == 200
-        except Exception as exc:
-            logger.error("[TG BOT] Ошибка при отправке сообщения: %s", exc)
-            return False
+        for attempt in range(3):
+            try:
+                async with self._get_session().post(
+                    f"{self.api_url}/sendMessage",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        return True
+                    if resp.status == 429:
+                        data = await resp.json()
+                        retry_after = data.get("parameters", {}).get("retry_after", 5)
+                        logger.warning("[TG BOT] Rate limit, жду %d сек (попытка %d/3)", retry_after, attempt + 1)
+                        await asyncio.sleep(retry_after)
+                        continue
+                    logger.warning("[TG BOT] Ответ %d при отправке (попытка %d/3)", resp.status, attempt + 1)
+                    return False
+            except Exception as exc:
+                if attempt < 2:
+                    wait = 2 ** attempt
+                    logger.warning("[TG BOT] Ошибка отправки, retry через %d сек: %s", wait, exc)
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("[TG BOT] Ошибка при отправке сообщения: %s", exc)
+        return False
 
     async def broadcast_message(self, text: str) -> int:
         """Отправляет сообщение всем подписчикам. Возвращает количество успешно отправленных."""
