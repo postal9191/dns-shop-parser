@@ -365,5 +365,4 @@ class DBManager:
         ]
 
     def close(self) -> None:
-        """Закрывает БД."""
-        pass
+        """Нет-оп: все методы используют with sqlite3.connect(), соединения закрываются автоматически."""
