@@ -37,10 +37,7 @@ class DBManager:
             logger.error("Ошибка при создании бэкапа БД: %s", exc)
 
     def _init_db(self) -> None:
-        """Создает таблицы если их нет. Создает бэкап перед миграциями."""
-        # Создаем бэкап перед миграциями
-        self._backup_db()
-
+        """Создает таблицы если их нет. Создает бэкап только перед реальными миграциями."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS products (
@@ -57,15 +54,9 @@ class DBManager:
                 )
             """)
 
-            # Миграция: добавить uuid столбец если его нет
             cursor = conn.execute("PRAGMA table_info(products)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if 'uuid' not in columns:
-                try:
-                    conn.execute("ALTER TABLE products ADD COLUMN uuid TEXT")
-                    logger.info("Добавлен столбец uuid в таблицу products")
-                except sqlite3.OperationalError:
-                    pass  # Столбец уже существует
+            product_cols = [row[1] for row in cursor.fetchall()]
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,27 +75,34 @@ class DBManager:
                 )
             """)
 
-            # Миграция: добавить uuid_hash столбец если его нет
             cursor = conn.execute("PRAGMA table_info(category_state)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if 'uuid_hash' not in columns:
+            category_cols = [row[1] for row in cursor.fetchall()]
+
+            need_migration = 'uuid' not in product_cols or 'uuid_hash' not in category_cols or 'status' not in product_cols
+            if need_migration:
+                self._backup_db()
+
+            if 'uuid' not in product_cols:
+                try:
+                    conn.execute("ALTER TABLE products ADD COLUMN uuid TEXT")
+                    logger.info("Добавлен столбец uuid в таблицу products")
+                except sqlite3.OperationalError:
+                    pass
+
+            if 'uuid_hash' not in category_cols:
                 try:
                     conn.execute("ALTER TABLE category_state ADD COLUMN uuid_hash TEXT")
                     logger.info("Добавлен столбец uuid_hash в таблицу category_state")
                 except sqlite3.OperationalError:
-                    pass  # Столбец уже существует
+                    pass
 
-            # Миграция: добавить status столбец если его нет
-            cursor = conn.execute("PRAGMA table_info(products)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if 'status' not in columns:
+            if 'status' not in product_cols:
                 try:
                     conn.execute("ALTER TABLE products ADD COLUMN status TEXT DEFAULT ''")
-                    # Сбрасываем uuid_hash чтобы принудить перефетч и перемаркировку всех товаров
                     conn.execute("UPDATE category_state SET uuid_hash = NULL")
                     logger.info("Добавлен столбец status, uuid_hash сброшен для перемаркировки товаров")
                 except sqlite3.OperationalError:
-                    pass  # Столбец уже существует
+                    pass
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_subscribers (
