@@ -180,20 +180,14 @@ async def main() -> None:
     ]
 
     try:
-        # Ждем первой завершенной задачи (обычно при Ctrl+C)
         await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        logger.info("[RUN] Остановлено пользователем (Ctrl+C)")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("[RUN] Остановлено, завершение...")
     finally:
-        # Отменяем все задачи при выходе
         for task in tasks:
             if not task.done():
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
+        await asyncio.gather(*tasks, return_exceptions=True)
         await telegram_bot.close()
         db.close()
         logger.info("[RUN] Выход")
