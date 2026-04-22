@@ -119,23 +119,23 @@ class ParserController:
             return None
 
     def get_status(self) -> str:
-        """Возвращает статус парсера."""
-        status = "⏹️  **Остановлен**"
+        """Возвращает статус парсера (HTML-форматирование для Telegram)."""
+        status = "⏹️  <b>Остановлен</b>"
 
         if self.state.is_running:
             if self.state.is_paused:
-                status = "⏸️  **На паузе**"
+                status = "⏸️  <b>На паузе</b>"
             else:
-                status = "▶️  **Работает**"
+                status = "▶️  <b>Работает</b>"
 
         info = f"{status}\n"
-        info += f"📊 **Интервал:** {self.state.current_interval} сек\n"
+        info += f"📊 <b>Интервал:</b> {self.state.current_interval} сек\n"
 
         if self.state.last_start_time:
-            info += f"⏰ **Запущен:** {self.state.last_start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            info += f"⏰ <b>Запущен:</b> {self.state.last_start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
 
         if self.state.iteration_count > 0:
-            info += f"📈 **Итераций:** {self.state.iteration_count}"
+            info += f"📈 <b>Итераций:</b> {self.state.iteration_count}"
 
         return info
 
