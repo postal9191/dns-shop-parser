@@ -175,7 +175,7 @@ class SimpleDNSParser:
 
     async def fetch_categories(self) -> list[Category]:
         """Простой HTTP GET (без Playwright) → список категорий."""
-        logger.info("[PARSER] Получаю категории товаров уценки для города: %s", config.city_name)
+        logger.info("[PARSER] Получаю категории товаров уценки")
 
         # ВАЖНО: сначала вызываем /catalog/markdown/ чтобы получить правильный current_path для города
         logger.debug("[PARSER] Обновляю current_path через /catalog/markdown/...")
@@ -275,8 +275,8 @@ class SimpleDNSParser:
             expected_count: ожидаемое количество товаров (из API фильтров)
             status: фильтр по типу товара: 0 = Новый, 1 = Б/У
         """
-        logger.debug("[PARSER] Получаю UUID товаров для категории %s (город: %s, ожидаемо: %s, status: %s)",
-                    category_id, config.city_name, expected_count or "?", status)
+        logger.debug("[PARSER] Получаю UUID товаров для категории %s (ожидаемо: %s, status: %s)",
+                    category_id, expected_count or "?", status)
 
         _MAX_PAGES = 50
 

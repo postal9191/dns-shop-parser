@@ -263,7 +263,7 @@ class SessionManager:
         self._cookies['current_path'] = config.city_cookie_current
         self._cookies['IsInterregionalPickupAllowed'] = 'true'
         self._cookies['IsInterregionalCourierAllowed'] = 'false'
-        logger.info("[SESSION] Куки города установлены из .env: %s", config.city_name)
+        logger.info("[SESSION] Куки города установлены из .env")
 
         logger.info(
             "[SESSION] ✅ Сессия инициализирована, всего кук: %d (%s)",
@@ -299,7 +299,7 @@ class SessionManager:
 
     async def _set_city_via_rest(self) -> bool:
         """Вызывает REST API DNS для установки города."""
-        logger.debug("[SESSION] Устанавливаю город через REST API: %s", config.city_name)
+        logger.debug("[SESSION] Устанавливаю город через REST API")
 
         connector = aiohttp.TCPConnector(ssl=True, limit=5)
         temp_session = aiohttp.ClientSession(connector=connector)
@@ -314,7 +314,6 @@ class SessionManager:
                 "Accept-Language": "ru-RU,ru;q=0.9",
                 "Origin": config.api_base_url,
                 "Referer": f"{config.api_base_url}/",
-                "cityid": config.city_id,
                 "Cookie": cookie_header,
             }
 

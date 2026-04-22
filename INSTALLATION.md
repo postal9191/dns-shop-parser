@@ -79,7 +79,6 @@ copy .env.example .env
 # Отредактируй .env в текстовом редакторе
 # Основные параметры:
 # - TELEGRAM_TOKEN и TELEGRAM_CHAT_ID (опционально)
-# - CITY_ID и CITY_NAME если другой город
 # - LOG_LEVEL=DEBUG для отладки
 ```
 
@@ -246,10 +245,6 @@ docker run -v $(pwd):/app --env-file .env dns-parser
 ### Основные параметры .env
 
 ```env
-# Город
-CITY_ID=884019c7-cf52-11....
-CITY_NAME=Москва
-
 # Интервал парсинга (секунды)
 PARSE_INTERVAL=3600  # 1 час
 

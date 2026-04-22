@@ -36,7 +36,6 @@ class DNSMonitorBrowserless:
         self.tg = TelegramNotifier(bot=self.telegram_bot)
 
         self.parse_interval = config.parse_interval
-        self.city_name = config.city_name
 
     async def init_session_browserless(self, force_qrator: bool = False) -> bool:
         """Инициализирует сессию безбраузерным способом (Node.js + Playwright)."""
@@ -209,8 +208,7 @@ class DNSMonitorBrowserless:
         is_first_run = total_before == 0
 
         logger.info(
-            "[PARSE] Начинаем цикл обновления (город: %s, интервал: %d сек)",
-            self.city_name,
+            "[PARSE] Начинаем цикл обновления (интервал: %d сек)",
             self.parse_interval,
         )
 
@@ -227,9 +225,8 @@ class DNSMonitorBrowserless:
                 return
 
             logger.info(
-                "[PARSE] Получено %d категорий для города %s",
+                "[PARSE] Получено %d категорий",
                 len(categories),
-                self.city_name,
             )
 
             # Шаг 2: товары по каждой категории (параллельно с ограничением)
@@ -288,7 +285,7 @@ class DNSMonitorBrowserless:
 
     async def run_once(self) -> None:
         """Парсинг один раз (без цикла) с инициализацией сессии."""
-        logger.info("[MAIN] Запуск DNS Monitor (город: %s)", self.city_name)
+        logger.info("[MAIN] Запуск DNS Monitor")
 
         if not await self.init_session_browserless():
             logger.error("[MAIN] ❌ Не удалось инициализировать сессию. Выход.")

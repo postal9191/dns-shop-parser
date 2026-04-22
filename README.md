@@ -84,9 +84,7 @@ cp .env.example .env
 TELEGRAM_TOKEN=              # Токен Telegram бота
 TELEGRAM_CHAT_ID=            # ID чата для уведомлений о товарах
 
-# Город и его куки (определяют регион парсинга)
-CITY_ID=884019c7-cf52-11de-b72b-00151716f9f5
-CITY_NAME=Москва             # Название города (для справки)
+# Куки города (определяют регион парсинга)
 CITY_COOKIE_PATH=moscow      # Название города в URL
 CITY_COOKIE_CURRENT=c5f58b981d1...  # Хеш куки региона DNS Shop
 
@@ -241,10 +239,6 @@ telegram_subscribers-- Подписчики ТГ бота
    ```env
    CITY_COOKIE_PATH=moscow
    CITY_COOKIE_CURRENT=<новый_хеш>
-   
-   # Опционально:
-   CITY_ID=<ID города>
-   CITY_NAME=Москва
    ```
 3. Удалите `dns_monitor.db` чтобы начать с чистой БД нового города
 4. Запустите `python parser.py` для проверки новых кук и товаров
