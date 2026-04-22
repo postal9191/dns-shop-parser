@@ -8,43 +8,14 @@
  * с Python-сессией (иначе Qrator инвалидирует jsid2 при смене UA в HTTP).
  */
 
-// playwright-extra — фреймворк. Stealth подключаем условно:
-// - на Windows/macOS чистый headless Chromium 147 проходит Qrator без плагинов,
-//   а stealth патчит canvas/WebGL так, что Qrator видит рассинхрон и даёт 403.
-// - на Linux headless fingerprint палится Qrator'ом сам по себе → stealth нужен.
-// Переопределить можно env QRATOR_STEALTH=1 / QRATOR_STEALTH=0.
+// playwright-extra как фреймворк — без stealth плагина.
+// Чистый headless bundled Chromium проходит Qrator challenge.
+// На Linux каждый запуск = новый временный профиль (для сайта новый пользователь).
 const { chromium } = require('playwright-extra');
 
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-
-function shouldUseStealth() {
-  const raw = (process.env.QRATOR_STEALTH || '').trim().toLowerCase();
-  if (raw === '1' || raw === 'true') return true;
-  if (raw === '0' || raw === 'false') return false;
-  return os.platform() === 'linux';
-}
-
-if (shouldUseStealth()) {
-  const stealth = require('puppeteer-extra-plugin-stealth')();
-  chromium.use(stealth);
-  console.error('[solve_qrator] Stealth-плагин включён');
-}
-
-// Режим запуска через env QRATOR_HEADLESS:
-//   'false' / '0'  → headful (нужен Xvfb на сервере: xvfb-run -a node solve_qrator.js)
-//   'new'          → chrome headless shell (менее детектируем, требует Chromium 112+)
-//   'true' / '1'   → классический headless
-// По умолчанию на Linux — 'new', на Windows/macOS — классический headless.
-function resolveHeadlessMode() {
-  const raw = (process.env.QRATOR_HEADLESS || '').trim().toLowerCase();
-  if (raw === 'false' || raw === '0') return { headless: false, extraArgs: [] };
-  if (raw === 'new') return { headless: true, extraArgs: ['--headless=new'] };
-  if (raw === 'true' || raw === '1') return { headless: true, extraArgs: [] };
-  if (os.platform() === 'linux') return { headless: true, extraArgs: ['--headless=new'] };
-  return { headless: true, extraArgs: [] };
-}
 
 const TARGET_URL = 'https://www.dns-shop.ru/catalog/markdown/';
 const TIMEOUT = 50000; // 50 сек (Python ждёт 60 сек)
@@ -73,27 +44,18 @@ async function resolveQrator() {
       userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
     }
 
-    const { headless, extraArgs } = resolveHeadlessMode();
-    const channel = (process.env.QRATOR_CHANNEL || '').trim() || undefined;
-    console.error(`[solve_qrator] Режим запуска: headless=${headless}${extraArgs.length ? ' args=' + extraArgs.join(',') : ''}${channel ? ' channel=' + channel : ''}`);
-
-    const launchOpts = {
-      headless,
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+      headless: true,
       userAgent,
       locale: 'ru-RU',
       timezoneId: 'Europe/Moscow',
-      viewport: { width: 1920, height: 1080 },
       args: [
         '--disable-blink-features=AutomationControlled',
         '--disable-dev-shm-usage',
         '--no-first-run',
         '--no-default-browser-check',
-        ...extraArgs,
       ],
-    };
-    if (channel) launchOpts.channel = channel;
-
-    context = await chromium.launchPersistentContext(USER_DATA_DIR, launchOpts);
+    });
 
     // Очищаем старые qrator куки из контекста перед навигацией.
     // Если в профиле протухшие/мусорные qrator куки — Qrator видит jsid2,
