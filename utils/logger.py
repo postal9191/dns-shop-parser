@@ -9,8 +9,9 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
 
     logger = logging.getLogger(name)
 
-    if logger.handlers:
-        return logger
+    # Очищаем старые обработчики если есть (для повторной инициализации)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
 
     # Получаем уровень логирования из переменной окружения (по умолчанию INFO)
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -18,6 +19,7 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
 
     # Логгер на DEBUG чтобы файл получал всё, консоль фильтруется отдельно
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False  # Не распространяем логи родительским логгерам
 
     fmt_console = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(message)s",
@@ -31,6 +33,7 @@ def setup_logger(name: str = "dns_monitor") -> logging.Logger:
     console = logging.StreamHandler()
     console.setLevel(console_level)
     console.setFormatter(fmt_console)
+    console.addFilter(lambda record: record.levelno >= console_level)  # Двойная фильтрация
 
     file_handler = logging.handlers.RotatingFileHandler(
         "logs/app.log",
