@@ -60,6 +60,28 @@ def _find_node_executable() -> str | None:
     return None
 
 
+def check_node_health() -> bool:
+    """Проверяет доступность Node.js запуском `node --version`."""
+    node_exe = _find_node_executable()
+    if not node_exe:
+        return False
+    try:
+        result = subprocess.run(
+            [node_exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            logger.info("[QRATOR] Node.js доступен: %s", result.stdout.strip())
+            return True
+        logger.error("[QRATOR] node --version вернул код %d", result.returncode)
+        return False
+    except Exception as exc:
+        logger.error("[QRATOR] Ошибка при проверке Node.js: %s", exc)
+        return False
+
+
 async def _retry_qrator(retry_count: int, max_retries: int) -> bool:
     """Логирует и выполняет ожидание перед повтором. Возвращает True если нужен retry."""
     if retry_count < max_retries - 1:

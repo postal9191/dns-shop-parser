@@ -286,6 +286,11 @@ class DNSMonitorBrowserless:
         """Парсинг один раз (без цикла) с инициализацией сессии."""
         logger.info("[MAIN] Запуск DNS Monitor")
 
+        from parser.qrator_resolver import check_node_health
+        if not check_node_health():
+            logger.error("[MAIN] ❌ Node.js недоступен. Установите Node.js: https://nodejs.org/")
+            return
+
         if not await self.init_session_browserless():
             logger.error("[MAIN] ❌ Не удалось инициализировать сессию. Выход.")
             return
