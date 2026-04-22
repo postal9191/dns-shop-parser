@@ -5,7 +5,7 @@
 import hashlib
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from parser.models import Product
@@ -126,7 +126,7 @@ class DBManager:
         if not products:
             return 0, []
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         price_changes = []
 
         with sqlite3.connect(self.db_path) as conn:
@@ -271,7 +271,7 @@ class DBManager:
         uuid_hash = None
         if uuids is not None:
             uuid_hash = hashlib.md5(','.join(sorted(uuids)).encode()).hexdigest()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO category_state
@@ -304,7 +304,7 @@ class DBManager:
 
     def add_telegram_subscriber(self, user_id: str) -> None:
         """Добавляет Telegram подписчика."""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO telegram_subscribers (user_id, subscribed_at)
