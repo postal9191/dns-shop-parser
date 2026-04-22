@@ -55,8 +55,8 @@ class ParserController:
     async def restart(self) -> bool:
         """Перезапускает парсер."""
         logger.info("[ADMIN] 🔄 Перезапуск парсера...")
-        await self.stop()
-        await asyncio.sleep(1)
+        self.state.is_running = False
+        self.state.is_paused = False
         self._stop_event.clear()
         await self.start()
         return True
