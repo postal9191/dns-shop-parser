@@ -141,22 +141,18 @@ class TestParserController:
         controller._stop_event.set()
         assert controller.should_stop() is True
 
-    def test_get_pending_interval(self):
+    @pytest.mark.asyncio
+    async def test_get_pending_interval(self):
         """Проверяет получение ожидающего интервала."""
         controller = ParserController()
 
-        # Вначале None
         assert controller.get_pending_interval() is None
 
-        # Установка интервала (асинхронно)
-        import asyncio
-        asyncio.run(controller.set_interval(2400))
+        await controller.set_interval(2400)
 
-        # Получение интервала
         interval = controller.get_pending_interval()
         assert interval == 2400
 
-        # Повторное получение должно вернуть None (флаг сброшен)
         assert controller.get_pending_interval() is None
 
     def test_get_status(self):
