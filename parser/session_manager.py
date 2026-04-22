@@ -259,6 +259,8 @@ class SessionManager:
                 return False
 
         # 2. Переписываем куки города из .env (браузер может выбрать иной регион, но мы выбираем нужный)
+        if not config.city_cookie_current:
+            logger.warning("[SESSION] ⚠️ CITY_COOKIE_CURRENT не задан в .env — кука current_path будет пустой")
         self._cookies['city_path'] = config.city_cookie_path
         self._cookies['current_path'] = config.city_cookie_current
         self._cookies['IsInterregionalPickupAllowed'] = 'true'

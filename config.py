@@ -43,7 +43,7 @@ class Config:
             telegram_chat_admin=admin_id,
             api_base_url=os.getenv("API_BASE_URL", "https://www.dns-shop.ru").rstrip("/"),
             city_cookie_path=os.getenv("CITY_COOKIE_PATH", "krasnodar"),
-            city_cookie_current=os.getenv("CITY_COOKIE_CURRENT", "c5f58b981d1ed0bad05ae63f54072ea9dcdf57acef965084aa1e42e07b47de20a%3A2%3A%7Bi%3A0%3Bs%3A12%3A%22current_path%22%3Bi%3A1%3Bs%3A133%3A%22%7B%22city%22%3A%22884019c7-cf52-11de-b72b-00151716f9f5%22%2C%22cityName%22%3A%22%5Cu041a%5Cu0440%5Cu0430%5Cu0441%5Cu043d%5Cu043e%5Cu0434%5Cu0430%5Cu0440%22%2C%22method%22%3A%22manual%22%7D%22%3B%7D"),
+            city_cookie_current=os.getenv("CITY_COOKIE_CURRENT", ""),
             db_path=os.getenv("DB_PATH", "dns_monitor.db"),
             parse_interval=int(os.getenv("PARSE_INTERVAL", "3600")),  # 1 час
             parse_concurrency=int(os.getenv("PARSE_CONCURRENCY", "5")),
