@@ -334,8 +334,7 @@ class SessionManager:
 
     async def get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            # Инициализируем только если еще не инициализированы И у нас нет кук браузера
-            if not self._initialized and not self._cookies:
+            if not self._initialized:
                 await self._init_session()
             
             connector = aiohttp.TCPConnector(ssl=True, limit=5)
