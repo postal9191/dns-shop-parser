@@ -3,6 +3,7 @@
 """
 
 import hashlib
+import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -18,8 +19,28 @@ class DBManager:
         self.db_path = Path(db_path)
         self._init_db()
 
+    def _backup_db(self) -> None:
+        """Создает бэкап БД перед миграцией."""
+        if not self.db_path.exists():
+            return
+
+        backup_dir = self.db_path.parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"{self.db_path.stem}_backup_{timestamp}.db"
+
+        try:
+            shutil.copy2(self.db_path, backup_path)
+            logger.info("Создан бэкап БД: %s", backup_path)
+        except Exception as exc:
+            logger.error("Ошибка при создании бэкапа БД: %s", exc)
+
     def _init_db(self) -> None:
-        """Создает таблицы если их нет."""
+        """Создает таблицы если их нет. Создает бэкап перед миграциями."""
+        # Создаем бэкап перед миграциями
+        self._backup_db()
+
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS products (

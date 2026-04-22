@@ -16,7 +16,6 @@ from datetime import datetime
 
 from config import config
 from parser.db_manager import DBManager
-from parser.exceptions import CookiesExpiredError
 from parser.simple_dns_parser import SimpleDNSParser
 from parser.session_manager import SessionManager
 from services.telegram_notifier import TelegramNotifier
@@ -65,7 +64,6 @@ class DNSMonitorBrowserless:
         """
         Обрабатывает одну категорию (fetch UUID, детали, сохранение в БД).
         Возвращает (total_new_products, total_updated).
-        Вызывает CookiesExpiredError если куки устарели.
         """
         total_new_products = 0
         total_updated = 0
@@ -218,20 +216,8 @@ class DNSMonitorBrowserless:
 
         try:
             # Шаг 1: получить категории
-            categories = []
             try:
                 categories = await self.parser.fetch_categories()
-            except CookiesExpiredError as exc:
-                logger.warning("[PARSE] ⚠️ Куки устарели при получении категорий: %s", exc)
-                logger.info("[PARSE] Переинициализирую сессию...")
-                if not await self.init_session_browserless(force_qrator=True):
-                    logger.error("[PARSE] Не удалось переинициализировать сессию")
-                    return
-                try:
-                    categories = await self.parser.fetch_categories()
-                except Exception as exc2:
-                    logger.error("[PARSE] Повторная ошибка при получении категорий: %s", exc2)
-                    return
             except Exception as exc:
                 logger.error("[PARSE] Ошибка при получении категорий: %s", exc)
                 return
@@ -246,39 +232,29 @@ class DNSMonitorBrowserless:
                 self.city_name,
             )
 
-            # Шаг 2: товары по каждой категории (оптимизировано)
-            total_new_products = 0
-            total_updated = 0
+            # Шаг 2: товары по каждой категории (параллельно с ограничением)
+            semaphore = asyncio.Semaphore(config.parse_concurrency)
             all_price_changes = []
 
-            for i, cat in enumerate(categories, 1):
-                try:
-                    new_prods, upd = await self._process_category(
-                        cat, i, len(categories), is_first_run, all_price_changes
-                    )
-                    total_new_products += new_prods
-                    total_updated += upd
-
-                except CookiesExpiredError as exc:
-                    logger.warning(
-                        "[PARSE]   ⚠️ Куки устарели при загрузке категории %d/%d",
-                        i, len(categories),
-                    )
-                    if not await self.init_session_browserless(force_qrator=True):
-                        logger.error("[PARSE] Не удалось переинициализировать сессию, пропускаем категорию %d", i)
-                        continue
-                    logger.info("[PARSE] Сессия переинициализирована, повтор категории %d...", i)
+            async def process_category_with_semaphore(i: int, cat) -> tuple[int, int]:
+                """Обработка категории с контролем параллелизма."""
+                async with semaphore:
                     try:
                         new_prods, upd = await self._process_category(
                             cat, i, len(categories), is_first_run, all_price_changes
                         )
-                        total_new_products += new_prods
-                        total_updated += upd
-                    except Exception as exc2:
-                        logger.error("[PARSE]   ERR Повторная ошибка категории %d, пропускаем: %s", i, exc2)
+                        return (new_prods, upd)
+                    except Exception as exc:
+                        logger.error("[PARSE]   ERR Ошибка при загрузке категории %d/%d: %s", i, len(categories), exc)
+                        return (0, 0)
 
-                except Exception as exc:
-                    logger.error("[PARSE]   ERR Ошибка при загрузке категории: %s", exc)
+            # Запускаем параллельную обработку всех категорий
+            tasks = [process_category_with_semaphore(i, cat) for i, cat in enumerate(categories, 1)]
+            results = await asyncio.gather(*tasks)
+
+            # Собираем результаты
+            total_new_products = sum(r[0] for r in results)
+            total_updated = sum(r[1] for r in results)
 
             # Отправляем единое уведомление об изменениях цен
             if all_price_changes:
