@@ -21,7 +21,7 @@ class Config:
     log_level: str
 
     # Параллельная обработка
-    parse_concurrency: int = 5
+    parse_concurrency: int = 3
 
     # Эндпоинты DNS (паттерн по аналогии с products-filters)
     filters_path: str = "/catalogMarkdown/markdown/products-filters/"

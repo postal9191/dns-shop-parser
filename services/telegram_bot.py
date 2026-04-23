@@ -4,8 +4,8 @@ Telegram бот для управления подписками на уведо
 
 import asyncio
 import aiohttp
+from html import escape as html_escape
 from typing import Optional, Set
-import json
 
 from config import config
 from utils.logger import logger
@@ -24,6 +24,7 @@ class TelegramBot:
         self.subscribed_users: Set[str] = set()
         self._session: Optional[aiohttp.ClientSession] = None
         self._waiting_for_interval: Set[str] = set()
+        self._broadcast_lock = asyncio.Lock()
 
         if self.db and self.enabled:
             self.subscribed_users = self._load_subscribers()
@@ -73,10 +74,16 @@ class TelegramBot:
             logger.error("[TG BOT] Ошибка при удалении подписчика: %s", exc)
             return False
 
-    async def send_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> bool:
-        """Отправляет сообщение пользователю с retry (до 3 попыток, обработка 429)."""
+    async def send_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> str:
+        """Отправляет сообщение.
+
+        Возвращает:
+          'ok'      — сообщение принято Telegram
+          'blocked' — чат удалён или пользователь заблокировал бота (можно удалить подписчика)
+          'fail'    — временная или форматная ошибка (НЕ повод удалять подписчика)
+        """
         if not self.enabled:
-            return False
+            return "fail"
 
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         if reply_markup:
@@ -87,18 +94,34 @@ class TelegramBot:
                 async with self._get_session().post(
                     f"{self.api_url}/sendMessage",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10),
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
-                    if resp.status == 200:
-                        return True
-                    if resp.status == 429:
+                    try:
                         data = await resp.json()
+                    except Exception:
+                        data = {}
+
+                    if resp.status == 200 and data.get("ok"):
+                        return "ok"
+                    if resp.status == 429:
                         retry_after = data.get("parameters", {}).get("retry_after", 5)
                         logger.warning("[TG BOT] Rate limit, жду %d сек (попытка %d/3)", retry_after, attempt + 1)
-                        await asyncio.sleep(retry_after)
+                        await asyncio.sleep(retry_after + 1)
                         continue
-                    logger.warning("[TG BOT] Ответ %d при отправке (попытка %d/3)", resp.status, attempt + 1)
-                    return False
+                    if resp.status == 403:
+                        logger.info("[TG BOT] Пользователь %s заблокировал бота (403): %s",
+                                    chat_id, data.get("description"))
+                        return "blocked"
+                    desc = data.get("description", "")
+                    if resp.status == 400 and ("chat not found" in desc.lower() or "user is deactivated" in desc.lower()):
+                        logger.info("[TG BOT] Чат %s недоступен (%s): %s", chat_id, resp.status, desc)
+                        return "blocked"
+                    logger.warning("[TG BOT] Ответ %d при отправке в %s (попытка %d/3): %s",
+                                   resp.status, chat_id, attempt + 1, desc)
+                    if resp.status >= 500:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    return "fail"
             except Exception as exc:
                 if attempt < 2:
                     wait = 2 ** attempt
@@ -106,26 +129,35 @@ class TelegramBot:
                     await asyncio.sleep(wait)
                 else:
                     logger.error("[TG BOT] Ошибка при отправке сообщения: %s", exc)
-        return False
+        return "fail"
 
     async def broadcast_message(self, text: str) -> int:
-        """Отправляет сообщение всем подписчикам. Возвращает количество успешно отправленных."""
+        """Отправляет сообщение всем подписчикам. Возвращает количество успешно отправленных.
+
+        Сериализован через lock — чтобы параллельные вызовы (несколько категорий
+        парсятся одновременно) не флудили одному чату быстрее 1 msg/sec, иначе
+        Telegram режет такие сообщения даже при 200 OK.
+        """
         if not self.enabled or not self.subscribed_users:
             return 0
 
-        success_count = 0
-        logger.info("[TG BOT] Отправляем сообщение %d подписчикам...", len(self.subscribed_users))
+        async with self._broadcast_lock:
+            success_count = 0
+            users = list(self.subscribed_users)
+            logger.info("[TG BOT] Отправляем сообщение %d подписчикам...", len(users))
 
-        for user_id in list(self.subscribed_users):
-            if await self.send_message(user_id, text):
-                success_count += 1
-            else:
-                # Попытка удалить неактивного пользователя
-                self._remove_subscriber(user_id)
-            await asyncio.sleep(0.05)  # Небольшая задержка чтобы не перегрузить API
+            for user_id in users:
+                result = await self.send_message(user_id, text)
+                if result == "ok":
+                    success_count += 1
+                elif result == "blocked":
+                    self._remove_subscriber(user_id)
+                # 'fail' — оставляем подписчика, просто пропускаем
+                # Telegram per-chat лимит ~1 msg/sec — соблюдаем с запасом
+                await asyncio.sleep(1.1)
 
-        logger.info("[TG BOT] Сообщение отправлено %d подписчикам", success_count)
-        return success_count
+            logger.info("[TG BOT] Сообщение отправлено %d подписчикам", success_count)
+            return success_count
 
     def _get_available_commands(self, user_id: str) -> str:
         """Возвращает список доступных команд для пользователя."""
@@ -448,13 +480,16 @@ class TelegramBot:
                 if len(item["title"]) > 50:
                     title += "..."
 
+                safe_title = html_escape(title, quote=False)
+                safe_category = html_escape(str(item['category']), quote=False)
+                safe_url = html_escape(str(item['url']), quote=True)
                 message += (
-                    f"{i}. <b>{title}</b>\n"
-                    f"   Категория: {item['category']}\n"
+                    f"{i}. <b>{safe_title}</b>\n"
+                    f"   Категория: {safe_category}\n"
                     f"   💰 {item['current_price']}₽ "
                     f"<s>{item['previous_price']}₽</s> "
                     f"(-{item['drop_percent']}%)\n"
-                    f"   🔗 <a href='{item['url']}'>Товар</a>\n\n"
+                    f"   🔗 <a href=\"{safe_url}\">Товар</a>\n\n"
                 )
 
                 if len(message) > 4000:

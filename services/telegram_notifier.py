@@ -4,6 +4,7 @@
 """
 
 from collections import defaultdict
+from html import escape as html_escape
 from typing import Optional
 
 from utils.logger import logger
@@ -53,7 +54,12 @@ def group_products(products: list[dict]) -> list[dict]:
 
 
 def _format_product_line(title: str, url: str, price_str: str) -> str:
-    line = f"• <a href=\"{url}\">{title}</a>\n" if url else f"• {title}\n"
+    safe_title = html_escape(title, quote=False)
+    if url:
+        safe_url = html_escape(url, quote=True)
+        line = f"• <a href=\"{safe_url}\">{safe_title}</a>\n"
+    else:
+        line = f"• {safe_title}\n"
     return line + f"  💰 {price_str}\n\n"
 
 
@@ -98,11 +104,11 @@ class TelegramNotifier:
                     price_str += f" <s>{price_old} руб.</s>"
                 status = prod.get('status', '')
                 if status:
-                    price_str += f" (<b>{status}</b>)"
+                    price_str += f" (<b>{html_escape(status, quote=False)}</b>)"
 
                 products_text += _format_product_line(title, prod.get('url', ''), price_str)
 
-            header = f"🆕 <b>Новые товары в {category_name}!</b>"
+            header = f"🆕 <b>Новые товары в {html_escape(category_name, quote=False)}!</b>"
             if total_batches > 1:
                 header += f" ({batch_idx}/{total_batches})"
             if batch_idx == 1:
@@ -150,7 +156,7 @@ class TelegramNotifier:
                     price_str += f" <s>{price_old} руб.</s>"
                 status = prod.get('status', '')
                 if status:
-                    price_str += f" (<b>{status}</b>)"
+                    price_str += f" (<b>{html_escape(status, quote=False)}</b>)"
 
                 products_text += _format_product_line(title, prod.get('url', ''), price_str)
 
