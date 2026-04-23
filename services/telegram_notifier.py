@@ -67,14 +67,14 @@ def _status_badge(status: str) -> str:
     return f" <b>{html_escape(status, quote=False)}</b>" if status else ""
 
 
-def _format_product_line(title: str, url: str, price_str: str) -> str:
+def _format_product_line(title: str, url: str, price_str: str, icon: str = "💰") -> str:
     safe_title = html_escape(title, quote=False)
     if url:
         safe_url = html_escape(url, quote=True)
         line = f"• <a href=\"{safe_url}\">{safe_title}</a>\n"
     else:
         line = f"• {safe_title}\n"
-    return line + f"  💰 {price_str}\n\n"
+    return line + f"  {icon} {price_str}\n\n"
 
 
 _BATCH_NEW_PRODUCTS = 10
@@ -164,24 +164,17 @@ class TelegramNotifier:
 
                 new_price = prod['new_price']
                 old_price = prod['old_price']
-                price_old = prod.get('price_old', 0)
-                arrow = "↓" if new_price < old_price else "↑"
-                price_str = f"{new_price} руб. {arrow} ({old_price} руб.)"
-                if price_old and price_old > new_price:
-                    price_str += f" <s>{price_old} руб.</s>"
                 status = prod.get('status', '')
-                if status:
-                    price_str += f" (<b>{html_escape(status, quote=False)}</b>)"
 
-                products_text += _format_product_line(title, prod.get('url', ''), price_str)
+                icon = "🔽" if new_price < old_price else "🔼"
+                price_str = f"{_fmt_price(new_price)} ₽ <s>{_fmt_price(old_price)}</s>"
+                price_str += _status_badge(status)
 
-            # Формируем заголовок с номером батча
-            header = f"📊 <b>Изменение цен</b>"
+                products_text += _format_product_line(title, prod.get('url', ''), price_str, icon=icon)
+
+            header = f"🏷️ <i>Изменение цен</i>"
             if total_batches > 1:
                 header += f" ({batch_idx}/{total_batches})"
-            # Только в первом батче показываем общее количество товаров
-            if batch_idx == 1:
-                header += f"\nТоваров: {len(price_changes)} шт"
 
             message = f"{header}\n\n{products_text}"
 
