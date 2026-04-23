@@ -257,6 +257,18 @@ class DNSMonitorBrowserless:
             if all_price_changes:
                 await self.tg.send_price_changes_notification(all_price_changes)
 
+            # Удаляем товары из категорий, которых больше нет на сайте
+            fetched_ids = {cat.id for cat in categories}
+            db_category_ids = set(self.db.get_all_category_states().keys())
+            orphaned_ids = db_category_ids - fetched_ids
+            for orphaned_id in orphaned_ids:
+                deleted = self.db.delete_all_products_in_category(orphaned_id)
+                if deleted:
+                    logger.info(
+                        "[PARSE] Удалено %d товаров из исчезнувшей категории %s",
+                        deleted, orphaned_id,
+                    )
+
             # Итоги цикла
             total_in_db = self.db.get_product_count()
             delta = total_in_db - total_before
