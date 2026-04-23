@@ -53,6 +53,20 @@ def group_products(products: list[dict]) -> list[dict]:
     ]
 
 
+def _fmt_price(amount: int) -> str:
+    """Форматирует число с пробелами как разделителями тысяч: 4999 → 4 999."""
+    return f"{amount:,}".replace(",", " ")
+
+
+def _status_badge(status: str) -> str:
+    """Возвращает эмодзи-бейдж по статусу товара."""
+    if status == "Новый":
+        return " 🆕"
+    if status == "Б/У":
+        return " ♻️"
+    return f" <b>{html_escape(status, quote=False)}</b>" if status else ""
+
+
 def _format_product_line(title: str, url: str, price_str: str) -> str:
     safe_title = html_escape(title, quote=False)
     if url:
@@ -102,20 +116,19 @@ class TelegramNotifier:
 
                 price = prod['price']
                 price_old = prod.get('price_old', 0)
-                price_str = f"{price} руб."
-                if price_old and price_old > price:
-                    price_str += f" <s>{price_old} руб.</s>"
                 status = prod.get('status', '')
-                if status:
-                    price_str += f" (<b>{html_escape(status, quote=False)}</b>)"
+
+                price_str = f"{_fmt_price(price)} ₽"
+                if price_old and price_old > price:
+                    price_str += f" <s>{_fmt_price(price_old)}</s>"
+                price_str += _status_badge(status)
 
                 products_text += _format_product_line(title, prod.get('url', ''), price_str)
 
-            header = f"🆕 <b>Новые товары в {html_escape(category_name, quote=False)}!</b>"
+            safe_cat = html_escape(category_name, quote=False)
+            header = f"🆕 <b>{safe_cat}</b> • +{len(new_products)}"
             if total_batches > 1:
                 header += f" ({batch_idx}/{total_batches})"
-            if batch_idx == 1:
-                header += f"\nДобавлено: {len(new_products)} шт"
 
             message = f"{header}\n\n{products_text}"
 
