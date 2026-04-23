@@ -45,10 +45,10 @@ class Config:
             city_cookie_path=os.getenv("CITY_COOKIE_PATH", ""),
             city_cookie_current=os.getenv("CITY_COOKIE_CURRENT", ""),
             db_path=os.getenv("DB_PATH", "dns_monitor.db"),
-            parse_interval=int(os.getenv("PARSE_INTERVAL", "3600")),  # 1 час
-            parse_concurrency=int(os.getenv("PARSE_CONCURRENCY", "5")),
-            max_retries=int(os.getenv("MAX_RETRIES", "4")),
-            retry_delay=float(os.getenv("RETRY_DELAY", "5.0")),
+            parse_interval=int(os.getenv("PARSE_INTERVAL") or "3600"),  # 1 час
+            parse_concurrency=int(os.getenv("PARSE_CONCURRENCY") or "5"),
+            max_retries=int(os.getenv("MAX_RETRIES") or "4"),
+            retry_delay=float(os.getenv("RETRY_DELAY") or "5.0"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),  # INFO, DEBUG
             use_platform_ua=os.getenv("USE_PLATFORM_UA", "false").lower() == "true",
         )
