@@ -63,6 +63,10 @@ def _format_product_line(title: str, url: str, price_str: str) -> str:
     return line + f"  💰 {price_str}\n\n"
 
 
+_BATCH_NEW_PRODUCTS = 10
+_BATCH_PRICE_CHANGES = 15
+
+
 class TelegramNotifier:
     """Отправка уведомлений в Telegram о новых товарах всем подписчикам."""
 
@@ -83,10 +87,9 @@ class TelegramNotifier:
         if not new_products:
             return False
 
-        BATCH_SIZE = 10
         grouped_products = group_products(new_products)
         total = len(grouped_products)
-        batches = [grouped_products[i : i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
+        batches = [grouped_products[i : i + _BATCH_NEW_PRODUCTS] for i in range(0, total, _BATCH_NEW_PRODUCTS)]
         total_batches = len(batches)
 
         for batch_idx, batch in enumerate(batches, 1):
@@ -131,10 +134,9 @@ class TelegramNotifier:
         if not self.bot or not price_changes:
             return False
 
-        BATCH_SIZE = 15
         batches = [
-            price_changes[i : i + BATCH_SIZE]
-            for i in range(0, len(price_changes), BATCH_SIZE)
+            price_changes[i : i + _BATCH_PRICE_CHANGES]
+            for i in range(0, len(price_changes), _BATCH_PRICE_CHANGES)
         ]
         total_batches = len(batches)
 
@@ -187,6 +189,11 @@ class TelegramNotifier:
             total_batches,
         )
         return True
+
+    async def send_admin_alert(self, text: str) -> None:
+        """Отправляет сообщение напрямую администратору (не всем подписчикам)."""
+        if self.bot and self.bot.admin_id:
+            await self.bot.send_message(self.bot.admin_id, text)
 
     async def close(self) -> None:
         """Закрывает Telegram notifier."""

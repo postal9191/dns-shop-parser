@@ -85,7 +85,7 @@ async def telegram_bot_polling(telegram_bot) -> None:
     await telegram_bot.polling_loop()
 
 
-async def main_cycle(parser_controller: ParserController) -> None:
+async def main_cycle(parser_controller: ParserController, telegram_bot=None) -> None:
     """Главный цикл: парсинг товаров с поддержкой управления админом."""
     logger.info("="*70)
     logger.info("[RUN] Запущен автоматический парсер DNS Shop")
@@ -124,8 +124,17 @@ async def main_cycle(parser_controller: ParserController) -> None:
             logger.error("[RUN] ❌ Парсер завершен с ошибкой (%d/%d)", consecutive_errors, max_consecutive_errors)
 
             if consecutive_errors >= max_consecutive_errors:
-                logger.critical("[RUN] 🔴 Достигнуто максимальное число ошибок. Требуется вмешательство!")
-                await asyncio.sleep(60)
+                logger.critical("[RUN] 🔴 Достигнуто максимальное число ошибок подряд (%d). Требуется вмешательство!", consecutive_errors)
+                if telegram_bot and telegram_bot.admin_id:
+                    await telegram_bot.send_message(
+                        telegram_bot.admin_id,
+                        f"🔴 Парсер: {consecutive_errors} ошибок подряд — требуется вмешательство!\n"
+                        f"Парсер приостановлен.",
+                    )
+                # Экспоненциальный backoff: 2^(N-5) минут, максимум 60 минут
+                backoff = min(60 * (2 ** (consecutive_errors - max_consecutive_errors)), 3600)
+                logger.warning("[RUN] ⏳ Circuit breaker: ожидание %d сек перед следующей попыткой", backoff)
+                await asyncio.sleep(backoff)
 
         # Проверяем новый интервал (если админ изменил)
         new_interval = parser_controller.get_pending_interval()
@@ -175,7 +184,7 @@ async def main() -> None:
     # 2. ТГ бот (polling - обработка команд)
 
     tasks = [
-        asyncio.create_task(main_cycle(parser_controller)),
+        asyncio.create_task(main_cycle(parser_controller, telegram_bot)),
         asyncio.create_task(telegram_bot_polling(telegram_bot)),
     ]
 

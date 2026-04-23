@@ -9,6 +9,7 @@ Chromium сохраняет профиль с куками в ~/.dns-parser-chro
 import asyncio
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -85,8 +86,8 @@ def check_node_health() -> bool:
 async def _retry_qrator(retry_count: int, max_retries: int) -> bool:
     """Логирует и выполняет ожидание перед повтором. Возвращает True если нужен retry."""
     if retry_count < max_retries - 1:
-        wait_time = 2 ** retry_count
-        logger.info("[QRATOR] Жду %d сек перед повтором...", wait_time)
+        wait_time = (2 ** retry_count) + random.uniform(0, 1)
+        logger.info("[QRATOR] Жду %.1f сек перед повтором...", wait_time)
         await asyncio.sleep(wait_time)
         return True
     return False

@@ -11,7 +11,7 @@ os.chdir(str(PROJECT_DIR))
 
 import asyncio
 import hashlib
-from datetime import datetime
+import json
 
 from config import config
 from parser.db_manager import DBManager
@@ -99,7 +99,7 @@ class DNSMonitorBrowserless:
             return (0, 0)
 
         # Вычисляем хэш текущего состава товаров
-        current_hash = hashlib.md5(",".join(sorted(uuids)).encode()).hexdigest()
+        current_hash = hashlib.sha256(json.dumps(sorted(uuids)).encode()).hexdigest()
 
         uuids_unchanged = current_hash == last_hash
         if uuids_unchanged:
@@ -220,7 +220,8 @@ class DNSMonitorBrowserless:
                 return
 
             if not categories:
-                logger.error("[PARSE] Категории не получены")
+                logger.error("[PARSE] Категории не получены — возможно DNS API недоступен")
+                await self.tg.send_admin_alert("⚠️ Парсер: категории не получены, DNS API может быть недоступен")
                 return
 
             logger.info(
@@ -291,7 +292,13 @@ class DNSMonitorBrowserless:
             logger.error("[MAIN] ❌ Node.js недоступен. Установите Node.js: https://nodejs.org/")
             return
 
-        if not await self.init_session_browserless():
+        try:
+            success = await asyncio.wait_for(self.init_session_browserless(), timeout=120.0)
+        except asyncio.TimeoutError:
+            logger.error("[MAIN] ❌ Таймаут инициализации сессии (120 сек) — Node.js завис")
+            await self.tg.send_admin_alert("❌ Парсер: таймаут инициализации сессии (120 сек) — Node.js завис")
+            return
+        if not success:
             logger.error("[MAIN] ❌ Не удалось инициализировать сессию. Выход.")
             return
 

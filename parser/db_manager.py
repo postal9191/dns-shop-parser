@@ -3,6 +3,7 @@
 """
 
 import hashlib
+import json
 import shutil
 import sqlite3
 from datetime import datetime, timezone
@@ -137,22 +138,18 @@ class DBManager:
             )
             existing = {row[0]: row[1] for row in cursor.fetchall()}
 
+            update_rows: list[tuple] = []
+            insert_rows: list[tuple] = []
+            price_history_rows: list[tuple] = []
+
             for prod in products:
                 if prod.uuid in existing:
-                    conn.execute("""
-                        UPDATE products
-                        SET id = ?, title = ?, current_price = ?, previous_price = ?,
-                            category_id = ?, category_name = ?, status = ?, updated_at = ?
-                        WHERE uuid = ?
-                    """, (
+                    update_rows.append((
                         prod.id, prod.title, prod.price, prod.price_old,
-                        prod.category_id, prod.category_name, prod.status, now, prod.uuid
+                        prod.category_id, prod.category_name, prod.status, now, prod.uuid,
                     ))
                     if existing[prod.uuid] != prod.price:
-                        conn.execute("""
-                            INSERT INTO price_history (product_id, price, timestamp)
-                            VALUES (?, ?, ?)
-                        """, (prod.uuid, prod.price, now))
+                        price_history_rows.append((prod.uuid, prod.price, now))
                         price_changes.append({
                             "title": prod.title,
                             "url": prod.url,
@@ -162,15 +159,32 @@ class DBManager:
                             "status": prod.status,
                         })
                 else:
-                    conn.execute("""
-                        INSERT INTO products
-                        (id, uuid, title, url, category_id, category_name,
-                         current_price, previous_price, status, updated_at, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
+                    insert_rows.append((
                         prod.id, prod.uuid, prod.title, prod.url, prod.category_id,
-                        prod.category_name, prod.price, prod.price_old, prod.status, now, now
+                        prod.category_name, prod.price, prod.price_old, prod.status, now, now,
                     ))
+
+            if update_rows:
+                conn.executemany("""
+                    UPDATE products
+                    SET id = ?, title = ?, current_price = ?, previous_price = ?,
+                        category_id = ?, category_name = ?, status = ?, updated_at = ?
+                    WHERE uuid = ?
+                """, update_rows)
+
+            if insert_rows:
+                conn.executemany("""
+                    INSERT INTO products
+                    (id, uuid, title, url, category_id, category_name,
+                     current_price, previous_price, status, updated_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, insert_rows)
+
+            if price_history_rows:
+                conn.executemany("""
+                    INSERT INTO price_history (product_id, price, timestamp)
+                    VALUES (?, ?, ?)
+                """, price_history_rows)
 
             conn.commit()
 
@@ -268,7 +282,7 @@ class DBManager:
         """Обновляет последнее состояние категории."""
         uuid_hash = None
         if uuids is not None:
-            uuid_hash = hashlib.md5(','.join(sorted(uuids)).encode()).hexdigest()
+            uuid_hash = hashlib.sha256(json.dumps(sorted(uuids)).encode()).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
@@ -318,13 +332,25 @@ class DBManager:
             """, (user_id,))
             conn.commit()
 
-    def get_telegram_subscribers(self) -> list[str]:
-        """Получает список всех Telegram подписчиков."""
+    def get_telegram_subscribers(self, limit: int | None = None, offset: int = 0) -> list[str]:
+        """Получает список Telegram подписчиков с поддержкой пагинации."""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT user_id FROM telegram_subscribers
-            """)
+            if limit is not None:
+                cursor = conn.execute(
+                    "SELECT user_id FROM telegram_subscribers ORDER BY user_id LIMIT ? OFFSET ?",
+                    (limit, offset),
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT user_id FROM telegram_subscribers ORDER BY user_id"
+                )
             return [row[0] for row in cursor.fetchall()]
+
+    def count_telegram_subscribers(self) -> int:
+        """Возвращает общее количество Telegram подписчиков."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM telegram_subscribers")
+            return cursor.fetchone()[0]
 
     def get_all_category_states(self) -> dict[str, int]:
         """Возвращает {category_id: last_product_count} для всех категорий в БД."""

@@ -25,6 +25,7 @@ class TelegramBot:
         self._session: Optional[aiohttp.ClientSession] = None
         self._waiting_for_interval: Set[str] = set()
         self._broadcast_lock = asyncio.Lock()
+        self._subscriber_lock = asyncio.Lock()
 
         if self.db and self.enabled:
             self.subscribed_users = self._load_subscribers()
@@ -46,33 +47,35 @@ class TelegramBot:
             logger.error("[TG BOT] Ошибка при загрузке подписчиков: %s", exc)
             return set()
 
-    def _add_subscriber(self, user_id: str) -> bool:
-        """Добавляет пользователя в подписчики."""
+    async def _add_subscriber(self, user_id: str) -> bool:
+        """Добавляет пользователя в подписчики (атомарно: БД + память)."""
         if not self.db or not self.enabled:
             return False
 
-        try:
-            self.db.add_telegram_subscriber(user_id)
-            self.subscribed_users.add(user_id)
-            logger.info("[TG BOT] Добавлен подписчик: %s", user_id)
-            return True
-        except Exception as exc:
-            logger.error("[TG BOT] Ошибка при добавлении подписчика: %s", exc)
-            return False
+        async with self._subscriber_lock:
+            try:
+                self.db.add_telegram_subscriber(user_id)
+                self.subscribed_users.add(user_id)
+                logger.info("[TG BOT] Добавлен подписчик: %s", user_id)
+                return True
+            except Exception as exc:
+                logger.error("[TG BOT] Ошибка при добавлении подписчика: %s", exc)
+                return False
 
-    def _remove_subscriber(self, user_id: str) -> bool:
-        """Удаляет пользователя из подписчиков."""
+    async def _remove_subscriber(self, user_id: str) -> bool:
+        """Удаляет пользователя из подписчиков (атомарно: БД + память)."""
         if not self.db or not self.enabled:
             return False
 
-        try:
-            self.db.remove_telegram_subscriber(user_id)
-            self.subscribed_users.discard(user_id)
-            logger.info("[TG BOT] Удален подписчик: %s", user_id)
-            return True
-        except Exception as exc:
-            logger.error("[TG BOT] Ошибка при удалении подписчика: %s", exc)
-            return False
+        async with self._subscriber_lock:
+            try:
+                self.db.remove_telegram_subscriber(user_id)
+                self.subscribed_users.discard(user_id)
+                logger.info("[TG BOT] Удален подписчик: %s", user_id)
+                return True
+            except Exception as exc:
+                logger.error("[TG BOT] Ошибка при удалении подписчика: %s", exc)
+                return False
 
     async def send_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> str:
         """Отправляет сообщение.
@@ -134,27 +137,58 @@ class TelegramBot:
     async def broadcast_message(self, text: str) -> int:
         """Отправляет сообщение всем подписчикам. Возвращает количество успешно отправленных.
 
-        Сериализован через lock — чтобы параллельные вызовы (несколько категорий
-        парсятся одновременно) не флудили одному чату быстрее 1 msg/sec, иначе
-        Telegram режет такие сообщения даже при 200 OK.
+        Пагинирует подписчиков из БД батчами по 200 — не держит весь список в памяти.
+        Заблокировавших удаляет после полного прохода (избегает смещения offset при удалении).
+        Сериализован через lock — параллельные вызовы не флудят чату быстрее 1 msg/sec.
         """
-        if not self.enabled or not self.subscribed_users:
+        if not self.enabled:
             return 0
 
         async with self._broadcast_lock:
             success_count = 0
-            users = list(self.subscribed_users)
-            logger.info("[TG BOT] Отправляем сообщение %d подписчикам...", len(users))
+            blocked_users: list[str] = []
+            _BROADCAST_BATCH = 200
 
-            for user_id in users:
-                result = await self.send_message(user_id, text)
-                if result == "ok":
-                    success_count += 1
-                elif result == "blocked":
-                    self._remove_subscriber(user_id)
-                # 'fail' — оставляем подписчика, просто пропускаем
-                # Telegram per-chat лимит ~1 msg/sec — соблюдаем с запасом
-                await asyncio.sleep(1.1)
+            if self.db:
+                total = self.db.count_telegram_subscribers()
+                if total == 0:
+                    return 0
+                logger.info("[TG BOT] Отправляем сообщение %d подписчикам...", total)
+                offset = 0
+                while True:
+                    batch = self.db.get_telegram_subscribers(limit=_BROADCAST_BATCH, offset=offset)
+                    if not batch:
+                        break
+                    for user_id in batch:
+                        result = await self.send_message(user_id, text)
+                        if result == "ok":
+                            success_count += 1
+                        elif result == "blocked":
+                            blocked_users.append(user_id)
+                        # Telegram per-chat лимит ~1 msg/sec — соблюдаем с запасом
+                        await asyncio.sleep(1.1)
+                    offset += len(batch)
+                    if len(batch) < _BROADCAST_BATCH:
+                        break
+            else:
+                # Fallback если БД недоступна — итерируемся по in-memory set
+                users = list(self.subscribed_users)
+                if not users:
+                    return 0
+                logger.info("[TG BOT] Отправляем сообщение %d подписчикам (in-memory)...", len(users))
+                for user_id in users:
+                    result = await self.send_message(user_id, text)
+                    if result == "ok":
+                        success_count += 1
+                    elif result == "blocked":
+                        blocked_users.append(user_id)
+                    await asyncio.sleep(1.1)
+
+            # Удаляем заблокировавших после полного прохода — offset уже не важен
+            for user_id in blocked_users:
+                await self._remove_subscriber(user_id)
+            if blocked_users:
+                logger.info("[TG BOT] Удалено %d заблокировавших подписчиков", len(blocked_users))
 
             logger.info("[TG BOT] Сообщение отправлено %d подписчикам", success_count)
             return success_count
@@ -212,7 +246,7 @@ class TelegramBot:
                         "Вы уже подписаны на уведомления о новых товарах!"
                     )
                 else:
-                    self._add_subscriber(user_id)
+                    await self._add_subscriber(user_id)
                     await self.send_message(
                         chat_id,
                         "✅ Подписка включена! Вы будете получать уведомления о новых товарах!"
@@ -224,7 +258,7 @@ class TelegramBot:
             # Команда /stop
             if text == "/stop":
                 if user_id in self.subscribed_users:
-                    self._remove_subscriber(user_id)
+                    await self._remove_subscriber(user_id)
                     await self.send_message(
                         chat_id,
                         "✅ Подписка отключена. Вы больше не будете получать уведомления."

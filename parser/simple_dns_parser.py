@@ -420,8 +420,11 @@ class SimpleDNSParser:
                 category_name=category_name,
                 status=status,
             )
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Ошибка разбора state (%s): %s", type(exc).__name__, exc)
+            return None
         except Exception as exc:
-            logger.warning("Ошибка разбора state: %s | %s", exc, state)
+            logger.error("Неожиданная ошибка разбора state: %s", exc, exc_info=True)
             return None
 
     # -------------------------------------------------------------------
