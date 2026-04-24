@@ -4,7 +4,6 @@ Telegram бот для управления подписками на уведо
 
 import asyncio
 import aiohttp
-from html import escape as html_escape
 from typing import Optional, Set
 
 from config import config
@@ -26,6 +25,7 @@ class TelegramBot:
         self._waiting_for_interval: Set[str] = set()
         self._broadcast_lock = asyncio.Lock()
         self._subscriber_lock = asyncio.Lock()
+        self._user_cat_page: dict[str, int] = {}  # user_id → текущая страница /categories
 
         if self.db and self.enabled:
             self.subscribed_users = self._load_subscribers()
@@ -47,14 +47,21 @@ class TelegramBot:
             logger.error("[TG BOT] Ошибка при загрузке подписчиков: %s", exc)
             return set()
 
-    async def _add_subscriber(self, user_id: str) -> bool:
+    async def _add_subscriber(self, user_id: str, user_info: Optional[dict] = None) -> bool:
         """Добавляет пользователя в подписчики (атомарно: БД + память)."""
         if not self.db or not self.enabled:
             return False
 
         async with self._subscriber_lock:
             try:
-                self.db.add_telegram_subscriber(user_id)
+                info = user_info or {}
+                self.db.add_telegram_subscriber(
+                    user_id,
+                    first_name=info.get("first_name"),
+                    last_name=info.get("last_name"),
+                    username=info.get("username"),
+                    language_code=info.get("language_code"),
+                )
                 self.subscribed_users.add(user_id)
                 logger.info("[TG BOT] Добавлен подписчик: %s", user_id)
                 return True
@@ -193,18 +200,30 @@ class TelegramBot:
             logger.info("[TG BOT] Сообщение отправлено %d подписчикам", success_count)
             return success_count
 
-    def _get_available_commands(self, user_id: str) -> str:
-        """Возвращает список доступных команд для пользователя."""
-        commands = (
-            "/start - подписаться на уведомления о новых товарах\n"
-            "/menu - товары со скидками на сегодня\n"
-            "/stop - отписаться от уведомлений"
-        )
-
+    def _build_main_menu_keyboard(self, user_id: str) -> dict:
+        """Строит главное inline-меню для подписчика."""
+        rows = [
+            [{"text": "⚙️ Настройки", "callback_data": "menu_settings_open"}],
+        ]
         if user_id == self.admin_id:
-            commands += "\n/admin - панель управления"
+            rows.append([{"text": "🎛️ Админ-панель", "callback_data": "menu_admin"}])
+        return {"inline_keyboard": rows}
 
-        return "Доступные команды:\n" + commands
+    def _build_settings_submenu_keyboard(self) -> dict:
+        """Строит inline-подменю настроек."""
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "🔔 Уведомления", "callback_data": "menu_settings_cmd"},
+                    {"text": "🏙 Город", "callback_data": "menu_city_cmd"},
+                ],
+                [
+                    {"text": "📂 Категории", "callback_data": "menu_categories_cmd"},
+                    {"text": "📋 Статус", "callback_data": "menu_status_cmd"},
+                ],
+                [{"text": "← Главное меню", "callback_data": "menu_back"}],
+            ]
+        }
 
     async def handle_update(self, update: dict) -> None:
         """Обрабатывает обновление от Telegram (сообщения и callback-кнопки)."""
@@ -246,13 +265,19 @@ class TelegramBot:
                         "Вы уже подписаны на уведомления о новых товарах!"
                     )
                 else:
-                    await self._add_subscriber(user_id)
+                    await self._add_subscriber(user_id, user_info=message.get("from", {}))
+                    if self.db:
+                        self.db.upsert_user_settings(user_id)
                     await self.send_message(
                         chat_id,
                         "✅ Подписка включена! Вы будете получать уведомления о новых товарах!"
                     )
 
-                await self.send_message(chat_id, self._get_available_commands(user_id))
+                await self.send_message(
+                    chat_id,
+                    "Выберите действие:",
+                    reply_markup=self._build_main_menu_keyboard(user_id),
+                )
                 return
 
             # Команда /stop
@@ -268,28 +293,395 @@ class TelegramBot:
                         chat_id,
                         "Вы не подписаны на уведомления."
                     )
-
-                await self.send_message(chat_id, self._get_available_commands(user_id))
                 return
 
-            # Команда /menu
-            if text == "/menu":
+            # Команды настроек (только для подписчиков)
+            if text in ("/settings", "/city", "/categories", "/status"):
                 if user_id not in self.subscribed_users:
                     await self.send_message(
                         chat_id,
                         "❌ Команда доступна только подписчикам. Нажмите /start для подписки"
                     )
                     return
-                await self._handle_menu_command(chat_id)
+                if text == "/settings":
+                    await self._handle_settings_command(user_id, chat_id)
+                elif text == "/city":
+                    await self._handle_city_command(user_id, chat_id)
+                elif text == "/categories":
+                    await self._handle_categories_command(user_id, chat_id)
+                elif text == "/status":
+                    await self._handle_status_command(user_id, chat_id)
                 return
 
-            # Неизвестная команда
-            await self.send_message(
-                chat_id,
-                self._get_available_commands(user_id)
-            )
+            # Неизвестная команда — показываем меню (только подписчикам)
+            if user_id in self.subscribed_users:
+                await self.send_message(
+                    chat_id,
+                    "Выберите действие:",
+                    reply_markup=self._build_main_menu_keyboard(user_id),
+                )
+            else:
+                await self.send_message(
+                    chat_id,
+                    "Нажмите /start чтобы подписаться на уведомления."
+                )
         except Exception as exc:
             logger.error("[TG BOT] Ошибка при обработке сообщения: %s", exc)
+
+    async def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: Optional[dict] = None,
+    ) -> bool:
+        """Редактирует уже отправленное сообщение."""
+        if not self.enabled:
+            return False
+        payload: dict = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        try:
+            async with self._get_session().post(
+                f"{self.api_url}/editMessageText",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
+        except Exception as exc:
+            logger.debug("[TG BOT] editMessageText error: %s", exc)
+            return False
+
+    # ─── Пользовательские настройки ───────────────────────────────────────────
+
+    _CATS_PER_PAGE = 8
+
+    def _build_settings_keyboard(self, s: dict) -> dict:
+        """Строит inline-клавиатуру для /settings на основе текущих настроек."""
+        on_off = lambda v: "✅" if v else "❌"
+        pct = s["min_price_drop_pct"]
+        notif = s["notifications_on"]
+        return {
+            "inline_keyboard": [
+                [{"text": f"{on_off(s['notify_new'])} Новые товары",
+                  "callback_data": f"set_new:{0 if s['notify_new'] else 1}"}],
+                [{"text": f"{on_off(s['notify_price_drop'])} Снижение цен",
+                  "callback_data": f"set_drop:{0 if s['notify_price_drop'] else 1}"}],
+                [
+                    {"text": f"{'✅' if pct == 0 else ''} Любое снижение", "callback_data": "set_pct:0"},
+                    {"text": f"{'✅' if pct == 5 else ''} >5%",  "callback_data": "set_pct:5"},
+                    {"text": f"{'✅' if pct == 10 else ''} >10%", "callback_data": "set_pct:10"},
+                    {"text": f"{'✅' if pct == 20 else ''} >20%", "callback_data": "set_pct:20"},
+                ],
+                [{"text": f"{on_off(notif)} Уведомления (мастер)",
+                  "callback_data": f"set_notif:{0 if notif else 1}"}],
+                [{"text": "← Главное меню", "callback_data": "menu_back"}],
+            ]
+        }
+
+    def _build_city_keyboard(self, current_slug: str = "") -> dict:
+        """Строит inline-клавиатуру выбора города (3 кнопки в ряд)."""
+        from data.cities import CITIES
+        cities = list(CITIES.items())
+        rows = []
+        for i in range(0, len(cities), 3):
+            rows.append([
+                {
+                    "text": f"{'✅ ' if slug == current_slug else ''}{name}",
+                    "callback_data": f"city:{slug}",
+                }
+                for name, slug in cities[i:i + 3]
+            ])
+        rows.append([{"text": "← Главное меню", "callback_data": "menu_back"}])
+        return {"inline_keyboard": rows}
+
+    def _build_categories_keyboard(self, user_id: str, page: int) -> dict:
+        """Строит inline-клавиатуру выбора категорий с пагинацией."""
+        if not self.db:
+            return {"inline_keyboard": []}
+        all_cats = self.db.get_all_known_categories()
+        user_cats = set(self.db.get_user_categories(user_id))
+        # Выбранные категории поднимаем наверх
+        sorted_cats = sorted(all_cats, key=lambda c: (0 if c["id"] in user_cats else 1, c["name"]))
+        total_pages = max(1, (len(sorted_cats) + self._CATS_PER_PAGE - 1) // self._CATS_PER_PAGE)
+        page = max(0, min(page, total_pages - 1))
+        slice_ = sorted_cats[page * self._CATS_PER_PAGE:(page + 1) * self._CATS_PER_PAGE]
+
+        rows = []
+        # «Все категории» — сброс фильтра
+        all_mark = "✅" if not user_cats else "❌"
+        rows.append([{"text": f"{all_mark} Все категории", "callback_data": "cat_all"}])
+        for cat in slice_:
+            mark = "✅" if cat["id"] in user_cats else "❌"
+            name = cat["name"][:28]
+            rows.append([{"text": f"{mark} {name}", "callback_data": f"cat_toggle:{cat['id']}"}])
+        # Навигация
+        nav = []
+        if page > 0:
+            nav.append({"text": "← Назад", "callback_data": f"cat_page:{page - 1}"})
+        nav.append({"text": f"{page + 1}/{total_pages}", "callback_data": "cat_page:noop"})
+        if page < total_pages - 1:
+            nav.append({"text": "Вперёд →", "callback_data": f"cat_page:{page + 1}"})
+        if nav:
+            rows.append(nav)
+        rows.append([{"text": "← Главное меню", "callback_data": "menu_back"}])
+        return {"inline_keyboard": rows}
+
+    async def _handle_settings_command(self, user_id: str, chat_id: str) -> None:
+        if not self.db:
+            await self.send_message(chat_id, "❌ БД не инициализирована")
+            return
+        self.db.upsert_user_settings(user_id)
+        s = self.db.get_user_settings(user_id)
+        await self.send_message(
+            chat_id,
+            "⚙️ <b>Настройки уведомлений</b>\nВыберите что хотите изменить:",
+            reply_markup=self._build_settings_keyboard(s),
+        )
+
+    async def _handle_city_command(self, user_id: str, chat_id: str) -> None:
+        current_slug = ""
+        if self.db:
+            self.db.upsert_user_settings(user_id)
+            s = self.db.get_user_settings(user_id)
+            current_slug = s.get("city_slug", "")
+        await self.send_message(
+            chat_id,
+            "🏙 <b>Выберите ваш город:</b>",
+            reply_markup=self._build_city_keyboard(current_slug),
+        )
+
+    async def _handle_categories_command(self, user_id: str, chat_id: str) -> None:
+        if not self.db:
+            await self.send_message(chat_id, "❌ БД не инициализирована")
+            return
+        cats = self.db.get_all_known_categories()
+        if not cats:
+            await self.send_message(
+                chat_id,
+                "📭 Категории ещё не загружены. Дождитесь первого цикла парсера."
+            )
+            return
+        page = self._user_cat_page.get(user_id, 0)
+        await self.send_message(
+            chat_id,
+            "📂 <b>Выберите категории</b> (пусто = все):",
+            reply_markup=self._build_categories_keyboard(user_id, page),
+        )
+
+    async def _handle_status_command(self, user_id: str, chat_id: str) -> None:
+        if not self.db:
+            await self.send_message(chat_id, "❌ БД не инициализирована")
+            return
+        self.db.upsert_user_settings(user_id)
+        s = self.db.get_user_settings(user_id)
+        from data.cities import SLUG_TO_CITY
+        city_name = SLUG_TO_CITY.get(s["city_slug"], s["city_slug"])
+        cats = self.db.get_user_categories(user_id)
+        cat_text = "все" if not cats else f"{len(cats)} шт."
+        notif_text = "включены ✅" if s["notifications_on"] else "выключены 🔕"
+        new_text = "✅" if s["notify_new"] else "❌"
+        drop_text = "✅" if s["notify_price_drop"] else "❌"
+        pct_text = f">{s['min_price_drop_pct']}%" if s["min_price_drop_pct"] else "любое"
+
+        await self.send_message(
+            chat_id,
+            f"📋 <b>Ваши настройки</b>\n\n"
+            f"🏙 Город: {city_name}\n"
+            f"📂 Категории: {cat_text}\n"
+            f"🔔 Уведомления: {notif_text}\n"
+            f"🆕 Новые товары: {new_text}\n"
+            f"🏷 Снижение цен: {drop_text} (порог: {pct_text})\n\n"
+            f"<i>Парсер работает для города из .env — ваш город сохранён для будущих функций.</i>",
+            reply_markup={"inline_keyboard": [[{"text": "← Главное меню", "callback_data": "menu_back"}]]},
+        )
+
+    async def _handle_user_settings_callback(
+        self,
+        callback_id: str,
+        user_id: str,
+        chat_id: str,
+        message_id: Optional[int],
+        data: str,
+    ) -> None:
+        """Обрабатывает callback-кнопки настроек пользователя."""
+        if not self.db:
+            await self._answer_callback(callback_id, "❌ БД недоступна", alert=True)
+            return
+
+        self.db.upsert_user_settings(user_id)
+
+        # ─── Главное меню ────────────────────────────────────────────────────
+        if data == "menu_settings_open":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "⚙️ <b>Настройки</b>\nВыберите раздел:",
+                    reply_markup=self._build_settings_submenu_keyboard(),
+                )
+            else:
+                await self.send_message(
+                    chat_id,
+                    "⚙️ <b>Настройки</b>\nВыберите раздел:",
+                    reply_markup=self._build_settings_submenu_keyboard(),
+                )
+            return
+
+        if data == "menu_back":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "Выберите действие:",
+                    reply_markup=self._build_main_menu_keyboard(user_id),
+                )
+            return
+
+        if data == "menu_settings_cmd":
+            await self._answer_callback(callback_id, "")
+            s = self.db.get_user_settings(user_id)
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "⚙️ <b>Настройки уведомлений</b>\nВыберите что хотите изменить:",
+                    reply_markup=self._build_settings_keyboard(s),
+                )
+            return
+
+        if data == "menu_city_cmd":
+            await self._answer_callback(callback_id, "")
+            s = self.db.get_user_settings(user_id)
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "🏙 <b>Выберите ваш город:</b>",
+                    reply_markup=self._build_city_keyboard(s.get("city_slug", "")),
+                )
+            return
+
+        if data == "menu_categories_cmd":
+            await self._answer_callback(callback_id, "")
+            cats = self.db.get_all_known_categories()
+            if not cats:
+                await self._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
+                return
+            self._user_cat_page[user_id] = 0
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📂 <b>Выберите категории</b> (пусто = все):",
+                    reply_markup=self._build_categories_keyboard(user_id, 0),
+                )
+            return
+
+        if data == "menu_status_cmd":
+            await self._answer_callback(callback_id, "")
+            s = self.db.get_user_settings(user_id)
+            from data.cities import SLUG_TO_CITY
+            city_name = SLUG_TO_CITY.get(s["city_slug"], s["city_slug"])
+            cats = self.db.get_user_categories(user_id)
+            cat_text = "все" if not cats else f"{len(cats)} шт."
+            notif_text = "включены ✅" if s["notifications_on"] else "выключены 🔕"
+            new_text = "✅" if s["notify_new"] else "❌"
+            drop_text = "✅" if s["notify_price_drop"] else "❌"
+            pct_text = f">{s['min_price_drop_pct']}%" if s["min_price_drop_pct"] else "любое"
+            status_text = (
+                f"📋 <b>Ваши настройки</b>\n\n"
+                f"🏙 Город: {city_name}\n"
+                f"📂 Категории: {cat_text}\n"
+                f"🔔 Уведомления: {notif_text}\n"
+                f"🆕 Новые товары: {new_text}\n"
+                f"🏷 Снижение цен: {drop_text} (порог: {pct_text})\n\n"
+                f"<i>Парсер работает для города из .env — ваш город сохранён для будущих функций.</i>"
+            )
+            back_kb = {"inline_keyboard": [[{"text": "← Главное меню", "callback_data": "menu_back"}]]}
+            if message_id:
+                await self.edit_message_text(chat_id, message_id, status_text, reply_markup=back_kb)
+            return
+
+        if data == "menu_admin":
+            await self._answer_callback(callback_id, "")
+            await self._handle_admin_command(user_id, chat_id)
+            return
+
+        if data.startswith("city:"):
+            slug = data[5:]
+            from data.cities import SLUG_TO_CITY
+            city_name = SLUG_TO_CITY.get(slug, slug)
+            self.db.upsert_user_settings(user_id, city_slug=slug)
+            await self._answer_callback(callback_id, f"✅ Город сохранён: {city_name}")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "🏙 <b>Выберите ваш город:</b>",
+                    reply_markup=self._build_city_keyboard(slug),
+                )
+            return
+
+        if data == "cat_all":
+            self.db.set_user_categories(user_id, [])
+            self._user_cat_page[user_id] = 0
+            await self._answer_callback(callback_id, "✅ Выбраны все категории")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📂 <b>Выберите категории</b> (пусто = все):",
+                    reply_markup=self._build_categories_keyboard(user_id, 0),
+                )
+            return
+
+        if data.startswith("cat_toggle:"):
+            cat_id = data[11:]
+            added = self.db.toggle_user_category(user_id, cat_id)
+            await self._answer_callback(callback_id, "✅ Добавлено" if added else "❌ Убрано")
+            if message_id:
+                page = self._user_cat_page.get(user_id, 0)
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📂 <b>Выберите категории</b> (пусто = все):",
+                    reply_markup=self._build_categories_keyboard(user_id, page),
+                )
+            return
+
+        if data.startswith("cat_page:"):
+            raw = data[9:]
+            if raw == "noop":
+                await self._answer_callback(callback_id, "")
+                return
+            page = int(raw)
+            self._user_cat_page[user_id] = page
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📂 <b>Выберите категории</b> (пусто = все):",
+                    reply_markup=self._build_categories_keyboard(user_id, page),
+                )
+            return
+
+        # set_* — настройки уведомлений
+        setting_map = {
+            "set_new:": "notify_new",
+            "set_drop:": "notify_price_drop",
+            "set_pct:": "min_price_drop_pct",
+            "set_notif:": "notifications_on",
+        }
+        for prefix, field in setting_map.items():
+            if data.startswith(prefix):
+                value = int(data[len(prefix):])
+                self.db.upsert_user_settings(user_id, **{field: value})
+                await self._answer_callback(callback_id, "✅ Сохранено")
+                if message_id:
+                    s = self.db.get_user_settings(user_id)
+                    await self.edit_message_text(
+                        chat_id, message_id,
+                        "⚙️ <b>Настройки уведомлений</b>\nВыберите что хотите изменить:",
+                        reply_markup=self._build_settings_keyboard(s),
+                    )
+                return
+
+        await self._answer_callback(callback_id, "❓ Неизвестная команда", alert=True)
 
     async def _handle_admin_command(self, user_id: str, chat_id: str) -> None:
         """Обработка команды /admin с меню управления."""
@@ -337,13 +729,24 @@ class TelegramBot:
             callback_id = callback_query.get("id", "")
             user_id = str(callback_query.get("from", {}).get("id", ""))
             chat_id = str(callback_query.get("message", {}).get("chat", {}).get("id", ""))
+            message_id = callback_query.get("message", {}).get("message_id")
             data = callback_query.get("data", "")
 
             logger.info(
-                "[TG BOT ADMIN] Callback: user=%s, data=%s, admin_id=%s, controller=%s",
-                user_id, data, self.admin_id, "OK" if self.parser_controller else "NONE"
+                "[TG BOT] Callback: user=%s, data=%s",
+                user_id, data,
             )
 
+            # Пользовательские настройки — не требуют прав админа
+            _user_prefixes = ("city:", "cat_", "set_new:", "set_drop:", "set_pct:", "set_notif:", "menu_")
+            if any(data.startswith(p) for p in _user_prefixes):
+                if user_id not in self.subscribed_users:
+                    await self._answer_callback(callback_id, "❌ Сначала подпишитесь через /start", alert=True)
+                    return
+                await self._handle_user_settings_callback(callback_id, user_id, chat_id, message_id, data)
+                return
+
+            # Далее — только admin callbacks
             if not self.admin_id:
                 logger.warning("[TG BOT ADMIN] ❌ TELEGRAM_CHAT_ADMIN не установлен в .env")
                 await self._answer_callback(callback_id, "❌ Админ-панель не сконфигурирована", alert=True)
@@ -490,54 +893,6 @@ class TelegramBot:
         except Exception as exc:
             logger.error("[TG BOT] Ошибка при отправке callback ответа: %s", exc)
             return False
-
-    async def _handle_menu_command(self, chat_id: str) -> None:
-        """Обработка команды /menu - показывает товары со скидками за сегодня."""
-        try:
-            if not self.db:
-                await self.send_message(chat_id, "❌ БД не инициализирована")
-                return
-
-            discounts = self.db.get_today_discounts()
-
-            if not discounts:
-                await self.send_message(
-                    chat_id,
-                    "📭 Сегодня нет товаров со скидками"
-                )
-                return
-
-            message = "🏷️ <b>Товары со скидками на сегодня:</b>\n\n"
-
-            for i, item in enumerate(discounts[:30], 1):
-                title = item["title"][:50]
-                if len(item["title"]) > 50:
-                    title += "..."
-
-                safe_title = html_escape(title, quote=False)
-                safe_category = html_escape(str(item['category']), quote=False)
-                safe_url = html_escape(str(item['url']), quote=True)
-                message += (
-                    f"{i}. <b>{safe_title}</b>\n"
-                    f"   Категория: {safe_category}\n"
-                    f"   💰 {item['current_price']}₽ "
-                    f"<s>{item['previous_price']}₽</s> "
-                    f"(-{item['drop_percent']}%)\n"
-                    f"   🔗 <a href=\"{safe_url}\">Товар</a>\n\n"
-                )
-
-                if len(message) > 4000:
-                    await self.send_message(chat_id, message)
-                    message = ""
-
-            if message:
-                await self.send_message(chat_id, message)
-
-            logger.info("[TG BOT MENU] /menu запрос обработан, товаров: %d", len(discounts))
-
-        except Exception as exc:
-            logger.error("[TG BOT MENU] Ошибка при обработке /menu: %s", exc)
-            await self.send_message(chat_id, f"❌ Ошибка: {exc}")
 
     async def polling_loop(self) -> None:
         """Бесконечный цикл для получения обновлений от Telegram (polling)."""

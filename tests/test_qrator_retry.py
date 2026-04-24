@@ -148,8 +148,11 @@ class TestResolveQratorWithRetry:
                             result = await resolve_qrator_cookies()
 
                         assert result is None
-                        # Проверяем что задержки были 1 и 2 сек (на 2-й и 3-й попытке)
-                        assert sleep_calls == [1, 2]
+                        # Две задержки между тремя попытками; jitter добавляет случайность,
+                        # поэтому проверяем только количество и минимальный порог
+                        assert len(sleep_calls) == 2
+                        assert sleep_calls[0] >= 1
+                        assert sleep_calls[1] >= 2
 
     @pytest.mark.asyncio
     async def test_resolve_qrator_missing_script(self):

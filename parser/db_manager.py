@@ -108,9 +108,61 @@ class DBManager:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_subscribers (
                     user_id TEXT PRIMARY KEY,
-                    subscribed_at TEXT
+                    first_name TEXT,
+                    last_name TEXT,
+                    username TEXT,
+                    language_code TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    subscribed_at TEXT,
+                    updated_at TEXT
                 )
             """)
+            cursor = conn.execute("PRAGMA table_info(telegram_subscribers)")
+            sub_cols = [row[1] for row in cursor.fetchall()]
+            sub_migrations = {
+                'first_name':    'ALTER TABLE telegram_subscribers ADD COLUMN first_name TEXT',
+                'last_name':     'ALTER TABLE telegram_subscribers ADD COLUMN last_name TEXT',
+                'username':      'ALTER TABLE telegram_subscribers ADD COLUMN username TEXT',
+                'language_code': 'ALTER TABLE telegram_subscribers ADD COLUMN language_code TEXT',
+                'is_active':     'ALTER TABLE telegram_subscribers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1',
+                'updated_at':    'ALTER TABLE telegram_subscribers ADD COLUMN updated_at TEXT',
+            }
+            if any(col not in sub_cols for col in sub_migrations):
+                self._backup_db()
+                for col, sql in sub_migrations.items():
+                    if col not in sub_cols:
+                        conn.execute(sql)
+                        logger.info("telegram_subscribers: добавлен столбец %s", col)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id TEXT PRIMARY KEY,
+                    city_slug TEXT NOT NULL DEFAULT 'moscow',
+                    notify_new INTEGER NOT NULL DEFAULT 1,
+                    notify_price_drop INTEGER NOT NULL DEFAULT 1,
+                    min_price_drop_pct INTEGER NOT NULL DEFAULT 0,
+                    notifications_on INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_categories (
+                    user_id TEXT NOT NULL,
+                    category_id TEXT NOT NULL,
+                    category_name TEXT,
+                    PRIMARY KEY (user_id, category_id)
+                )
+            """)
+            cursor = conn.execute("PRAGMA table_info(user_categories)")
+            user_cat_cols = [row[1] for row in cursor.fetchall()]
+            if 'category_name' not in user_cat_cols:
+                self._backup_db()
+                conn.execute("ALTER TABLE user_categories ADD COLUMN category_name TEXT")
+                conn.execute("""
+                    UPDATE user_categories SET category_name = (
+                        SELECT category_name FROM category_state
+                        WHERE category_state.category_id = user_categories.category_id
+                    )
+                """)
+                logger.info("Добавлен столбец category_name в таблицу user_categories")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_uuid ON products(uuid)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id)")
@@ -157,6 +209,7 @@ class DBManager:
                             "old_price": existing[prod.uuid],
                             "price_old": prod.price_old,
                             "status": prod.status,
+                            "category_id": prod.category_id,
                         })
                 else:
                     insert_rows.append((
@@ -191,11 +244,14 @@ class DBManager:
         return len(products), price_changes
 
     def delete_all_products_in_category(self, category_id: str) -> int:
-        """Удаляет все товары категории (категория исчезла с сайта)."""
+        """Удаляет все товары категории и саму запись category_state (категория исчезла с сайта).
+        Также очищает user_categories, чтобы пользователи не зависли на несуществующей категории."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM products WHERE category_id = ?", (category_id,)
             )
+            conn.execute("DELETE FROM category_state WHERE category_id = ?", (category_id,))
+            conn.execute("DELETE FROM user_categories WHERE category_id = ?", (category_id,))
             conn.commit()
             return cursor.rowcount
 
@@ -323,42 +379,58 @@ class DBManager:
         new_ids = [pid for pid in all_product_ids if pid not in existing_ids]
         return new_ids
 
-    def add_telegram_subscriber(self, user_id: str) -> None:
-        """Добавляет Telegram подписчика."""
+    def add_telegram_subscriber(
+        self,
+        user_id: str,
+        first_name: str = None,
+        last_name: str = None,
+        username: str = None,
+        language_code: str = None,
+    ) -> None:
+        """Добавляет или реактивирует подписчика. subscribed_at пишется только при первой вставке."""
         now = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
-                INSERT OR IGNORE INTO telegram_subscribers (user_id, subscribed_at)
-                VALUES (?, ?)
-            """, (user_id, now))
+                INSERT OR IGNORE INTO telegram_subscribers
+                    (user_id, first_name, last_name, username, language_code, is_active, subscribed_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """, (user_id, first_name, last_name, username, language_code, now, now))
+            # При повторном /start обновляем данные и реактивируем, но НЕ трогаем subscribed_at
+            conn.execute("""
+                UPDATE telegram_subscribers
+                SET first_name = ?, last_name = ?, username = ?, language_code = ?,
+                    is_active = 1, updated_at = ?
+                WHERE user_id = ?
+            """, (first_name, last_name, username, language_code, now, user_id))
             conn.commit()
 
     def remove_telegram_subscriber(self, user_id: str) -> None:
-        """Удаляет Telegram подписчика."""
+        """Помечает подписчика неактивным (не удаляет из БД)."""
+        now = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
-                DELETE FROM telegram_subscribers WHERE user_id = ?
-            """, (user_id,))
+                UPDATE telegram_subscribers SET is_active = 0, updated_at = ? WHERE user_id = ?
+            """, (now, user_id))
             conn.commit()
 
     def get_telegram_subscribers(self, limit: int | None = None, offset: int = 0) -> list[str]:
-        """Получает список Telegram подписчиков с поддержкой пагинации."""
+        """Получает активных подписчиков с поддержкой пагинации."""
         with sqlite3.connect(self.db_path) as conn:
             if limit is not None:
                 cursor = conn.execute(
-                    "SELECT user_id FROM telegram_subscribers ORDER BY user_id LIMIT ? OFFSET ?",
+                    "SELECT user_id FROM telegram_subscribers WHERE is_active = 1 ORDER BY user_id LIMIT ? OFFSET ?",
                     (limit, offset),
                 )
             else:
                 cursor = conn.execute(
-                    "SELECT user_id FROM telegram_subscribers ORDER BY user_id"
+                    "SELECT user_id FROM telegram_subscribers WHERE is_active = 1 ORDER BY user_id"
                 )
             return [row[0] for row in cursor.fetchall()]
 
     def count_telegram_subscribers(self) -> int:
-        """Возвращает общее количество Telegram подписчиков."""
+        """Возвращает количество активных подписчиков."""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM telegram_subscribers")
+            cursor = conn.execute("SELECT COUNT(*) FROM telegram_subscribers WHERE is_active = 1")
             return cursor.fetchone()[0]
 
     def get_all_category_states(self) -> dict[str, int]:
@@ -396,6 +468,124 @@ class DBManager:
             }
             for row in rows
         ]
+
+    def upsert_user_settings(self, user_id: str, **kwargs) -> None:
+        """Создает или обновляет настройки пользователя."""
+        allowed = {"city_slug", "notify_new", "notify_price_drop", "min_price_drop_pct", "notifications_on"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT OR IGNORE INTO user_settings (user_id) VALUES (?)", (user_id,))
+            for key, value in updates.items():
+                conn.execute(f"UPDATE user_settings SET {key} = ? WHERE user_id = ?", (value, user_id))
+            conn.commit()
+
+    def get_user_settings(self, user_id: str) -> dict | None:
+        """Получает настройки пользователя."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT user_id, city_slug, notify_new, notify_price_drop, min_price_drop_pct, notifications_on
+                FROM user_settings WHERE user_id = ?
+            """, (user_id,))
+            row = cursor.fetchone()
+        if row:
+            return {
+                "user_id": row[0],
+                "city_slug": row[1],
+                "notify_new": bool(row[2]),
+                "notify_price_drop": bool(row[3]),
+                "min_price_drop_pct": row[4],
+                "notifications_on": bool(row[5]),
+            }
+        return None
+
+    def get_all_subscribers_with_settings(self) -> list[dict]:
+        """Возвращает всех подписчиков с их настройками (дефолты если настроек нет)."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT ts.user_id,
+                       COALESCE(us.city_slug, 'moscow') AS city_slug,
+                       COALESCE(us.notify_new, 1) AS notify_new,
+                       COALESCE(us.notify_price_drop, 1) AS notify_price_drop,
+                       COALESCE(us.min_price_drop_pct, 0) AS min_price_drop_pct,
+                       COALESCE(us.notifications_on, 1) AS notifications_on
+                FROM telegram_subscribers ts
+                LEFT JOIN user_settings us ON ts.user_id = us.user_id
+                ORDER BY ts.user_id
+            """)
+            rows = cursor.fetchall()
+        return [
+            {
+                "user_id": row[0],
+                "city_slug": row[1],
+                "notify_new": bool(row[2]),
+                "notify_price_drop": bool(row[3]),
+                "min_price_drop_pct": row[4],
+                "notifications_on": bool(row[5]),
+            }
+            for row in rows
+        ]
+
+    def set_user_categories(self, user_id: str, category_ids: list[str]) -> None:
+        """Устанавливает выбранные категории (пустой список = все категории)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM user_categories WHERE user_id = ?", (user_id,))
+            if category_ids:
+                placeholders = ",".join("?" * len(category_ids))
+                cursor = conn.execute(
+                    f"SELECT category_id, category_name FROM category_state WHERE category_id IN ({placeholders})",
+                    category_ids,
+                )
+                names = {row[0]: row[1] for row in cursor.fetchall()}
+                conn.executemany(
+                    "INSERT INTO user_categories (user_id, category_id, category_name) VALUES (?, ?, ?)",
+                    [(user_id, cid, names.get(cid)) for cid in category_ids],
+                )
+            conn.commit()
+
+    def get_user_categories(self, user_id: str) -> list[str]:
+        """Получает выбранные категории пользователя (пусто = все)."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT category_id FROM user_categories WHERE user_id = ?", (user_id,)
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def toggle_user_category(self, user_id: str, category_id: str) -> bool:
+        """Переключает категорию для пользователя. Возвращает True если добавлена, False если удалена."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT 1 FROM user_categories WHERE user_id = ? AND category_id = ?",
+                (user_id, category_id),
+            )
+            exists = cursor.fetchone() is not None
+            if exists:
+                conn.execute(
+                    "DELETE FROM user_categories WHERE user_id = ? AND category_id = ?",
+                    (user_id, category_id),
+                )
+                conn.commit()
+                return False
+            else:
+                cursor = conn.execute(
+                    "SELECT category_name FROM category_state WHERE category_id = ?",
+                    (category_id,),
+                )
+                row = cursor.fetchone()
+                cat_name = row[0] if row else None
+                conn.execute(
+                    "INSERT INTO user_categories (user_id, category_id, category_name) VALUES (?, ?, ?)",
+                    (user_id, category_id, cat_name),
+                )
+                conn.commit()
+                return True
+
+    def get_all_known_categories(self) -> list[dict]:
+        """Получает все известные категории из category_state (заполняется при парсинге)."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT category_id, category_name FROM category_state ORDER BY category_name"
+            )
+            return [{"id": row[0], "name": row[1]} for row in cursor.fetchall()]
 
     def close(self) -> None:
         """Нет-оп: все методы используют with sqlite3.connect(), соединения закрываются автоматически."""

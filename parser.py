@@ -32,7 +32,7 @@ class DNSMonitorBrowserless:
 
         # Инициализируем Telegram бот
         self.telegram_bot = init_telegram_bot(self.db)
-        self.tg = TelegramNotifier(bot=self.telegram_bot)
+        self.tg = TelegramNotifier(bot=self.telegram_bot, db=self.db)
 
         self.parse_interval = config.parse_interval
 
@@ -58,6 +58,7 @@ class DNSMonitorBrowserless:
         total_categories: int,
         is_first_run: bool,
         all_price_changes: list,
+        all_new_products: list,
     ) -> tuple[int, int]:
         """
         Обрабатывает одну категорию (fetch UUID, детали, сохранение в БД).
@@ -147,13 +148,15 @@ class DNSMonitorBrowserless:
                 logger.info("[PARSE]   PRICE Изменились цены: %d товаров", len(price_changes))
                 all_price_changes.extend(price_changes)
 
-            # Если есть новые товары и это не первый запуск - отправляем уведомление
+            # Если есть новые товары и это не первый запуск - накапливаем для дайджеста
             if new_uuids and not is_first_run:
                 new_products = [p for p in products if p.uuid in new_uuids]
                 if new_products:
                     total_new_products += len(new_products)
-                    new_prods_data = [
+                    logger.info("[PARSE]   NEW Новых товаров: %d", len(new_products))
+                    all_new_products.extend([
                         {
+                            "category_id": cat.id,
                             "category": cat.label,
                             "title": p.title,
                             "price": p.price,
@@ -162,13 +165,7 @@ class DNSMonitorBrowserless:
                             "status": p.status,
                         }
                         for p in new_products
-                    ]
-                    logger.info(
-                        "[PARSE]   NEW Новых товаров: %d",
-                        len(new_products),
-                    )
-                    # Отправляем Telegram уведомление всем подписчикам
-                    await self.tg.send_new_products_notification(cat.label, new_prods_data)
+                    ])
             elif new_uuids and is_first_run:
                 logger.info("[PARSE]   (пропускаем ТГ на первом запуске)")
             else:
@@ -231,14 +228,15 @@ class DNSMonitorBrowserless:
 
             # Шаг 2: товары по каждой категории (параллельно с ограничением)
             semaphore = asyncio.Semaphore(config.parse_concurrency)
-            all_price_changes = []
+            all_price_changes: list = []
+            all_new_products: list = []
 
             async def process_category_with_semaphore(i: int, cat) -> tuple[int, int]:
                 """Обработка категории с контролем параллелизма."""
                 async with semaphore:
                     try:
                         new_prods, upd = await self._process_category(
-                            cat, i, len(categories), is_first_run, all_price_changes
+                            cat, i, len(categories), is_first_run, all_price_changes, all_new_products
                         )
                         return (new_prods, upd)
                     except Exception as exc:
@@ -253,9 +251,9 @@ class DNSMonitorBrowserless:
             total_new_products = sum(r[0] for r in results)
             total_updated = sum(r[1] for r in results)
 
-            # Отправляем единое уведомление об изменениях цен
-            if all_price_changes:
-                await self.tg.send_price_changes_notification(all_price_changes)
+            # Отправляем единый дайджест с новыми товарами и изменениями цен
+            if all_new_products or all_price_changes:
+                await self.tg.send_digest(all_new_products, all_price_changes)
 
             # Удаляем товары из категорий, которых больше нет на сайте
             fetched_ids = {cat.id for cat in categories}

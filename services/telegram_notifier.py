@@ -3,7 +3,9 @@
 Использует Telegram бот для broadcast уведомлений всем подписчикам.
 """
 
+import asyncio
 from collections import defaultdict
+from datetime import datetime
 from html import escape as html_escape
 from typing import Optional
 
@@ -84,8 +86,9 @@ _BATCH_PRICE_CHANGES = 15
 class TelegramNotifier:
     """Отправка уведомлений в Telegram о новых товарах всем подписчикам."""
 
-    def __init__(self, bot=None) -> None:
+    def __init__(self, bot=None, db=None) -> None:
         self.bot = bot
+        self.db = db
         self.enabled = bool(bot)
 
     async def send_new_products_notification(
@@ -195,6 +198,112 @@ class TelegramNotifier:
             total_batches,
         )
         return True
+
+    async def send_digest(
+        self,
+        new_products: list[dict],
+        price_changes: list[dict],
+    ) -> None:
+        """Отправляет персональный дайджест каждому подписчику с учётом его настроек.
+
+        new_products: [{category_id, category, title, price, price_old, url, status}]
+        price_changes: [{category_id, title, url, new_price, old_price, price_old, status}]
+        """
+        if not self.bot or not self.db:
+            return
+        if not new_products and not price_changes:
+            return
+
+        subscribers = self.db.get_all_subscribers_with_settings()
+        if not subscribers:
+            return
+
+        logger.info("[TG DIGEST] Рассылка дайджеста %d подписчикам", len(subscribers))
+        blocked: list[str] = []
+
+        for sub in subscribers:
+            if not sub["notifications_on"]:
+                continue
+
+            user_id = sub["user_id"]
+            user_cats = set(self.db.get_user_categories(user_id))  # пусто = все
+
+            filtered_new: list[dict] = []
+            if sub["notify_new"]:
+                for p in new_products:
+                    if user_cats and p.get("category_id") not in user_cats:
+                        continue
+                    filtered_new.append(p)
+
+            filtered_drops: list[dict] = []
+            if sub["notify_price_drop"]:
+                min_pct = sub["min_price_drop_pct"]
+                for p in price_changes:
+                    if user_cats and p.get("category_id") not in user_cats:
+                        continue
+                    old = p.get("old_price", 0)
+                    new = p.get("new_price", 0)
+                    if old and new < old and min_pct > 0:
+                        if (old - new) / old * 100 < min_pct:
+                            continue
+                    filtered_drops.append(p)
+
+            if not filtered_new and not filtered_drops:
+                continue
+
+            message = self._format_digest(filtered_new, filtered_drops)
+            result = await self.bot.send_message(user_id, message)
+            if result == "blocked":
+                blocked.append(user_id)
+            await asyncio.sleep(1.1)
+
+        for user_id in blocked:
+            self.db.remove_telegram_subscriber(user_id)
+        if blocked:
+            logger.info("[TG DIGEST] Удалено %d заблокировавших подписчиков", len(blocked))
+
+    def _format_digest(self, new_products: list[dict], price_changes: list[dict]) -> str:
+        """Форматирует единое дайджест-сообщение."""
+        now = datetime.now().strftime("%H:%M")
+        parts = [f"📊 <b>Дайджест DNS — {now}</b>\n"]
+
+        if new_products:
+            grouped = group_products(new_products)
+            parts.append(f"🆕 <b>Новые товары ({len(grouped)}):</b>")
+            for prod in grouped[:20]:
+                title = html_escape(prod["title"][:60], quote=False)
+                price_str = f"{_fmt_price(prod['price'])} ₽"
+                if prod.get("price_old") and prod["price_old"] > prod["price"]:
+                    price_str += f" <s>{_fmt_price(prod['price_old'])}</s>"
+                price_str += _status_badge(prod.get("status", ""))
+                url = prod.get("url", "")
+                if url:
+                    parts.append(f'• <a href="{html_escape(url, quote=True)}">{title}</a> — {price_str}')
+                else:
+                    parts.append(f"• {title} — {price_str}")
+            if len(grouped) > 20:
+                parts.append(f"<i>...и ещё {len(grouped) - 20}</i>")
+            parts.append("")
+
+        if price_changes:
+            grouped = group_products(price_changes)
+            parts.append(f"🏷 <b>Снижение цен ({len(grouped)}):</b>")
+            for prod in grouped[:20]:
+                title = html_escape(prod["title"][:60], quote=False)
+                new_p = prod["new_price"]
+                old_p = prod["old_price"]
+                pct = round((old_p - new_p) / old_p * 100) if old_p else 0
+                price_str = f"{_fmt_price(new_p)} ₽ <s>{_fmt_price(old_p)}</s> (−{pct}%)"
+                price_str += _status_badge(prod.get("status", ""))
+                url = prod.get("url", "")
+                if url:
+                    parts.append(f'• <a href="{html_escape(url, quote=True)}">{title}</a> — {price_str}')
+                else:
+                    parts.append(f"• {title} — {price_str}")
+            if len(grouped) > 20:
+                parts.append(f"<i>...и ещё {len(grouped) - 20}</i>")
+
+        return "\n".join(parts)
 
     async def send_admin_alert(self, text: str) -> None:
         """Отправляет сообщение напрямую администратору (не всем подписчикам)."""

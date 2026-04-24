@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 
 import pytest
@@ -182,8 +183,8 @@ class TestDBManagerCategoryState:
 
         state = db_memory.get_category_state("cat-1")
 
-        # Хэш должен быть md5 от отсортированных UUID
-        expected_hash = hashlib.md5(",".join(sorted(uuids)).encode()).hexdigest()
+        # Хэш — SHA256 от JSON-списка отсортированных UUID
+        expected_hash = hashlib.sha256(json.dumps(sorted(uuids)).encode()).hexdigest()
         assert state["uuid_hash"] == expected_hash
 
     def test_update_category_state_sorts_uuids(self, db_memory):
