@@ -81,6 +81,8 @@ def _format_product_line(title: str, url: str, price_str: str, icon: str = "💰
 
 _BATCH_NEW_PRODUCTS = 10
 _BATCH_PRICE_CHANGES = 15
+_BATCH_DIGEST_NEW = 10
+_BATCH_DIGEST_PRICE = 15
 
 
 class TelegramNotifier:
@@ -251,59 +253,71 @@ class TelegramNotifier:
             if not filtered_new and not filtered_drops:
                 continue
 
-            message = self._format_digest(filtered_new, filtered_drops)
-            result = await self.bot.send_message(user_id, message)
-            if result == "blocked":
-                blocked.append(user_id)
-            await asyncio.sleep(1.1)
+            chunks = self._build_digest_chunks(filtered_new, filtered_drops)
+            for chunk in chunks:
+                result = await self.bot.send_message(user_id, chunk)
+                if result == "blocked":
+                    blocked.append(user_id)
+                    break
+                await asyncio.sleep(0.5)
+            await asyncio.sleep(0.7)
 
         for user_id in blocked:
             self.db.remove_telegram_subscriber(user_id)
         if blocked:
             logger.info("[TG DIGEST] Удалено %d заблокировавших подписчиков", len(blocked))
 
-    def _format_digest(self, new_products: list[dict], price_changes: list[dict]) -> str:
-        """Форматирует единое дайджест-сообщение."""
+    def _build_digest_chunks(
+        self, new_products: list[dict], price_changes: list[dict]
+    ) -> list[str]:
+        """Разбивает дайджест на чанки — каждый чанк отдельное сообщение."""
         now = datetime.now().strftime("%H:%M")
-        parts = [f"📊 <b>Дайджест DNS — {now}</b>\n"]
+        chunks: list[str] = []
 
         if new_products:
             grouped = group_products(new_products)
-            parts.append(f"🆕 <b>Новые товары ({len(grouped)}):</b>")
-            for prod in grouped[:20]:
-                title = html_escape(prod["title"][:60], quote=False)
-                price_str = f"{_fmt_price(prod['price'])} ₽"
-                if prod.get("price_old") and prod["price_old"] > prod["price"]:
-                    price_str += f" <s>{_fmt_price(prod['price_old'])}</s>"
-                price_str += _status_badge(prod.get("status", ""))
-                url = prod.get("url", "")
-                if url:
-                    parts.append(f'• <a href="{html_escape(url, quote=True)}">{title}</a> — {price_str}')
-                else:
-                    parts.append(f"• {title} — {price_str}")
-            if len(grouped) > 20:
-                parts.append(f"<i>...и ещё {len(grouped) - 20}</i>")
-            parts.append("")
+            total = len(grouped)
+            batches = [grouped[i : i + _BATCH_DIGEST_NEW] for i in range(0, total, _BATCH_DIGEST_NEW)]
+            for batch_idx, batch in enumerate(batches, 1):
+                header = f"📊 <b>Дайджест DNS — {now}</b>\n\n🆕 <b>Новые товары ({total})</b>"
+                if len(batches) > 1:
+                    header += f" ({batch_idx}/{len(batches)})"
+                header += "\n\n"
+                body = ""
+                for prod in batch:
+                    title = wrap_text(prod["title"])
+                    price_str = f"{_fmt_price(prod['price'])} ₽"
+                    if prod.get("price_old") and prod["price_old"] > prod["price"]:
+                        price_str += f" <s>{_fmt_price(prod['price_old'])}</s>"
+                    price_str += _status_badge(prod.get("status", ""))
+                    body += _format_product_line(title, prod.get("url", ""), price_str)
+                chunks.append(header + body)
 
         if price_changes:
             grouped = group_products(price_changes)
-            parts.append(f"🏷 <b>Снижение цен ({len(grouped)}):</b>")
-            for prod in grouped[:20]:
-                title = html_escape(prod["title"][:60], quote=False)
-                new_p = prod["new_price"]
-                old_p = prod["old_price"]
-                pct = round((old_p - new_p) / old_p * 100) if old_p else 0
-                price_str = f"{_fmt_price(new_p)} ₽ <s>{_fmt_price(old_p)}</s> (−{pct}%)"
-                price_str += _status_badge(prod.get("status", ""))
-                url = prod.get("url", "")
-                if url:
-                    parts.append(f'• <a href="{html_escape(url, quote=True)}">{title}</a> — {price_str}')
-                else:
-                    parts.append(f"• {title} — {price_str}")
-            if len(grouped) > 20:
-                parts.append(f"<i>...и ещё {len(grouped) - 20}</i>")
+            total = len(grouped)
+            batches = [grouped[i : i + _BATCH_DIGEST_PRICE] for i in range(0, total, _BATCH_DIGEST_PRICE)]
+            for batch_idx, batch in enumerate(batches, 1):
+                header = f"🏷 <b>Снижение цен ({total})</b>"
+                if len(batches) > 1:
+                    header += f" ({batch_idx}/{len(batches)})"
+                header += "\n\n"
+                body = ""
+                for prod in batch:
+                    title = wrap_text(prod["title"])
+                    new_p = prod["new_price"]
+                    old_p = prod["old_price"]
+                    pct = round((old_p - new_p) / old_p * 100) if old_p else 0
+                    price_str = f"{_fmt_price(new_p)} ₽ <s>{_fmt_price(old_p)}</s> (−{pct}%)"
+                    price_str += _status_badge(prod.get("status", ""))
+                    body += _format_product_line(title, prod.get("url", ""), price_str, icon="🔽")
+                chunks.append(header + body)
 
-        return "\n".join(parts)
+        return chunks
+
+    def _format_digest(self, new_products: list[dict], price_changes: list[dict]) -> str:
+        """Форматирует дайджест-сообщение (все чанки объединены, для тестов и превью)."""
+        return "\n\n".join(self._build_digest_chunks(new_products, price_changes))
 
     async def send_admin_alert(self, text: str) -> None:
         """Отправляет сообщение напрямую администратору (не всем подписчикам)."""
