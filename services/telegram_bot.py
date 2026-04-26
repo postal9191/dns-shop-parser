@@ -3,8 +3,12 @@ Telegram бот для управления подписками на уведо
 """
 
 import asyncio
+import html as _html
 import aiohttp
 from typing import Optional, Set
+
+_MAX_SEARCH_LEN = 60
+_VALID_REPORT_PCTS = {10, 20, 30, 40, 50, 60, 70, 80, 90}
 
 from config import config
 from utils.logger import logger
@@ -580,7 +584,7 @@ class TelegramBot:
     async def _handle_settings_cat_search_input(self, user_id: str, text: str) -> None:
         """Применяет поисковый запрос к фильтру категорий в настройках."""
         orig_chat_id, message_id = self._settings_search_mode.pop(user_id)
-        self._user_cat_query[user_id] = text.strip()
+        self._user_cat_query[user_id] = text.strip()[:_MAX_SEARCH_LEN]
         self._user_cat_page[user_id] = 0
         await self.edit_message_text(
             orig_chat_id, message_id,
@@ -592,7 +596,7 @@ class TelegramBot:
         """Применяет поисковый запрос к фильтру категорий отчёта."""
         orig_chat_id, message_id = self._report_search_mode.pop(user_id)
         state = self._get_report_state(user_id)
-        state["cat_query"] = text.strip()
+        state["cat_query"] = text.strip()[:_MAX_SEARCH_LEN]
         self._report_cat_page[user_id] = 0
         await self.edit_message_text(
             orig_chat_id, message_id,
@@ -627,6 +631,9 @@ class TelegramBot:
 
         if data.startswith("report_toggle:"):
             kind = data[len("report_toggle:"):]
+            if kind not in ("new", "bu"):
+                await self._answer_callback(callback_id, "❌ Ошибка", alert=True)
+                return
             if kind == "new":
                 state["new"] = not state["new"]
             elif kind == "bu":
@@ -654,7 +661,15 @@ class TelegramBot:
             return
 
         if data.startswith("report_pct:"):
-            state["discount"] = int(data[len("report_pct:"):])
+            try:
+                pct = int(data[len("report_pct:"):])
+            except ValueError:
+                await self._answer_callback(callback_id, "❌ Ошибка", alert=True)
+                return
+            if pct not in _VALID_REPORT_PCTS:
+                await self._answer_callback(callback_id, "❌ Недопустимое значение", alert=True)
+                return
+            state["discount"] = pct
             await self._answer_callback(callback_id, "")
             if message_id:
                 await self.edit_message_text(
@@ -694,6 +709,11 @@ class TelegramBot:
 
         if data.startswith("report_cat_toggle:"):
             cat_id = data[len("report_cat_toggle:"):]
+            if self.db:
+                known_ids = {c["id"] for c in self.db.get_all_known_categories()}
+                if cat_id not in known_ids:
+                    await self._answer_callback(callback_id, "❌ Категория не найдена", alert=True)
+                    return
             cats = state.get("cats", [])
             if cat_id in cats:
                 cats.remove(cat_id)
@@ -713,7 +733,11 @@ class TelegramBot:
         if data.startswith("report_cat_page:"):
             raw = data[len("report_cat_page:"):]
             if raw != "noop":
-                self._report_cat_page[user_id] = int(raw)
+                try:
+                    self._report_cat_page[user_id] = max(0, int(raw))
+                except ValueError:
+                    await self._answer_callback(callback_id, "❌ Ошибка", alert=True)
+                    return
             await self._answer_callback(callback_id, "")
             if message_id:
                 await self.edit_message_text(
@@ -753,7 +777,12 @@ class TelegramBot:
             return
 
         if data.startswith("report_period:"):
-            state["period"] = data[len("report_period:"):]
+            period = data[len("report_period:"):]
+            valid_periods = {v for v, _ in self._REPORT_PERIODS}
+            if period not in valid_periods:
+                await self._answer_callback(callback_id, "❌ Недопустимый период", alert=True)
+                return
+            state["period"] = period
             await self._answer_callback(callback_id, "")
             if message_id:
                 await self.edit_message_text(
@@ -1093,7 +1122,10 @@ class TelegramBot:
         if data.startswith("city:"):
             slug = data[5:]
             from data.cities import SLUG_TO_CITY
-            city_name = SLUG_TO_CITY.get(slug, slug)
+            if slug not in SLUG_TO_CITY:
+                await self._answer_callback(callback_id, "❌ Неизвестный город", alert=True)
+                return
+            city_name = SLUG_TO_CITY[slug]
             self.db.upsert_user_settings(user_id, city_slug=slug)
             await self._answer_callback(callback_id, f"✅ Город сохранён: {city_name}")
             if message_id:
@@ -1138,6 +1170,10 @@ class TelegramBot:
 
         if data.startswith("cat_toggle:"):
             cat_id = data[11:]
+            known_ids = {c["id"] for c in self.db.get_all_known_categories()}
+            if cat_id not in known_ids:
+                await self._answer_callback(callback_id, "❌ Категория не найдена", alert=True)
+                return
             added = self.db.toggle_user_category(user_id, cat_id)
             await self._answer_callback(callback_id, "✅ Добавлено" if added else "❌ Убрано")
             if message_id:
@@ -1154,7 +1190,11 @@ class TelegramBot:
             if raw == "noop":
                 await self._answer_callback(callback_id, "")
                 return
-            page = int(raw)
+            try:
+                page = max(0, int(raw))
+            except ValueError:
+                await self._answer_callback(callback_id, "❌ Ошибка", alert=True)
+                return
             self._user_cat_page[user_id] = page
             await self._answer_callback(callback_id, "")
             if message_id:
@@ -1167,14 +1207,21 @@ class TelegramBot:
 
         # set_* — настройки уведомлений
         setting_map = {
-            "set_new:": "notify_new",
-            "set_drop:": "notify_price_drop",
-            "set_pct:": "min_price_drop_pct",
-            "set_notif:": "notifications_on",
+            "set_new:":   ("notify_new",          0, 1),
+            "set_drop:":  ("notify_price_drop",   0, 1),
+            "set_pct:":   ("min_price_drop_pct",  0, 100),
+            "set_notif:": ("notifications_on",    0, 1),
         }
-        for prefix, field in setting_map.items():
+        for prefix, (field, min_val, max_val) in setting_map.items():
             if data.startswith(prefix):
-                value = int(data[len(prefix):])
+                try:
+                    value = int(data[len(prefix):])
+                except ValueError:
+                    await self._answer_callback(callback_id, "❌ Ошибка", alert=True)
+                    return
+                if not (min_val <= value <= max_val):
+                    await self._answer_callback(callback_id, "❌ Недопустимое значение", alert=True)
+                    return
                 self.db.upsert_user_settings(user_id, **{field: value})
                 await self._answer_callback(callback_id, "✅ Сохранено")
                 if message_id:
@@ -1331,10 +1378,10 @@ class TelegramBot:
 
         try:
             interval = int(text.strip())
-            if interval < 60:
+            if interval < 60 or interval > 86400:
                 await self.send_message(
                     chat_id,
-                    "❌ Интервал должен быть минимум 60 секунд"
+                    "❌ Интервал должен быть от 60 до 86400 секунд (24 часа)"
                 )
                 return
 
@@ -1363,6 +1410,7 @@ class TelegramBot:
                     last_lines = lines[-100:] if len(lines) > 100 else lines
                     logs_text = "".join(last_lines)
 
+                logs_text = _html.escape(logs_text)
                 if len(logs_text) > 4096:
                     chunks = [logs_text[i:i+4096] for i in range(0, len(logs_text), 4096)]
                     for chunk in chunks:

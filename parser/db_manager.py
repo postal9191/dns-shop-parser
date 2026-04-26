@@ -536,14 +536,22 @@ class DBManager:
             for row in rows
         ]
 
+    _SETTING_SQLS = {
+        "city_slug":          "UPDATE user_settings SET city_slug = ? WHERE user_id = ?",
+        "notify_new":         "UPDATE user_settings SET notify_new = ? WHERE user_id = ?",
+        "notify_price_drop":  "UPDATE user_settings SET notify_price_drop = ? WHERE user_id = ?",
+        "min_price_drop_pct": "UPDATE user_settings SET min_price_drop_pct = ? WHERE user_id = ?",
+        "notifications_on":   "UPDATE user_settings SET notifications_on = ? WHERE user_id = ?",
+    }
+
     def upsert_user_settings(self, user_id: str, **kwargs) -> None:
         """Создает или обновляет настройки пользователя."""
-        allowed = {"city_slug", "notify_new", "notify_price_drop", "min_price_drop_pct", "notifications_on"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed}
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT OR IGNORE INTO user_settings (user_id) VALUES (?)", (user_id,))
-            for key, value in updates.items():
-                conn.execute(f"UPDATE user_settings SET {key} = ? WHERE user_id = ?", (value, user_id))
+            for key, value in kwargs.items():
+                sql = self._SETTING_SQLS.get(key)
+                if sql:
+                    conn.execute(sql, (value, user_id))
             conn.commit()
 
     def get_user_settings(self, user_id: str) -> dict | None:
