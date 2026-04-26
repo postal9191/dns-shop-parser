@@ -51,3 +51,5 @@ logs/
 # Node.js зависимости
 node_modules/
 package-lock.json
+.claude/settings.json
+Текстовый документ.txt

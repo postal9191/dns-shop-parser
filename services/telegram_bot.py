@@ -26,6 +26,11 @@ class TelegramBot:
         self._broadcast_lock = asyncio.Lock()
         self._subscriber_lock = asyncio.Lock()
         self._user_cat_page: dict[str, int] = {}  # user_id → текущая страница /categories
+        self._report_state: dict[str, dict] = {}  # user_id → состояние мастера отчёта
+        self._report_cat_page: dict[str, int] = {}  # user_id → страница категорий в отчёте
+        self._report_search_mode: dict[str, tuple] = {}  # user_id → (chat_id, message_id) ожидание ввода поиска
+        self._settings_search_mode: dict[str, tuple] = {}  # то же для /categories настроек
+        self._user_cat_query: dict[str, str] = {}  # user_id → поисковый запрос в /categories
 
         if self.db and self.enabled:
             self.subscribed_users = self._load_subscribers()
@@ -203,11 +208,137 @@ class TelegramBot:
     def _build_main_menu_keyboard(self, user_id: str) -> dict:
         """Строит главное inline-меню для подписчика."""
         rows = [
-            [{"text": "⚙️ Настройки", "callback_data": "menu_settings_open"}],
+            [
+                {"text": "⚙️ Настройки", "callback_data": "menu_settings_open"},
+                {"text": "📊 Отчет", "callback_data": "report_open"},
+            ],
         ]
         if user_id == self.admin_id:
             rows.append([{"text": "🎛️ Админ-панель", "callback_data": "menu_admin"}])
         return {"inline_keyboard": rows}
+
+    _REPORT_PERIODS = [
+        ("1d",  "1 день"),
+        ("3d",  "3 дня"),
+        ("7d",  "Неделя"),
+        ("30d", "Месяц"),
+        ("all", "Весь срок"),
+    ]
+
+    def _get_report_state(self, user_id: str) -> dict:
+        if user_id not in self._report_state:
+            self._report_state[user_id] = {"new": True, "bu": True, "discount": 10, "cats": [], "period": "1d", "cat_query": ""}
+        return self._report_state[user_id]
+
+    def _build_report_step1_keyboard(self, state: dict) -> dict:
+        new_mark = "✅" if state["new"] else "❌"
+        bu_mark = "✅" if state["bu"] else "❌"
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": f"{new_mark} Новые", "callback_data": "report_toggle:new"},
+                    {"text": f"{bu_mark} Б/У", "callback_data": "report_toggle:bu"},
+                ],
+                [{"text": "Далее →", "callback_data": "report_next:1"}],
+                [{"text": "🏠 Главная", "callback_data": "menu_back"}],
+            ]
+        }
+
+    def _build_report_step2_keyboard(self, state: dict) -> dict:
+        selected = state.get("discount", 10)
+        pct_rows = []
+        row: list = []
+        for p in [10, 20, 30, 40, 50, 60, 70, 80, 90]:
+            prefix = "✅ " if p == selected else ""
+            row.append({"text": f"{prefix}{p}%", "callback_data": f"report_pct:{p}"})
+            if len(row) == 3:
+                pct_rows.append(row)
+                row = []
+        if row:
+            pct_rows.append(row)
+        return {
+            "inline_keyboard": pct_rows + [
+                [
+                    {"text": "← Назад", "callback_data": "report_back:1"},
+                    {"text": "Далее →", "callback_data": "report_next:2"},
+                ],
+                [{"text": "🏠 Главная", "callback_data": "menu_back"}],
+            ]
+        }
+
+    def _build_report_cats_keyboard(self, user_id: str) -> dict:
+        """Клавиатура выбора категорий для отчёта (пагинация как в /categories)."""
+        if not self.db:
+            return {"inline_keyboard": []}
+        all_cats = self.db.get_all_known_categories()
+        state = self._get_report_state(user_id)
+        user_cats = set(state.get("cats", []))
+        query = state.get("cat_query", "").strip().lower()
+        sorted_cats = sorted(all_cats, key=lambda c: (0 if c["id"] in user_cats else 1, c["name"]))
+        if query:
+            sorted_cats = [c for c in sorted_cats if query in c["name"].lower()]
+        page = self._report_cat_page.get(user_id, 0)
+        total_pages = max(1, (len(sorted_cats) + self._CATS_PER_PAGE - 1) // self._CATS_PER_PAGE)
+        page = max(0, min(page, total_pages - 1))
+        slice_ = sorted_cats[page * self._CATS_PER_PAGE:(page + 1) * self._CATS_PER_PAGE]
+
+        rows = []
+        if not query:
+            all_mark = "✅" if not user_cats else "❌"
+            rows.append([{"text": f"{all_mark} Все категории", "callback_data": "report_cat_all"}])
+        for cat in slice_:
+            mark = "✅" if cat["id"] in user_cats else "❌"
+            rows.append([{"text": f"{mark} {cat['name'][:28]}", "callback_data": f"report_cat_toggle:{cat['id']}"}])
+        if not sorted_cats and query:
+            rows.append([{"text": "Ничего не найдено", "callback_data": "report_cat_page:noop"}])
+        nav = []
+        if page > 0:
+            nav.append({"text": "← Назад", "callback_data": f"report_cat_page:{page - 1}"})
+        nav.append({"text": f"{page + 1}/{total_pages}", "callback_data": "report_cat_page:noop"})
+        if page < total_pages - 1:
+            nav.append({"text": "Вперёд →", "callback_data": f"report_cat_page:{page + 1}"})
+        if nav:
+            rows.append(nav)
+        if query:
+            rows.append([
+                {"text": f'🔍 «{query[:20]}»', "callback_data": "report_cat_page:noop"},
+                {"text": "❌ Сбросить", "callback_data": "report_cat_search_clear"},
+            ])
+        else:
+            rows.append([{"text": "🔍 Поиск", "callback_data": "report_cat_search"}])
+        rows.append([
+            {"text": "← Назад", "callback_data": "report_back:2"},
+            {"text": "Далее →", "callback_data": "report_next:cats"},
+        ])
+        rows.append([{"text": "🏠 Главная", "callback_data": "menu_back"}])
+        return {"inline_keyboard": rows}
+
+    def _build_report_step3_keyboard(self, state: dict) -> dict:
+        selected = state.get("period", "1d")
+        rows = []
+        for val, label in self._REPORT_PERIODS:
+            prefix = "✅ " if val == selected else ""
+            rows.append([{"text": f"{prefix}{label}", "callback_data": f"report_period:{val}"}])
+        return {
+            "inline_keyboard": rows + [
+                [
+                    {"text": "← Назад", "callback_data": "report_back:cats"},
+                    {"text": "Далее →", "callback_data": "report_next:3"},
+                ],
+                [{"text": "🏠 Главная", "callback_data": "menu_back"}],
+            ]
+        }
+
+    def _build_report_step4_keyboard(self) -> dict:
+        return {
+            "inline_keyboard": [
+                [{"text": "📥 Получить отчет", "callback_data": "report_get"}],
+                [
+                    {"text": "← Назад", "callback_data": "report_back:3"},
+                    {"text": "🏠 Главная", "callback_data": "menu_back"},
+                ],
+            ]
+        }
 
     def _build_settings_submenu_keyboard(self) -> dict:
         """Строит inline-подменю настроек."""
@@ -250,6 +381,16 @@ class TelegramBot:
             # Если ждем ответ с новым интервалом
             if user_id in self._waiting_for_interval:
                 await self._handle_interval_input(user_id, chat_id, text)
+                return
+
+            # Если ждем поисковый запрос для категорий отчёта
+            if user_id in self._report_search_mode:
+                await self._handle_report_search_input(user_id, text)
+                return
+
+            # Если ждем поисковый запрос для категорий настроек
+            if user_id in self._settings_search_mode:
+                await self._handle_settings_cat_search_input(user_id, text)
                 return
 
             # Команда /admin (только для администратора)
@@ -396,26 +537,28 @@ class TelegramBot:
         return {"inline_keyboard": rows}
 
     def _build_categories_keyboard(self, user_id: str, page: int) -> dict:
-        """Строит inline-клавиатуру выбора категорий с пагинацией."""
+        """Строит inline-клавиатуру выбора категорий с пагинацией и поиском."""
         if not self.db:
             return {"inline_keyboard": []}
         all_cats = self.db.get_all_known_categories()
         user_cats = set(self.db.get_user_categories(user_id))
-        # Выбранные категории поднимаем наверх
+        query = self._user_cat_query.get(user_id, "").strip().lower()
         sorted_cats = sorted(all_cats, key=lambda c: (0 if c["id"] in user_cats else 1, c["name"]))
+        if query:
+            sorted_cats = [c for c in sorted_cats if query in c["name"].lower()]
         total_pages = max(1, (len(sorted_cats) + self._CATS_PER_PAGE - 1) // self._CATS_PER_PAGE)
         page = max(0, min(page, total_pages - 1))
         slice_ = sorted_cats[page * self._CATS_PER_PAGE:(page + 1) * self._CATS_PER_PAGE]
 
         rows = []
-        # «Все категории» — сброс фильтра
-        all_mark = "✅" if not user_cats else "❌"
-        rows.append([{"text": f"{all_mark} Все категории", "callback_data": "cat_all"}])
+        if not query:
+            all_mark = "✅" if not user_cats else "❌"
+            rows.append([{"text": f"{all_mark} Все категории", "callback_data": "cat_all"}])
         for cat in slice_:
             mark = "✅" if cat["id"] in user_cats else "❌"
-            name = cat["name"][:28]
-            rows.append([{"text": f"{mark} {name}", "callback_data": f"cat_toggle:{cat['id']}"}])
-        # Навигация
+            rows.append([{"text": f"{mark} {cat['name'][:28]}", "callback_data": f"cat_toggle:{cat['id']}"}])
+        if not sorted_cats and query:
+            rows.append([{"text": "Ничего не найдено", "callback_data": "cat_page:noop"}])
         nav = []
         if page > 0:
             nav.append({"text": "← Назад", "callback_data": f"cat_page:{page - 1}"})
@@ -424,8 +567,345 @@ class TelegramBot:
             nav.append({"text": "Вперёд →", "callback_data": f"cat_page:{page + 1}"})
         if nav:
             rows.append(nav)
+        if query:
+            rows.append([
+                {"text": f'🔍 «{query[:20]}»', "callback_data": "cat_page:noop"},
+                {"text": "❌ Сбросить", "callback_data": "cat_search_clear"},
+            ])
+        else:
+            rows.append([{"text": "🔍 Поиск", "callback_data": "cat_search"}])
         rows.append([{"text": "← Главное меню", "callback_data": "menu_back"}])
         return {"inline_keyboard": rows}
+
+    async def _handle_settings_cat_search_input(self, user_id: str, text: str) -> None:
+        """Применяет поисковый запрос к фильтру категорий в настройках."""
+        orig_chat_id, message_id = self._settings_search_mode.pop(user_id)
+        self._user_cat_query[user_id] = text.strip()
+        self._user_cat_page[user_id] = 0
+        await self.edit_message_text(
+            orig_chat_id, message_id,
+            "📂 <b>Выберите категории</b> (пусто = все):",
+            reply_markup=self._build_categories_keyboard(user_id, 0),
+        )
+
+    async def _handle_report_search_input(self, user_id: str, text: str) -> None:
+        """Применяет поисковый запрос к фильтру категорий отчёта."""
+        orig_chat_id, message_id = self._report_search_mode.pop(user_id)
+        state = self._get_report_state(user_id)
+        state["cat_query"] = text.strip()
+        self._report_cat_page[user_id] = 0
+        await self.edit_message_text(
+            orig_chat_id, message_id,
+            "📊 <b>Отчет — Шаг 3 из 4</b>\nВыберите категории (пусто = все):",
+            reply_markup=self._build_report_cats_keyboard(user_id),
+        )
+
+    async def _handle_report_callback(
+        self,
+        callback_id: str,
+        user_id: str,
+        chat_id: str,
+        message_id: Optional[int],
+        data: str,
+    ) -> None:
+        """Обрабатывает шаги мастера отчёта."""
+        state = self._get_report_state(user_id)
+
+        if data == "report_open":
+            self._report_state[user_id] = {"new": True, "bu": True, "discount": 10, "cats": [], "period": "1d", "cat_query": ""}
+            self._report_cat_page[user_id] = 0
+            self._report_search_mode.pop(user_id, None)
+            state = self._report_state[user_id]
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 1 из 4</b>\nВыберите состояние товара:",
+                    reply_markup=self._build_report_step1_keyboard(state),
+                )
+            return
+
+        if data.startswith("report_toggle:"):
+            kind = data[len("report_toggle:"):]
+            if kind == "new":
+                state["new"] = not state["new"]
+            elif kind == "bu":
+                state["bu"] = not state["bu"]
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 1 из 4</b>\nВыберите состояние товара:",
+                    reply_markup=self._build_report_step1_keyboard(state),
+                )
+            return
+
+        if data == "report_next:1":
+            if not state["new"] and not state["bu"]:
+                await self._answer_callback(callback_id, "⚠️ Выберите хотя бы одно состояние", alert=True)
+                return
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 2 из 4</b>\nВыберите минимальную скидку:",
+                    reply_markup=self._build_report_step2_keyboard(state),
+                )
+            return
+
+        if data.startswith("report_pct:"):
+            state["discount"] = int(data[len("report_pct:"):])
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 2 из 4</b>\nВыберите минимальную скидку:",
+                    reply_markup=self._build_report_step2_keyboard(state),
+                )
+            return
+
+        if data == "report_next:2":
+            await self._answer_callback(callback_id, "")
+            cats = self.db.get_all_known_categories() if self.db else []
+            if not cats:
+                await self._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
+                return
+            self._report_cat_page[user_id] = 0
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 3 из 4</b>\nВыберите категории (пусто = все):",
+                    reply_markup=self._build_report_cats_keyboard(user_id),
+                )
+            return
+
+        if data == "report_cat_all":
+            state["cats"] = []
+            state["cat_query"] = ""
+            self._report_cat_page[user_id] = 0
+            await self._answer_callback(callback_id, "✅ Все категории")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 3 из 4</b>\nВыберите категории (пусто = все):",
+                    reply_markup=self._build_report_cats_keyboard(user_id),
+                )
+            return
+
+        if data.startswith("report_cat_toggle:"):
+            cat_id = data[len("report_cat_toggle:"):]
+            cats = state.get("cats", [])
+            if cat_id in cats:
+                cats.remove(cat_id)
+                await self._answer_callback(callback_id, "❌ Убрано")
+            else:
+                cats.append(cat_id)
+                await self._answer_callback(callback_id, "✅ Добавлено")
+            state["cats"] = cats
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 3 из 4</b>\nВыберите категории (пусто = все):",
+                    reply_markup=self._build_report_cats_keyboard(user_id),
+                )
+            return
+
+        if data.startswith("report_cat_page:"):
+            raw = data[len("report_cat_page:"):]
+            if raw != "noop":
+                self._report_cat_page[user_id] = int(raw)
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 3 из 4</b>\nВыберите категории (пусто = все):",
+                    reply_markup=self._build_report_cats_keyboard(user_id),
+                )
+            return
+
+        if data == "report_cat_search":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                self._report_search_mode[user_id] = (chat_id, message_id)
+                await self.send_message(chat_id, "🔍 Введите название категории для поиска:")
+            return
+
+        if data == "report_cat_search_clear":
+            state["cat_query"] = ""
+            self._report_cat_page[user_id] = 0
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 3 из 4</b>\nВыберите категории (пусто = все):",
+                    reply_markup=self._build_report_cats_keyboard(user_id),
+                )
+            return
+
+        if data == "report_next:cats":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 4 из 4</b>\nВыберите период (по дате последнего обновления):",
+                    reply_markup=self._build_report_step3_keyboard(state),
+                )
+            return
+
+        if data.startswith("report_period:"):
+            state["period"] = data[len("report_period:"):]
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 4 из 4</b>\nВыберите период (по дате последнего обновления):",
+                    reply_markup=self._build_report_step3_keyboard(state),
+                )
+            return
+
+        if data == "report_next:3":
+            conds = (["Новые"] if state["new"] else []) + (["Б/У"] if state["bu"] else [])
+            period_label = dict(self._REPORT_PERIODS).get(state.get("period", "1d"), "1 день")
+            cats = state.get("cats", [])
+            cats_label = "все" if not cats else f"{len(cats)} шт."
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    f"📊 <b>Отчет — Готово</b>\n\n"
+                    f"Состояние: {', '.join(conds)}\n"
+                    f"Скидка: от {state['discount']}%\n"
+                    f"Категории: {cats_label}\n"
+                    f"Период: {period_label}\n\n"
+                    f"Нажмите <b>Получить отчет</b>:",
+                    reply_markup=self._build_report_step4_keyboard(),
+                )
+            return
+
+        if data == "report_back:1":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 1 из 4</b>\nВыберите состояние товара:",
+                    reply_markup=self._build_report_step1_keyboard(state),
+                )
+            return
+
+        if data == "report_back:2":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 2 из 4</b>\nВыберите минимальную скидку:",
+                    reply_markup=self._build_report_step2_keyboard(state),
+                )
+            return
+
+        if data == "report_back:cats":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 3 из 4</b>\nВыберите категории (пусто = все):",
+                    reply_markup=self._build_report_cats_keyboard(user_id),
+                )
+            return
+
+        if data == "report_back:3":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📊 <b>Отчет — Шаг 4 из 4</b>\nВыберите период (по дате последнего обновления):",
+                    reply_markup=self._build_report_step3_keyboard(state),
+                )
+            return
+
+        if data == "report_get":
+            await self._answer_callback(callback_id, "")
+            await self._send_report(user_id, chat_id, state)
+            return
+
+        await self._answer_callback(callback_id, "❓ Неизвестная команда", alert=True)
+
+    async def _send_report(self, user_id: str, chat_id: str, state: dict) -> None:
+        """Формирует и отправляет отчёт пользователю."""
+        if not self.db:
+            await self.send_message(chat_id, "❌ БД не инициализирована")
+            return
+
+        statuses: list[str] = []
+        if state.get("new"):
+            statuses.append("Новый")
+        if state.get("bu"):
+            statuses.append("Б/У")
+        if not statuses:
+            await self.send_message(chat_id, "❌ Не выбрано ни одно состояние товара")
+            return
+
+        discount_pct = state.get("discount", 10)
+        period = state.get("period", "1d")
+        period_label = dict(self._REPORT_PERIODS).get(period, "1 день")
+        category_ids = state.get("cats") or None
+        products = self.db.get_report_products(statuses, discount_pct, period=period, category_ids=category_ids)
+
+        cond_text = ", ".join(
+            (["Новые"] if state.get("new") else []) +
+            (["Б/У"] if state.get("bu") else [])
+        )
+
+        if not products:
+            await self.send_message(
+                chat_id,
+                f"📊 <b>Отчет</b>\n\n"
+                f"Состояние: {cond_text} | Скидка: от {discount_pct}% | Период: {period_label}\n\n"
+                f"Товаров не найдено.",
+                reply_markup={"inline_keyboard": [[{"text": "🏠 Главная", "callback_data": "menu_back"}]]},
+            )
+            return
+
+        await self.send_message(
+            chat_id,
+            f"📊 <b>Отчет</b>\n"
+            f"Найдено: {len(products)} тов. | {cond_text} | Скидка: от {discount_pct}% | {period_label}",
+        )
+
+        base_url = config.api_base_url.rstrip("/")
+
+        # Дедупликация: группируем по (title, current_price, previous_price)
+        seen: dict[tuple, dict] = {}
+        for p in products:
+            key = (p["title"], p["current_price"], p["previous_price"])
+            if key in seen:
+                seen[key]["_count"] += 1
+            else:
+                seen[key] = dict(p, _count=1)
+        deduped = list(seen.values())
+
+        _BATCH = 10
+        for i in range(0, len(deduped), _BATCH):
+            batch = deduped[i:i + _BATCH]
+            msg_lines = []
+            for p in batch:
+                url = p["url"] if p["url"].startswith("http") else base_url + p["url"]
+                cur = f"{p['current_price']:,}".replace(",", " ")
+                prev = f"{p['previous_price']:,}".replace(",", " ")
+                icon = "🆕" if p["status"] == "Новый" else "♻️"
+                cnt = f" (x{p['_count']})" if p['_count'] > 1 else ""
+                msg_lines.append(
+                    f'{icon} <b><a href="{url}">{p["title"]}{cnt}</a></b>\n'
+                    f"💰 {cur} ₽ <s>{prev} ₽</s> — -{p['discount_pct']:.0f}%"
+                )
+            await self.send_message(chat_id, "\n\n".join(msg_lines))
+            if i + _BATCH < len(deduped):
+                await asyncio.sleep(0.5)
+
+        await self.send_message(
+            chat_id,
+            "✅ Отчет сформирован.",
+            reply_markup={"inline_keyboard": [[{"text": "🏠 Главная", "callback_data": "menu_back"}]]},
+        )
 
     async def _handle_settings_command(self, user_id: str, chat_id: str) -> None:
         if not self.db:
@@ -505,6 +985,11 @@ class TelegramBot:
         data: str,
     ) -> None:
         """Обрабатывает callback-кнопки настроек пользователя."""
+        # Мастер отчёта не требует БД для большинства шагов
+        if data.startswith("report_"):
+            await self._handle_report_callback(callback_id, user_id, chat_id, message_id, data)
+            return
+
         if not self.db:
             await self._answer_callback(callback_id, "❌ БД недоступна", alert=True)
             return
@@ -619,8 +1104,28 @@ class TelegramBot:
                 )
             return
 
+        if data == "cat_search":
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                self._settings_search_mode[user_id] = (chat_id, message_id)
+                await self.send_message(chat_id, "🔍 Введите название категории для поиска:")
+            return
+
+        if data == "cat_search_clear":
+            self._user_cat_query[user_id] = ""
+            self._user_cat_page[user_id] = 0
+            await self._answer_callback(callback_id, "")
+            if message_id:
+                await self.edit_message_text(
+                    chat_id, message_id,
+                    "📂 <b>Выберите категории</b> (пусто = все):",
+                    reply_markup=self._build_categories_keyboard(user_id, 0),
+                )
+            return
+
         if data == "cat_all":
             self.db.set_user_categories(user_id, [])
+            self._user_cat_query[user_id] = ""
             self._user_cat_page[user_id] = 0
             await self._answer_callback(callback_id, "✅ Выбраны все категории")
             if message_id:
@@ -738,7 +1243,7 @@ class TelegramBot:
             )
 
             # Пользовательские настройки — не требуют прав админа
-            _user_prefixes = ("city:", "cat_", "set_new:", "set_drop:", "set_pct:", "set_notif:", "menu_")
+            _user_prefixes = ("city:", "cat_", "set_new:", "set_drop:", "set_pct:", "set_notif:", "menu_", "report_")
             if any(data.startswith(p) for p in _user_prefixes):
                 if user_id not in self.subscribed_users:
                     await self._answer_callback(callback_id, "❌ Сначала подпишитесь через /start", alert=True)

@@ -6,7 +6,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from parser.models import Product
@@ -440,6 +440,73 @@ class DBManager:
                 SELECT category_id, last_product_count FROM category_state
             """)
             return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def get_report_products(
+        self,
+        statuses: list[str],
+        min_discount_pct: int,
+        period: str = "1d",
+        category_ids: list[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Возвращает товары с фильтрацией по статусу, скидке, периоду и категориям.
+
+        period: "1d" / "3d" / "7d" / "30d" — фильтр по updated_at; "all" — без ограничения.
+        category_ids: None или [] — все категории; список id — только указанные.
+        """
+        if not statuses:
+            return []
+
+        _period_days = {"1d": 1, "3d": 3, "7d": 7, "30d": 30}
+        date_clause = ""
+        cat_clause = ""
+        params: list = list(statuses) + [min_discount_pct]
+
+        if period != "all" and period in _period_days:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=_period_days[period])
+            ).isoformat()
+            date_clause = "AND updated_at >= ?"
+            params.append(cutoff)
+
+        if category_ids:
+            cat_placeholders = ",".join("?" * len(category_ids))
+            cat_clause = f"AND category_id IN ({cat_placeholders})"
+            params.extend(category_ids)
+
+        params.append(limit)
+
+        placeholders = ",".join("?" * len(statuses))
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT title, url, current_price, previous_price, status, category_name,
+                       ROUND(100.0 * (previous_price - current_price) / previous_price, 1) AS discount_pct
+                FROM products
+                WHERE status IN ({placeholders})
+                  AND previous_price > 0
+                  AND current_price < previous_price
+                  AND ROUND(100.0 * (previous_price - current_price) / previous_price, 1) >= ?
+                  {date_clause}
+                  {cat_clause}
+                ORDER BY discount_pct DESC
+                LIMIT ?
+                """,
+                params,
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "title": row[0],
+                "url": row[1],
+                "current_price": row[2],
+                "previous_price": row[3],
+                "status": row[4],
+                "category_name": row[5],
+                "discount_pct": row[6],
+            }
+            for row in rows
+        ]
 
     def get_today_discounts(self) -> list[dict]:
         """Получает товары с обновленными ценами за сегодня (была скидка)."""
