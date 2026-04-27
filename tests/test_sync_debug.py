@@ -40,6 +40,7 @@ class TestSyncDebug:
         deleted = db_memory.delete_products_not_in_uuids(
             category_id,
             ["uuid-1", "uuid-2"],
+            "",
         )
 
         # Должен удалить 1 товар (uuid-3)
@@ -91,7 +92,7 @@ class TestSyncDebug:
         db_memory.upsert_products(products_cycle2)
 
         # Удаляем товары которые больше не на сайте
-        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2)
+        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2, "")
 
         # Должны быть удалены uuid-1 и uuid-5 (2 товара)
         assert deleted == 2
@@ -118,7 +119,7 @@ class TestSyncDebug:
         db_memory.upsert_products(products)
 
         # Пытаемся "удалить" с пустым списком
-        deleted = db_memory.delete_products_not_in_uuids(category_id, [])
+        deleted = db_memory.delete_products_not_in_uuids(category_id, [], "")
 
         # Должны вернуть 0 (защита)
         assert deleted == 0
@@ -151,7 +152,7 @@ class TestSyncDebug:
 
         # Синхронизируем категорию 1: оставляем только первые 2 товара
         deleted_cat1 = db_memory.delete_products_not_in_uuids(
-            cat1, ["uuid-cat1-1", "uuid-cat1-2"]
+            cat1, ["uuid-cat1-1", "uuid-cat1-2"], ""
         )
         assert deleted_cat1 == 1  # Удалён uuid-cat1-3
 

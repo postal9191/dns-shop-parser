@@ -31,6 +31,7 @@ def sample_product():
         category_id="cat-123",
         category_name="Ноутбуки",
         status="Новый",
+        city_slug="moscow",
     )
 
 
@@ -46,4 +47,5 @@ def sample_product_no_discount():
         url="https://dns-shop.ru/catalog/monitor/",
         category_id="cat-456",
         category_name="Мониторы",
+        city_slug="moscow",
     )

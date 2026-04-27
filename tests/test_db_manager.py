@@ -57,6 +57,7 @@ class TestDBManagerUpsertProducts:
             price=40000,  # было 50000
             price_old=sample_product.price_old,
             url=sample_product.url,
+            city_slug=sample_product.city_slug,
         )
 
         upserted, changes = db_memory.upsert_products([product_new_price])
@@ -77,6 +78,7 @@ class TestDBManagerUpsertProducts:
             price=sample_product.price,  # Та же цена
             price_old=sample_product.price_old,
             url=sample_product.url,
+            city_slug=sample_product.city_slug,
         )
 
         upserted, changes = db_memory.upsert_products([same_price_product])
@@ -96,6 +98,7 @@ class TestDBManagerDeleteProducts:
             price_old=2000,
             url="https://example.com/delete",
             category_id=sample_product.category_id,  # Та же категория!
+            city_slug=sample_product.city_slug,
         )
 
         db_memory.upsert_products([sample_product, product_to_delete, sample_product_no_discount])
@@ -105,6 +108,7 @@ class TestDBManagerDeleteProducts:
         deleted = db_memory.delete_products_not_in_uuids(
             sample_product.category_id,
             [sample_product.uuid],
+            sample_product.city_slug,
         )
 
         # Должен удалить product_to_delete, но не sample_product_no_discount (другая категория)
@@ -119,6 +123,7 @@ class TestDBManagerDeleteProducts:
         deleted = db_memory.delete_products_not_in_uuids(
             sample_product.category_id,
             [sample_product.uuid, sample_product_no_discount.uuid],
+            sample_product.city_slug,
         )
 
         assert deleted == 0
@@ -162,15 +167,15 @@ class TestDBManagerGetters:
 class TestDBManagerCategoryState:
     def test_get_category_state_returns_none_if_not_found(self, db_memory):
         """get_category_state возвращает None если категория не найдена."""
-        state = db_memory.get_category_state("nonexistent")
+        state = db_memory.get_category_state("nonexistent", "")
 
         assert state is None
 
     def test_update_category_state_creates_record(self, db_memory):
         """update_category_state создаёт запись."""
-        db_memory.update_category_state("cat-1", "Ноутбуки", 5, ["uuid-1", "uuid-2"])
+        db_memory.update_category_state("cat-1", "Ноутбуки", 5, "", ["uuid-1", "uuid-2"])
 
-        state = db_memory.get_category_state("cat-1")
+        state = db_memory.get_category_state("cat-1", "")
 
         assert state is not None
         assert state["category_name"] == "Ноутбуки"
@@ -179,9 +184,9 @@ class TestDBManagerCategoryState:
     def test_update_category_state_calculates_uuid_hash(self, db_memory):
         """update_category_state вычисляет md5-хэш UUID."""
         uuids = ["uuid-2", "uuid-1", "uuid-3"]
-        db_memory.update_category_state("cat-1", "Category", 3, uuids)
+        db_memory.update_category_state("cat-1", "Category", 3, "", uuids)
 
-        state = db_memory.get_category_state("cat-1")
+        state = db_memory.get_category_state("cat-1", "")
 
         # Хэш — SHA256 от JSON-списка отсортированных UUID
         expected_hash = hashlib.sha256(json.dumps(sorted(uuids)).encode()).hexdigest()
@@ -192,11 +197,11 @@ class TestDBManagerCategoryState:
         uuids1 = ["a", "b", "c"]
         uuids2 = ["c", "a", "b"]
 
-        db_memory.update_category_state("cat-1", "Cat", 3, uuids1)
-        state1 = db_memory.get_category_state("cat-1")
+        db_memory.update_category_state("cat-1", "Cat", 3, "", uuids1)
+        state1 = db_memory.get_category_state("cat-1", "")
 
-        db_memory.update_category_state("cat-1", "Cat", 3, uuids2)
-        state2 = db_memory.get_category_state("cat-1")
+        db_memory.update_category_state("cat-1", "Cat", 3, "", uuids2)
+        state2 = db_memory.get_category_state("cat-1", "")
 
         # Хэши должны быть одинаковыми
         assert state1["uuid_hash"] == state2["uuid_hash"]
@@ -211,6 +216,7 @@ class TestDBManagerNewProducts:
         new_products = db_memory.get_new_products_in_category(
             sample_product.category_id,
             [sample_product.uuid, new_uuid],
+            sample_product.city_slug,
         )
 
         assert new_products == [new_uuid]
@@ -222,6 +228,7 @@ class TestDBManagerNewProducts:
         new_products = db_memory.get_new_products_in_category(
             sample_product.category_id,
             [sample_product.uuid],
+            sample_product.city_slug,
         )
 
         assert new_products == []
@@ -264,8 +271,8 @@ class TestDBManagerSubscribers:
 class TestDBManagerCategoryStates:
     def test_get_all_category_states(self, db_memory):
         """get_all_category_states возвращает dict всех категорий."""
-        db_memory.update_category_state("cat-1", "Ноутбуки", 10)
-        db_memory.update_category_state("cat-2", "Мониторы", 5)
+        db_memory.update_category_state("cat-1", "Ноутбуки", 10, "")
+        db_memory.update_category_state("cat-2", "Мониторы", 5, "")
 
         states = db_memory.get_all_category_states()
 

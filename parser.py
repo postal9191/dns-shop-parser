@@ -26,9 +26,10 @@ class DNSMonitorBrowserless:
     """Парсер DNS без браузера (Node.js + Playwright для Qrator)."""
 
     def __init__(self) -> None:
+        self.city_slug = config.city_cookie_path
         self.session_manager = SessionManager()
-        self.parser = SimpleDNSParser(self.session_manager)
-        self.db = DBManager(config.db_path)
+        self.parser = SimpleDNSParser(self.session_manager, city_slug=self.city_slug)
+        self.db = DBManager(config.db_path, default_city_slug=self.city_slug)
 
         # Инициализируем Telegram бот
         self.telegram_bot = init_telegram_bot(self.db)
@@ -68,7 +69,7 @@ class DNSMonitorBrowserless:
         total_updated = 0
 
         # Получаем состояние категории
-        state = self.db.get_category_state(cat.id)
+        state = self.db.get_category_state(cat.id, self.city_slug)
         last_count = state["last_product_count"] if state else 0
         last_hash = state["uuid_hash"] if state else None
 
@@ -96,7 +97,7 @@ class DNSMonitorBrowserless:
                 total_categories,
                 cat.label,
             )
-            self.db.update_category_state(cat.id, cat.label, 0, [])
+            self.db.update_category_state(cat.id, cat.label, 0, self.city_slug, [])
             return (0, 0)
 
         # Вычисляем хэш текущего состава товаров
@@ -125,7 +126,7 @@ class DNSMonitorBrowserless:
         new_uuids = (
             []
             if uuids_unchanged
-            else self.db.get_new_products_in_category(cat.id, uuids)
+            else self.db.get_new_products_in_category(cat.id, uuids, self.city_slug)
         )
 
         # Получаем детали товаров
@@ -163,6 +164,7 @@ class DNSMonitorBrowserless:
                             "price_old": p.price_old,
                             "url": p.url,
                             "status": p.status,
+                            "city_slug": p.city_slug,
                         }
                         for p in new_products
                     ])
@@ -182,12 +184,12 @@ class DNSMonitorBrowserless:
             )
             return (total_new_products, total_updated)
 
-        deleted = self.db.delete_products_not_in_uuids(cat.id, uuids)
+        deleted = self.db.delete_products_not_in_uuids(cat.id, uuids, self.city_slug)
         if deleted:
             logger.info("[PARSE]   DEL Удалено %d проданных товаров", deleted)
 
         # Обновляем состояние категории (только при полных данных)
-        self.db.update_category_state(cat.id, cat.label, len(uuids), uuids)
+        self.db.update_category_state(cat.id, cat.label, len(uuids), self.city_slug, uuids)
 
         # Задержка между категориями
         await asyncio.sleep(0.5)
@@ -257,10 +259,10 @@ class DNSMonitorBrowserless:
 
             # Удаляем товары из категорий, которых больше нет на сайте
             fetched_ids = {cat.id for cat in categories}
-            db_category_ids = set(self.db.get_all_category_states().keys())
+            db_category_ids = set(self.db.get_all_category_states(self.city_slug).keys())
             orphaned_ids = db_category_ids - fetched_ids
             for orphaned_id in orphaned_ids:
-                deleted = self.db.delete_all_products_in_category(orphaned_id)
+                deleted = self.db.delete_all_products_in_category(orphaned_id, self.city_slug)
                 if deleted:
                     logger.info(
                         "[PARSE] Удалено %d товаров из исчезнувшей категории %s",

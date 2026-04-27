@@ -34,7 +34,7 @@ class TestCategoryUpdateIssue:
         uuids_cycle2 = []
 
         # Если товаров 0, delete вернёт 0 (защита)
-        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2)
+        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2, "")
         assert deleted == 0
 
         # ПРОБЛЕМА: товары всё ещё в БД!
@@ -73,7 +73,7 @@ class TestCategoryUpdateIssue:
         db_memory.upsert_products(products_cycle2)
 
         # Удаляем товары которых нет в текущем списке
-        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2)
+        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2, "")
 
         # Должны удалить 7 товаров (4-10)
         assert deleted == 7
@@ -114,7 +114,7 @@ class TestCategoryUpdateIssue:
         # В коде: if products: не выполнится, delete не вызовется
         if products_empty:
             db_memory.upsert_products(products_empty)
-            db_memory.delete_products_not_in_uuids(category_id, uuids_empty)
+            db_memory.delete_products_not_in_uuids(category_id, uuids_empty, "")
 
         # Товары остаются в БД!
         assert db_memory.get_product_count() == 5
@@ -142,7 +142,7 @@ class TestCategoryUpdateIssue:
         # Это нужно чтобы защитить от случайного удаления при сбое парсинга
         uuids_cycle2 = []  # Получены 0 товаров
 
-        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2)
+        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2, "")
         assert deleted == 0  # Защита срабатывает
         assert db_memory.get_product_count() == 5  # Товары не удалены
 

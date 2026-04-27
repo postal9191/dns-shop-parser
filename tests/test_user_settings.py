@@ -139,8 +139,8 @@ class TestUserCategories:
 
     def test_get_all_known_categories_after_state_update(self, db_memory):
         """get_all_known_categories возвращает категории из category_state."""
-        db_memory.update_category_state("cat-1", "Ноутбуки", 10)
-        db_memory.update_category_state("cat-2", "Мониторы", 5)
+        db_memory.update_category_state("cat-1", "Ноутбуки", 10, "")
+        db_memory.update_category_state("cat-2", "Мониторы", 5, "")
 
         cats = db_memory.get_all_known_categories()
         ids = [c["id"] for c in cats]

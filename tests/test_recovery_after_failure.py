@@ -73,7 +73,7 @@ class TestRecoveryAfterFailure:
         db_memory.upsert_products(products_cycle2)
 
         # Теперь delete выполнится ✅
-        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2)
+        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_cycle2, "")
 
         # Удалён лишний товар C
         assert deleted == 1
@@ -111,7 +111,7 @@ class TestRecoveryAfterFailure:
         uuids_empty = []
 
         # ЗАЩИТА: delete с пустым списком НЕ удаляет
-        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_empty)
+        deleted = db_memory.delete_products_not_in_uuids(category_id, uuids_empty, "")
         assert deleted == 0
 
         # Товары остаются в БД ✅ (безопасная защита)
@@ -152,14 +152,14 @@ class TestRecoveryAfterFailure:
 
         # ЦИКЛ 2 СБОЙ: вернулось 0 товаров (fetch упал)
         # delete также не выполнится (защита)
-        deleted = db_memory.delete_products_not_in_uuids(category_id, [])
+        deleted = db_memory.delete_products_not_in_uuids(category_id, [], "")
         assert deleted == 0
         assert db_memory.get_product_count() == 4  # Всё ещё A, B, C, D
 
         # ЦИКЛ 3 УСПЕХ: вернулось A, B, D снова
         db_memory.upsert_products(upsert1)
         # Теперь delete выполнится ✅
-        deleted = db_memory.delete_products_not_in_uuids(category_id, ["uuid-A", "uuid-B", "uuid-D"])
+        deleted = db_memory.delete_products_not_in_uuids(category_id, ["uuid-A", "uuid-B", "uuid-D"], "")
         assert deleted == 1  # Удалён лишний C
         assert db_memory.get_product_count() == 3
 
@@ -174,24 +174,24 @@ class TestRecoveryAfterFailure:
 
         # Первый цикл: товары A, B, C
         uuids1 = ["uuid-A", "uuid-B", "uuid-C"]
-        db_memory.update_category_state(category_id, "Категория", 3, uuids1)
+        db_memory.update_category_state(category_id, "Категория", 3, "", uuids1)
 
-        state1 = db_memory.get_category_state(category_id)
+        state1 = db_memory.get_category_state(category_id, "")
         assert state1["uuid_hash"] is not None
 
         # Второй цикл: ТЕ ЖЕ товары (без изменений)
         uuids2 = ["uuid-A", "uuid-B", "uuid-C"]
-        db_memory.update_category_state(category_id, "Категория", 3, uuids2)
+        db_memory.update_category_state(category_id, "Категория", 3, "", uuids2)
 
-        state2 = db_memory.get_category_state(category_id)
+        state2 = db_memory.get_category_state(category_id, "")
         # Хэш должен быть одинаковым (порядок сортируется)
         assert state1["uuid_hash"] == state2["uuid_hash"]
 
         # Третий цикл: ИЗМЕНИЛСЯ состав (C удалён, D добавлен)
         uuids3 = ["uuid-A", "uuid-B", "uuid-D"]
-        db_memory.update_category_state(category_id, "Категория", 3, uuids3)
+        db_memory.update_category_state(category_id, "Категория", 3, "", uuids3)
 
-        state3 = db_memory.get_category_state(category_id)
+        state3 = db_memory.get_category_state(category_id, "")
         # Хэш должен быть ДРУГОЙ (состав изменился)
         assert state1["uuid_hash"] != state3["uuid_hash"]
 

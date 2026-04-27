@@ -228,12 +228,16 @@ class TelegramNotifier:
                 continue
 
             user_id = sub["user_id"]
+            user_city = sub["city_slug"]
             user_cats = set(self.db.get_user_categories(user_id))  # пусто = все
 
             filtered_new: list[dict] = []
             if sub["notify_new"]:
                 for p in new_products:
                     if user_cats and p.get("category_id") not in user_cats:
+                        continue
+                    prod_city = p.get("city_slug", "")
+                    if prod_city and user_city and prod_city != user_city:
                         continue
                     filtered_new.append(p)
 
@@ -242,6 +246,9 @@ class TelegramNotifier:
                 min_pct = sub["min_price_drop_pct"]
                 for p in price_changes:
                     if user_cats and p.get("category_id") not in user_cats:
+                        continue
+                    prod_city = p.get("city_slug", "")
+                    if prod_city and user_city and prod_city != user_city:
                         continue
                     old = p.get("old_price", 0)
                     new = p.get("new_price", 0)

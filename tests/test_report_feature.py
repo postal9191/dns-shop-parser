@@ -3,7 +3,7 @@
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -373,7 +373,7 @@ class TestReportCallbacks:
         bot.db = mock_db
         state = {"new": True, "bu": False, "discount": 10, "cats": ["cat-1"], "period": "1d"}
         self._run(bot._send_report("user1", "chat1", state))
-        mock_db.get_report_products.assert_called_once_with(["Новый"], 10, period="1d", category_ids=["cat-1"])
+        mock_db.get_report_products.assert_called_once_with(["Новый"], 10, period="1d", category_ids=["cat-1"], city_slug=ANY)
 
     def test_send_report_empty_cats_passes_none(self):
         bot = self._bot()
@@ -382,7 +382,7 @@ class TestReportCallbacks:
         bot.db = mock_db
         state = {"new": True, "bu": True, "discount": 10, "cats": [], "period": "all"}
         self._run(bot._send_report("user1", "chat1", state))
-        mock_db.get_report_products.assert_called_once_with(["Новый", "Б/У"], 10, period="all", category_ids=None)
+        mock_db.get_report_products.assert_called_once_with(["Новый", "Б/У"], 10, period="all", category_ids=None, city_slug=ANY)
 
     def test_main_menu_has_report_button(self):
         bot = _make_bot()

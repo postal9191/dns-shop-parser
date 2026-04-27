@@ -18,4 +18,5 @@ class Product:
     url: str
     category_id: str = ""
     category_name: str = ""
-    status: str = ""   # "Новый" или "Б/У"
+    status: str = ""      # "Новый" или "Б/У"
+    city_slug: str = ""   # slug города (напр. "krasnodar", "moscow")

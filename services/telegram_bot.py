@@ -877,7 +877,12 @@ class TelegramBot:
         period = state.get("period", "1d")
         period_label = dict(self._REPORT_PERIODS).get(period, "1 день")
         category_ids = state.get("cats") or None
-        products = self.db.get_report_products(statuses, discount_pct, period=period, category_ids=category_ids)
+        user_settings = self.db.get_user_settings(user_id)
+        user_city = user_settings["city_slug"] if user_settings else None
+        products = self.db.get_report_products(
+            statuses, discount_pct, period=period,
+            category_ids=category_ids, city_slug=user_city,
+        )
 
         cond_text = ", ".join(
             (["Новые"] if state.get("new") else []) +

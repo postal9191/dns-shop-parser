@@ -112,7 +112,7 @@ class TestSubscriberColumns:
 class TestUserCategoryCategoryName:
     def _seed_category(self, db, cat_id, cat_name):
         """Добавляет категорию в category_state (как это делает парсер)."""
-        db.update_category_state(cat_id, cat_name, product_count=1)
+        db.update_category_state(cat_id, cat_name, 1, "")
 
     def test_toggle_stores_category_name(self, db_memory):
         """toggle_user_category сохраняет название категории из category_state."""
