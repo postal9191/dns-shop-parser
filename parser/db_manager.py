@@ -20,6 +20,19 @@ class DBManager:
         self._default_city_slug = default_city_slug
         self._init_db()
 
+    @staticmethod
+    def _report_period_cutoff(period: str) -> str | None:
+        """Возвращает начало локального календарного окна в UTC для сравнения с БД."""
+        period_days = {"1d": 1, "3d": 3, "7d": 7, "30d": 30}
+        days = period_days.get(period)
+        if days is None:
+            return None
+        local_today_start = datetime.now().astimezone().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        cutoff = local_today_start - timedelta(days=days - 1)
+        return cutoff.astimezone(timezone.utc).isoformat()
+
     def _backup_db(self, conn: sqlite3.Connection) -> None:
         """Создает бэкап БД через SQLite online-backup API (безопасно при открытом соединении)."""
         if str(self.db_path) == ":memory:":
@@ -591,16 +604,13 @@ class DBManager:
         if not statuses:
             return []
 
-        _period_days = {"1d": 1, "3d": 3, "7d": 7, "30d": 30}
         date_clause = ""
         cat_clause = ""
         city_clause = ""
         params: list = list(statuses) + [min_discount_pct]
 
-        if period != "all" and period in _period_days:
-            cutoff = (
-                datetime.now(timezone.utc) - timedelta(days=_period_days[period])
-            ).isoformat()
+        cutoff = self._report_period_cutoff(period) if period != "all" else None
+        if cutoff:
             date_clause = "AND updated_at >= ?"
             params.append(cutoff)
 
@@ -644,6 +654,68 @@ class DBManager:
                 "status": row[4],
                 "category_name": row[5],
                 "discount_pct": row[6],
+            }
+            for row in rows
+        ]
+
+    def get_new_report_products(
+        self,
+        statuses: list[str],
+        period: str = "1d",
+        category_ids: list[str] = None,
+        limit: int = 50,
+        city_slug: str = None,
+    ) -> list[dict]:
+        """Возвращает товары, добавленные в БД за выбранный календарный период."""
+        if not statuses:
+            return []
+
+        date_clause = ""
+        cat_clause = ""
+        city_clause = ""
+        params: list = list(statuses)
+
+        cutoff = self._report_period_cutoff(period) if period != "all" else None
+        if cutoff:
+            date_clause = "AND created_at >= ?"
+            params.append(cutoff)
+
+        if category_ids:
+            cat_placeholders = ",".join("?" * len(category_ids))
+            cat_clause = f"AND category_id IN ({cat_placeholders})"
+            params.extend(category_ids)
+
+        if city_slug is not None:
+            city_clause = "AND city_slug = ?"
+            params.append(city_slug)
+
+        params.append(limit)
+
+        placeholders = ",".join("?" * len(statuses))
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT title, url, current_price, previous_price, status, category_name, created_at
+                FROM products
+                WHERE status IN ({placeholders})
+                  {date_clause}
+                  {cat_clause}
+                  {city_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                params,
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "title": row[0],
+                "url": row[1],
+                "current_price": row[2],
+                "previous_price": row[3],
+                "status": row[4],
+                "category_name": row[5],
+                "created_at": row[6],
             }
             for row in rows
         ]
