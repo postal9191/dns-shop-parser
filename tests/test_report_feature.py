@@ -537,6 +537,172 @@ class TestReportCallbacks:
         assert "Холодильники" not in product_message
         assert "Добавлен" not in product_message
 
+    def test_discount_report_tolerates_missing_previous_price(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = None
+        mock_db.get_report_products.return_value = [{
+            "title": "Ноутбук без старой цены",
+            "url": "/catalog/laptop/",
+            "current_price": 49990,
+            "previous_price": None,
+            "status": "Новый",
+            "discount_pct": None,
+        }]
+        bot.db = mock_db
+        state = {"new": True, "bu": False, "discount": 10, "cats": [], "period": "all"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        product_message = bot.send_message.call_args_list[1].args[1]
+        assert "не указана" in product_message
+        assert "Ноутбук без старой цены" in product_message
+
+    def test_new_products_report_tolerates_missing_previous_price(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = None
+        mock_db.get_new_report_products.return_value = [{
+            "title": "Свежий товар",
+            "url": "/catalog/new/",
+            "current_price": 1000,
+            "previous_price": None,
+            "status": "Новый",
+        }]
+        bot.db = mock_db
+        state = {"kind": "new_products", "new": True, "bu": False, "cats": [], "period": "all"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        product_message = bot.send_message.call_args_list[1].args[1]
+        assert "Свежий товар" in product_message
+        assert "<s>" not in product_message
+
+    def test_send_report_escapes_html_title_and_url(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = None
+        mock_db.get_report_products.return_value = [{
+            "title": 'A <B> & "C"',
+            "url": '/catalog/item/?q=<bad>&x="1"',
+            "current_price": 1000,
+            "previous_price": 2000,
+            "status": "Новый",
+            "discount_pct": 50,
+        }]
+        bot.db = mock_db
+        state = {"new": True, "bu": False, "discount": 10, "cats": [], "period": "all"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        product_message = bot.send_message.call_args_list[1].args[1]
+        assert "A &lt;B&gt; &amp; &quot;C&quot;" in product_message
+        assert 'q=&lt;bad&gt;&amp;x=&quot;1&quot;' in product_message
+
+    def test_long_report_is_split_into_safe_messages(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = None
+        mock_db.get_report_products.return_value = [
+            {
+                "title": f"Товар {i} " + ("очень длинное название " * 12),
+                "url": f"/catalog/{i}/",
+                "current_price": 1000 + i,
+                "previous_price": 2000 + i,
+                "status": "Новый",
+                "discount_pct": 50,
+            }
+            for i in range(40)
+        ]
+        bot.db = mock_db
+        state = {"new": True, "bu": False, "discount": 10, "cats": [], "period": "all"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        product_messages = [call.args[1] for call in bot.send_message.call_args_list[1:-1]]
+        assert len(product_messages) > 1
+        assert all(len(message) <= 3800 for message in product_messages)
+
+    def test_very_long_title_is_truncated(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = None
+        mock_db.get_report_products.return_value = [{
+            "title": "X" * 500,
+            "url": "/catalog/long/",
+            "current_price": 1000,
+            "previous_price": 2000,
+            "status": "Новый",
+            "discount_pct": 50,
+        }]
+        bot.db = mock_db
+        state = {"new": True, "bu": False, "discount": 10, "cats": [], "period": "all"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        product_message = bot.send_message.call_args_list[1].args[1]
+        assert "…" in product_message
+        assert "X" * 300 not in product_message
+
+    def test_next1_empty_categories_answers_once(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_all_known_categories.return_value = []
+        bot.db = mock_db
+        bot._report_state["user1"] = bot._new_report_state("new_products")
+
+        self._run(bot._handle_report_callback("cb", "user1", "chat1", 42, "report_next:1"))
+
+        bot._answer_callback.assert_called_once()
+        assert bot._answer_callback.call_args.kwargs.get("alert") is True
+
+    def test_next2_empty_categories_answers_once(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_all_known_categories.return_value = []
+        bot.db = mock_db
+        bot._get_report_state("user1")
+
+        self._run(bot._handle_report_callback("cb", "user1", "chat1", 42, "report_next:2"))
+
+        bot._answer_callback.assert_called_once()
+        assert bot._answer_callback.call_args.kwargs.get("alert") is True
+
+    def test_edit_message_text_treats_not_modified_as_success(self):
+        bot = _make_bot()
+        bot._telegram_request = AsyncMock(return_value=(400, {"description": "Bad Request: message is not modified"}))
+
+        result = self._run(bot.edit_message_text("chat1", 42, "same text"))
+
+        assert result is True
+
+    def test_remove_subscriber_cleans_user_state_only_for_that_user(self):
+        bot = _make_bot()
+        bot.db = MagicMock()
+        bot.enabled = True
+        for user_id in ("user1", "user2"):
+            bot.subscribed_users.add(user_id)
+            bot._waiting_for_interval.add(user_id)
+            bot._user_cat_page[user_id] = 1
+            bot._report_state[user_id] = bot._new_report_state()
+            bot._report_cat_page[user_id] = 2
+            bot._report_search_mode[user_id] = ("chat", 10)
+            bot._settings_search_mode[user_id] = ("chat", 11)
+            bot._user_cat_query[user_id] = "query"
+
+        self._run(bot._remove_subscriber("user1"))
+
+        assert "user1" not in bot.subscribed_users
+        assert "user1" not in bot._waiting_for_interval
+        assert "user1" not in bot._user_cat_page
+        assert "user1" not in bot._report_state
+        assert "user1" not in bot._report_cat_page
+        assert "user1" not in bot._report_search_mode
+        assert "user1" not in bot._settings_search_mode
+        assert "user1" not in bot._user_cat_query
+        assert "user2" in bot.subscribed_users
+        assert "user2" in bot._report_state
+
     def test_main_menu_has_report_button(self):
         bot = _make_bot()
         callbacks = [btn["callback_data"] for row in bot._build_main_menu_keyboard("user1")["inline_keyboard"] for btn in row]
@@ -730,6 +896,13 @@ class TestSettingsCatSearch:
         bot = self._bot()
         self._run_settings_cb(bot, "cat_search")
         assert bot._settings_search_mode["user1"] == ("chat1", 42)
+
+    def test_menu_categories_empty_answers_once(self):
+        bot = self._bot()
+        bot.db.get_all_known_categories.return_value = []
+        self._run_settings_cb(bot, "menu_categories_cmd")
+        bot._answer_callback.assert_called_once()
+        assert bot._answer_callback.call_args.kwargs.get("alert") is True
 
     def test_search_input_applies_query(self):
         bot = self._bot()

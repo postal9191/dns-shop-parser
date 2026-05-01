@@ -5,13 +5,25 @@ Telegram бот для управления подписками на уведо
 import asyncio
 import html as _html
 import aiohttp
-from typing import Optional, Set
+from typing import Any, Callable, Optional, Set, TypedDict
 
 _MAX_SEARCH_LEN = 60
 _VALID_REPORT_PCTS = {10, 20, 30, 40, 50, 60, 70, 80, 90}
+_TELEGRAM_SAFE_MESSAGE_LEN = 3800
+_MAX_REPORT_TITLE_LEN = 180
 
 from config import config
 from utils.logger import logger
+
+
+class ReportState(TypedDict):
+    kind: str
+    new: bool
+    bu: bool
+    discount: int
+    cats: list[str]
+    period: str
+    cat_query: str
 
 
 class TelegramBot:
@@ -30,7 +42,7 @@ class TelegramBot:
         self._broadcast_lock = asyncio.Lock()
         self._subscriber_lock = asyncio.Lock()
         self._user_cat_page: dict[str, int] = {}  # user_id → текущая страница /categories
-        self._report_state: dict[str, dict] = {}  # user_id → состояние мастера отчёта
+        self._report_state: dict[str, ReportState] = {}  # user_id → состояние мастера отчёта
         self._report_cat_page: dict[str, int] = {}  # user_id → страница категорий в отчёте
         self._report_search_mode: dict[str, tuple] = {}  # user_id → (chat_id, message_id) ожидание ввода поиска
         self._settings_search_mode: dict[str, tuple] = {}  # то же для /categories настроек
@@ -45,6 +57,64 @@ class TelegramBot:
                 timeout=aiohttp.ClientTimeout(total=30)
             )
         return self._session
+
+    async def _telegram_request(
+        self,
+        method: str,
+        *,
+        json: Optional[dict] = None,
+        params: Optional[dict] = None,
+        timeout: int = 10,
+        http_method: str = "post",
+    ) -> tuple[int, dict]:
+        """Выполняет запрос к Telegram API и возвращает HTTP-статус с JSON-ответом."""
+        request = self._get_session().post if http_method.lower() == "post" else self._get_session().get
+        async with request(
+            f"{self.api_url}/{method}",
+            json=json,
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            try:
+                data = await resp.json()
+            except Exception:
+                data = {}
+            return resp.status, data
+
+    async def _db_call(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(func, *args, **kwargs)
+
+    @staticmethod
+    def _escape_html_text(value: Any) -> str:
+        return _html.escape("" if value is None else str(value))
+
+    @staticmethod
+    def _escape_html_attr(value: Any) -> str:
+        return _html.escape("" if value is None else str(value), quote=True)
+
+    @staticmethod
+    def _format_price(value: Any) -> str:
+        if value is None:
+            return "не указана"
+        try:
+            return f"{int(value):,}".replace(",", "\u00a0")
+        except (TypeError, ValueError):
+            return _html.escape(str(value))
+
+    @staticmethod
+    def _truncate_report_title(title: str) -> str:
+        if len(title) <= _MAX_REPORT_TITLE_LEN:
+            return title
+        return f"{title[:_MAX_REPORT_TITLE_LEN - 1]}…"
+
+    def _cleanup_user_state(self, user_id: str) -> None:
+        self._waiting_for_interval.discard(user_id)
+        self._user_cat_page.pop(user_id, None)
+        self._report_state.pop(user_id, None)
+        self._report_cat_page.pop(user_id, None)
+        self._report_search_mode.pop(user_id, None)
+        self._settings_search_mode.pop(user_id, None)
+        self._user_cat_query.pop(user_id, None)
 
     def _load_subscribers(self) -> Set[str]:
         """Загружает список подписчиков из БД."""
@@ -87,6 +157,7 @@ class TelegramBot:
             try:
                 self.db.remove_telegram_subscriber(user_id)
                 self.subscribed_users.discard(user_id)
+                self._cleanup_user_state(user_id)
                 logger.info("[TG BOT] Удален подписчик: %s", user_id)
                 return True
             except Exception as exc:
@@ -110,37 +181,33 @@ class TelegramBot:
 
         for attempt in range(3):
             try:
-                async with self._get_session().post(
-                    f"{self.api_url}/sendMessage",
+                status, data = await self._telegram_request(
+                    "sendMessage",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as resp:
-                    try:
-                        data = await resp.json()
-                    except Exception:
-                        data = {}
+                    timeout=15,
+                )
 
-                    if resp.status == 200 and data.get("ok"):
-                        return "ok"
-                    if resp.status == 429:
-                        retry_after = data.get("parameters", {}).get("retry_after", 5)
-                        logger.warning("[TG BOT] Rate limit, жду %d сек (попытка %d/3)", retry_after, attempt + 1)
-                        await asyncio.sleep(retry_after + 1)
-                        continue
-                    if resp.status == 403:
-                        logger.info("[TG BOT] Пользователь %s заблокировал бота (403): %s",
-                                    chat_id, data.get("description"))
-                        return "blocked"
-                    desc = data.get("description", "")
-                    if resp.status == 400 and ("chat not found" in desc.lower() or "user is deactivated" in desc.lower()):
-                        logger.info("[TG BOT] Чат %s недоступен (%s): %s", chat_id, resp.status, desc)
-                        return "blocked"
-                    logger.warning("[TG BOT] Ответ %d при отправке в %s (попытка %d/3): %s",
-                                   resp.status, chat_id, attempt + 1, desc)
-                    if resp.status >= 500:
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    return "fail"
+                if status == 200 and data.get("ok"):
+                    return "ok"
+                if status == 429:
+                    retry_after = data.get("parameters", {}).get("retry_after", 5)
+                    logger.warning("[TG BOT] Rate limit, жду %d сек (попытка %d/3)", retry_after, attempt + 1)
+                    await asyncio.sleep(retry_after + 1)
+                    continue
+                if status == 403:
+                    logger.info("[TG BOT] Пользователь %s заблокировал бота (403): %s",
+                                chat_id, data.get("description"))
+                    return "blocked"
+                desc = data.get("description", "")
+                if status == 400 and ("chat not found" in desc.lower() or "user is deactivated" in desc.lower()):
+                    logger.info("[TG BOT] Чат %s недоступен (%s): %s", chat_id, status, desc)
+                    return "blocked"
+                logger.warning("[TG BOT] Ответ %d при отправке в %s (попытка %d/3): %s",
+                               status, chat_id, attempt + 1, desc)
+                if status >= 500:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                return "fail"
             except Exception as exc:
                 if attempt < 2:
                     wait = 2 ** attempt
@@ -229,7 +296,7 @@ class TelegramBot:
         ("all", "Весь срок"),
     ]
 
-    def _new_report_state(self, kind: str = "discounts") -> dict:
+    def _new_report_state(self, kind: str = "discounts") -> ReportState:
         return {
             "kind": kind,
             "new": True,
@@ -240,7 +307,7 @@ class TelegramBot:
             "cat_query": "",
         }
 
-    def _get_report_state(self, user_id: str) -> dict:
+    def _get_report_state(self, user_id: str) -> ReportState:
         if user_id not in self._report_state:
             self._report_state[user_id] = self._new_report_state()
         else:
@@ -531,12 +598,18 @@ class TelegramBot:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         try:
-            async with self._get_session().post(
-                f"{self.api_url}/editMessageText",
+            status, data = await self._telegram_request(
+                "editMessageText",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                return resp.status == 200
+                timeout=10,
+            )
+            if status == 200 and data.get("ok", True):
+                return True
+            desc = data.get("description", "")
+            if status == 400 and "message is not modified" in desc.lower():
+                return True
+            logger.debug("[TG BOT] editMessageText status=%s description=%s", status, desc)
+            return False
         except Exception as exc:
             logger.debug("[TG BOT] editMessageText error: %s", exc)
             return False
@@ -712,20 +785,21 @@ class TelegramBot:
             if not state["new"] and not state["bu"]:
                 await self._answer_callback(callback_id, "⚠️ Выберите хотя бы одно состояние", alert=True)
                 return
-            await self._answer_callback(callback_id, "")
             if self._is_new_products_report(state):
-                cats = self.db.get_all_known_categories() if self.db else []
+                cats = await self._db_call(self.db.get_all_known_categories) if self.db else []
                 if not cats:
                     await self._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
                     return
+                await self._answer_callback(callback_id, "")
                 self._report_cat_page[user_id] = 0
                 if message_id:
                     await self.edit_message_text(
                         chat_id, message_id,
                         self._report_categories_text(state),
                         reply_markup=self._build_report_cats_keyboard(user_id),
-                    )
+                )
                 return
+            await self._answer_callback(callback_id, "")
             if message_id:
                 await self.edit_message_text(
                     chat_id, message_id,
@@ -754,11 +828,11 @@ class TelegramBot:
             return
 
         if data == "report_next:2":
-            await self._answer_callback(callback_id, "")
-            cats = self.db.get_all_known_categories() if self.db else []
+            cats = await self._db_call(self.db.get_all_known_categories) if self.db else []
             if not cats:
                 await self._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
                 return
+            await self._answer_callback(callback_id, "")
             self._report_cat_page[user_id] = 0
             if message_id:
                 await self.edit_message_text(
@@ -940,6 +1014,28 @@ class TelegramBot:
 
         await self._answer_callback(callback_id, "❓ Неизвестная команда", alert=True)
 
+    async def _send_report_batches(self, chat_id: str, item_blocks: list[str]) -> bool:
+        current: list[str] = []
+        current_len = 0
+        ok = True
+
+        for block in item_blocks:
+            separator_len = 2 if current else 0
+            if current and current_len + separator_len + len(block) > _TELEGRAM_SAFE_MESSAGE_LEN:
+                result = await self.send_message(chat_id, "\n\n".join(current))
+                ok = ok and result == "ok"
+                current = []
+                current_len = 0
+                await asyncio.sleep(0.5)
+
+            current.append(block)
+            current_len += (2 if current_len else 0) + len(block)
+
+        if current:
+            result = await self.send_message(chat_id, "\n\n".join(current))
+            ok = ok and result == "ok"
+        return ok
+
     async def _send_report(self, user_id: str, chat_id: str, state: dict) -> None:
         """Формирует и отправляет отчёт пользователю."""
         if not self.db:
@@ -959,15 +1055,17 @@ class TelegramBot:
         period = state.get("period", "1d")
         period_label = dict(self._REPORT_PERIODS).get(period, "1 день")
         category_ids = state.get("cats") or None
-        user_settings = self.db.get_user_settings(user_id)
+        user_settings = await self._db_call(self.db.get_user_settings, user_id)
         user_city = user_settings["city_slug"] if user_settings else None
         is_new_products_report = self._is_new_products_report(state)
         if is_new_products_report:
-            products = self.db.get_new_report_products(
+            products = await self._db_call(
+                self.db.get_new_report_products,
                 statuses, period=period, category_ids=category_ids, city_slug=user_city,
             )
         else:
-            products = self.db.get_report_products(
+            products = await self._db_call(
+                self.db.get_report_products,
                 statuses, discount_pct, period=period,
                 category_ids=category_ids, city_slug=user_city,
             )
@@ -1002,47 +1100,54 @@ class TelegramBot:
         # Дедупликация: одинаковые позиции в отчёте показываем одной строкой с xN.
         seen: dict[tuple, dict] = {}
         for p in products:
-            key = (p["title"], p["current_price"], p.get("previous_price"), p.get("created_at"))
+            key = (p.get("title"), p.get("current_price"), p.get("previous_price"), p.get("created_at"))
             if key in seen:
                 seen[key]["_count"] += 1
             else:
                 seen[key] = dict(p, _count=1)
         deduped = list(seen.values())
 
-        _BATCH = 10
-        for i in range(0, len(deduped), _BATCH):
-            batch = deduped[i:i + _BATCH]
-            msg_lines = []
-            for p in batch:
-                url = p["url"] if p["url"].startswith("http") else base_url + p["url"]
-                icon = "🆕" if p["status"] == "Новый" else "♻️"
-                cnt = f" (x{p['_count']})" if p['_count'] > 1 else ""
-                cur = f"{p['current_price']:,}".replace(",", " ") if p.get("current_price") is not None else "не указана"
-                if is_new_products_report:
-                    price_text = f"{cur} ₽"
-                    previous_price = p.get("previous_price")
-                    if previous_price and p.get("current_price") is not None and previous_price > p["current_price"]:
-                        prev = f"{previous_price:,}".replace(",", " ")
-                        price_text += f" <s>{prev} ₽</s>"
-                    msg_lines.append(
-                        f'• <a href="{url}">{p["title"]}{cnt}</a>\n'
-                        f"  💰 {price_text} {icon}"
-                    )
-                else:
-                    prev = f"{p['previous_price']:,}".replace(",", " ")
-                    msg_lines.append(
-                        f'{icon} <b><a href="{url}">{p["title"]}{cnt}</a></b>\n'
-                        f"💰 {cur} ₽ <s>{prev} ₽</s> — -{p['discount_pct']:.0f}%"
-                    )
-            await self.send_message(chat_id, "\n\n".join(msg_lines))
-            if i + _BATCH < len(deduped):
-                await asyncio.sleep(0.5)
+        item_blocks: list[str] = []
+        for p in deduped:
+            raw_url = p.get("url") or ""
+            url = raw_url if raw_url.startswith("http") else base_url + raw_url
+            safe_url = self._escape_html_attr(url)
+            raw_title = self._truncate_report_title(str(p.get("title") or "Без названия"))
+            safe_title = self._escape_html_text(raw_title)
+            icon = "🆕" if p.get("status") == "Новый" else "♻️"
+            cnt = f" (x{p['_count']})" if p['_count'] > 1 else ""
+            cur = self._format_price(p.get("current_price"))
+            if is_new_products_report:
+                price_text = f"{cur} ₽"
+                previous_price = p.get("previous_price")
+                if previous_price and p.get("current_price") is not None and previous_price > p["current_price"]:
+                    prev = self._format_price(previous_price)
+                    price_text += f" <s>{prev} ₽</s>"
+                item_blocks.append(
+                    f'• <a href="{safe_url}">{safe_title}{cnt}</a>\n'
+                    f"  💰 {price_text} {icon}"
+                )
+            else:
+                prev = self._format_price(p.get("previous_price"))
+                try:
+                    discount_text = f"{float(p.get('discount_pct') or 0):.0f}%"
+                except (TypeError, ValueError):
+                    discount_text = "0%"
+                item_blocks.append(
+                    f'{icon} <b><a href="{safe_url}">{safe_title}{cnt}</a></b>\n'
+                    f"💰 {cur} ₽ <s>{prev} ₽</s> — -{discount_text}"
+                )
 
-        await self.send_message(
+        if not await self._send_report_batches(chat_id, item_blocks):
+            logger.warning("[TG BOT] Не все части отчёта удалось отправить пользователю %s", user_id)
+
+        final_result = await self.send_message(
             chat_id,
             "✅ Отчет сформирован.",
             reply_markup={"inline_keyboard": [[{"text": "🏠 Главная", "callback_data": "menu_back"}]]},
         )
+        if final_result == "fail":
+            logger.warning("[TG BOT] Не удалось отправить финальное сообщение отчёта пользователю %s", user_id)
 
     async def _handle_settings_command(self, user_id: str, chat_id: str) -> None:
         if not self.db:
@@ -1183,11 +1288,11 @@ class TelegramBot:
             return
 
         if data == "menu_categories_cmd":
-            await self._answer_callback(callback_id, "")
-            cats = self.db.get_all_known_categories()
+            cats = await self._db_call(self.db.get_all_known_categories)
             if not cats:
                 await self._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
                 return
+            await self._answer_callback(callback_id, "")
             self._user_cat_page[user_id] = 0
             if message_id:
                 await self.edit_message_text(
@@ -1545,12 +1650,15 @@ class TelegramBot:
                 "text": text,
                 "show_alert": alert
             }
-            async with self._get_session().post(
-                f"{self.api_url}/answerCallbackQuery",
+            status, data = await self._telegram_request(
+                "answerCallbackQuery",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                return resp.status == 200
+                timeout=10,
+            )
+            if status == 200 and data.get("ok", True):
+                return True
+            logger.debug("[TG BOT] answerCallbackQuery status=%s description=%s", status, data.get("description", ""))
+            return False
         except Exception as exc:
             logger.error("[TG BOT] Ошибка при отправке callback ответа: %s", exc)
             return False
