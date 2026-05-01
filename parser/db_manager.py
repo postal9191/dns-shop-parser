@@ -805,6 +805,7 @@ class DBManager:
                        COALESCE(us.notifications_on, 1) AS notifications_on
                 FROM telegram_subscribers ts
                 LEFT JOIN user_settings us ON ts.user_id = us.user_id
+                WHERE ts.is_active = 1
                 ORDER BY ts.user_id
             """)
             rows = cursor.fetchall()
