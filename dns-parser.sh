@@ -95,37 +95,106 @@ check_nodejs() {
     fi
 }
 
+resolve_venv_python() {
+    local venv_python="$VENV_DIR/bin/python3"
+    if [ ! -f "$venv_python" ]; then
+        venv_python="$VENV_DIR/bin/python"
+    fi
+    echo "$venv_python"
+}
+
+validate_npm_dependencies() {
+    if [ ! -f "$PROJECT_DIR/package.json" ]; then
+        return 0
+    fi
+
+    cd "$PROJECT_DIR"
+
+    if [ ! -d "$PROJECT_DIR/node_modules" ]; then
+        return 1
+    fi
+
+    if ! npm ls --depth=0 --silent > /dev/null 2>&1; then
+        return 1
+    fi
+
+    node -e "require.resolve('playwright'); require.resolve('playwright-extra');" > /dev/null 2>&1
+}
+
+validate_playwright_browser() {
+    if [ ! -f "$PROJECT_DIR/package.json" ]; then
+        return 0
+    fi
+
+    cd "$PROJECT_DIR"
+    node -e "const fs = require('fs'); const { chromium } = require('playwright-extra'); const browserPath = chromium.executablePath(); if (!browserPath || !fs.existsSync(browserPath)) process.exit(1);" > /dev/null 2>&1
+}
+
+validate_python_dependencies() {
+    local venv_python
+    venv_python="$(resolve_venv_python)"
+
+    if [ ! -f "$venv_python" ]; then
+        return 1
+    fi
+
+    "$venv_python" -c "import aiohttp, tenacity, dotenv" > /dev/null 2>&1
+}
+
+dependencies_changed_since_last_check() {
+    if [ ! -f "$DEPS_CHECK_FILE" ]; then
+        return 0
+    fi
+
+    for dependency_file in "$PROJECT_DIR/package.json" "$PROJECT_DIR/package-lock.json" "$PROJECT_DIR/requirements.txt"; do
+        if [ -f "$dependency_file" ] && [ "$dependency_file" -nt "$DEPS_CHECK_FILE" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+dependencies_healthy() {
+    check_nodejs > /dev/null || return 1
+    check_python > /dev/null || return 1
+    validate_npm_dependencies || return 1
+    validate_playwright_browser || return 1
+    validate_python_dependencies || return 1
+    return 0
+}
+
 check_playwright() {
     print_info "Проверка Playwright браузера..."
 
     cd "$PROJECT_DIR"
 
-    # Проверяем что npm зависимости установлены.
-    # Смотрим не только на факт наличия node_modules, но и на ключевые пакеты —
-    # иначе после обновления package.json новые deps не подтянутся.
+    local FORCE_REFRESH=0
+    if dependencies_changed_since_last_check; then
+        FORCE_REFRESH=1
+    fi
+
     local NEED_NPM_INSTALL=0
-    if [ ! -d "$PROJECT_DIR/node_modules" ]; then
-        NEED_NPM_INSTALL=1
-        print_warning "Node.js модули не установлены, установка..."
+    if [ $FORCE_REFRESH -eq 0 ] && validate_npm_dependencies; then
+        print_success "Node.js зависимости уже установлены"
     else
-        for pkg in playwright playwright-extra puppeteer-extra-plugin-stealth; do
-            if [ ! -d "$PROJECT_DIR/node_modules/$pkg" ]; then
-                NEED_NPM_INSTALL=1
-                print_warning "Пакет '$pkg' отсутствует в node_modules — переустановка..."
-                break
-            fi
-        done
+        NEED_NPM_INSTALL=1
+        print_warning "Node.js зависимости отсутствуют или повреждены, выполняю npm install..."
     fi
 
     if [ $NEED_NPM_INSTALL -eq 1 ]; then
         npm install --quiet 2>&1 | grep -v "npm warn\|npm notice" || true
     fi
 
-    # Пересобираем native модули
     print_info "Пересборка native модулей..."
     npm rebuild 2>&1 | grep -v "npm warn\|npm notice\|gyp info" || true
 
-    # Устанавливаем bundled Playwright браузер
+    if [ $FORCE_REFRESH -eq 0 ] && validate_playwright_browser && [ $NEED_NPM_INSTALL -eq 0 ]; then
+        print_success "Playwright Chromium уже установлен"
+        return 0
+    fi
+
+    print_info "Установка/проверка Playwright Chromium..."
     npx playwright install chromium --with-deps 2>&1 | tail -5
 
     if [ $? -eq 0 ]; then
@@ -188,6 +257,11 @@ check_python() {
 check_pip_dependencies() {
     print_info "Проверка Python зависимостей..."
 
+    local FORCE_REFRESH=0
+    if dependencies_changed_since_last_check; then
+        FORCE_REFRESH=1
+    fi
+
     # Создаём venv если его нет
     if [ ! -d "$VENV_DIR" ]; then
         print_info "Создание виртуального окружения..."
@@ -205,10 +279,8 @@ check_pip_dependencies() {
     fi
 
     # Находим python в venv
-    local VENV_PYTHON="$VENV_DIR/bin/python3"
-    if [ ! -f "$VENV_PYTHON" ]; then
-        VENV_PYTHON="$VENV_DIR/bin/python"
-    fi
+    local VENV_PYTHON
+    VENV_PYTHON="$(resolve_venv_python)"
 
     if [ ! -f "$VENV_PYTHON" ]; then
         print_error "Python в venv не найден"
@@ -219,6 +291,11 @@ check_pip_dependencies() {
     if ! "$VENV_PYTHON" -m pip --version &> /dev/null; then
         print_warning "pip не найден в venv, устанавливаю..."
         "$VENV_PYTHON" -m ensurepip --upgrade 2>&1 | grep -v "WARNING" || true
+    fi
+
+    if [ $FORCE_REFRESH -eq 0 ] && validate_python_dependencies; then
+        print_success "Python зависимости уже установлены"
+        return 0
     fi
 
     # Обновляем pip используя venv python напрямую (скрываем verbose вывод)
@@ -236,16 +313,19 @@ check_pip_dependencies() {
 }
 
 check_all_dependencies() {
-    # Проверяем нужна ли перепроверка зависимостей
-    local need_check=1
+    if dependencies_healthy && ! dependencies_changed_since_last_check; then
+        print_info "Зависимости на месте, дополнительная установка не требуется"
+        touch "$DEPS_CHECK_FILE"
+        return 0
+    fi
+
     if [ -f "$DEPS_CHECK_FILE" ]; then
         local last_check=$(stat -c %Y "$DEPS_CHECK_FILE" 2>/dev/null || echo 0)
         local current_time=$(date +%s)
         local time_diff=$((current_time - last_check))
 
         if [ $time_diff -lt $DEPS_CHECK_INTERVAL ]; then
-            print_info "Зависимости проверены недавно, пропускаю полную проверку"
-            return 0
+            print_warning "Найдены изменения или повреждение зависимостей, выполняю внеплановую перепроверку"
         fi
     fi
 
@@ -262,6 +342,26 @@ check_all_dependencies() {
     print_success "Все зависимости проверены и установлены!"
 }
 
+run_service_foreground() {
+    print_header "Запуск сервиса DNS Parser"
+
+    check_all_dependencies || return 1
+
+    print_info "Создание папки для логов..."
+    mkdir -p "$PROJECT_DIR/logs"
+
+    local VENV_PYTHON
+    VENV_PYTHON="$(resolve_venv_python)"
+
+    if [ ! -f "$VENV_PYTHON" ]; then
+        print_error "Python в venv не найден"
+        return 1
+    fi
+
+    print_info "Запуск run.py в foreground через systemd bootstrap..."
+    exec "$VENV_PYTHON" "$PROJECT_DIR/run.py"
+}
+
 ################################################################################
 # Управление сервисом
 ################################################################################
@@ -276,10 +376,8 @@ start_service() {
     mkdir -p "$PROJECT_DIR/logs"
 
     # Находим python в venv
-    local VENV_PYTHON="$VENV_DIR/bin/python3"
-    if [ ! -f "$VENV_PYTHON" ]; then
-        VENV_PYTHON="$VENV_DIR/bin/python"
-    fi
+    local VENV_PYTHON
+    VENV_PYTHON="$(resolve_venv_python)"
 
     if [ ! -f "$VENV_PYTHON" ]; then
         print_error "Python в venv не найден"
@@ -490,6 +588,9 @@ restart_service() {
         return 1
     fi
 
+    ensure_systemd_unit_current || return 1
+    check_all_dependencies || return 1
+
     print_info "Перезапуск сервиса..."
     sudo systemctl restart "$SERVICE_NAME"
     sleep 2
@@ -577,7 +678,7 @@ Type=simple
 User=$(whoami)
 WorkingDirectory=$PROJECT_DIR
 Environment=\"PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:$PATH\"
-ExecStart=$VENV_PYTHON $PROJECT_DIR/run.py
+ExecStart=/bin/bash $PROJECT_DIR/dns-parser.sh run-service
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -602,12 +703,27 @@ WantedBy=multi-user.target
     fi
 }
 
+ensure_systemd_unit_current() {
+    if [ ! -f "$SERVICE_FILE" ]; then
+        return 0
+    fi
+
+    if grep -Fq "ExecStart=/bin/bash $PROJECT_DIR/dns-parser.sh run-service" "$SERVICE_FILE"; then
+        return 0
+    fi
+
+    print_warning "Обнаружен устаревший systemd unit, обновляю его под bootstrap зависимостей..."
+    create_systemd_unit || return 1
+}
+
 enable_systemd() {
     print_header "Активация в systemd"
 
     if [ ! -f "$SERVICE_FILE" ]; then
         create_systemd_unit || return 1
     fi
+
+    ensure_systemd_unit_current || return 1
 
     print_info "Активация сервиса..."
     sudo systemctl enable "$SERVICE_NAME"
@@ -671,6 +787,9 @@ systemctl_start() {
         return 1
     fi
 
+    ensure_systemd_unit_current || return 1
+    check_all_dependencies || return 1
+
     print_info "Запуск сервиса..."
     sudo systemctl start "$SERVICE_NAME"
 
@@ -711,6 +830,9 @@ systemctl_restart() {
         print_error "Сервис не установлен в systemd"
         return 1
     fi
+
+    ensure_systemd_unit_current || return 1
+    check_all_dependencies || return 1
 
     print_info "Перезапуск сервиса..."
     sudo systemctl restart "$SERVICE_NAME"
@@ -969,6 +1091,10 @@ if [ $# -gt 0 ]; then
             disable_systemd
             exit $?
             ;;
+        run-service)
+            run_service_foreground
+            exit $?
+            ;;
         *)
             print_error "Неизвестная команда: $1"
             echo ""
@@ -982,6 +1108,7 @@ if [ $# -gt 0 ]; then
             echo "  status          - Показать статус"
             echo "  enable-systemd  - Добавить в systemd"
             echo "  disable-systemd - Удалить из systemd"
+            echo "  run-service     - Внутренняя команда для systemd"
             echo ""
             echo "Без аргументов запускает интерактивное меню."
             exit 1
