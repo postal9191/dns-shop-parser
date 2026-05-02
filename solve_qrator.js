@@ -44,7 +44,16 @@ async function resolveQrator() {
       userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
     }
 
-    context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+    // Proxy config (если задан через env)
+    const proxyConfig = process.env.PROXY_HOST
+      ? {
+          server: `http://${process.env.PROXY_HOST}:${process.env.PROXY_PORT || '10000'}`,
+          username: process.env.PROXY_USER,
+          password: process.env.PROXY_PASSWORD,
+        }
+      : undefined;
+
+    const launchOptions = {
       headless: true,
       userAgent,
       locale: 'ru-RU',
@@ -55,7 +64,14 @@ async function resolveQrator() {
         '--no-first-run',
         '--no-default-browser-check',
       ],
-    });
+    };
+
+    if (proxyConfig) {
+      launchOptions.proxy = proxyConfig;
+      console.error(`[solve_qrator] Proxy: ${process.env.PROXY_HOST}:${process.env.PROXY_PORT || '10000'}`);
+    }
+
+    context = await chromium.launchPersistentContext(USER_DATA_DIR, launchOptions);
 
     // Очищаем старые qrator куки из контекста перед навигацией.
     // Если в профиле протухшие/мусорные qrator куки — Qrator видит jsid2,

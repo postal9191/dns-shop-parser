@@ -15,13 +15,6 @@ import string
 from typing import Any, Optional
 
 import aiohttp
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from config import config
 from parser.exceptions import CookiesExpiredError
@@ -70,91 +63,64 @@ class SimpleDNSParser:
     async def close(self) -> None:
         pass
 
-    @retry(
-        stop=stop_after_attempt(config.max_retries),
-        wait=wait_exponential(multiplier=1, min=config.retry_delay, max=60),
-        retry=retry_if_exception_type(
-            (aiohttp.ClientError, asyncio.TimeoutError)
-        ),
-        reraise=True,
-    )
     async def _post_json(self, url: str, payload: dict) -> Any:
-        session = await self._sm.get_session()
         headers = self._sm._build_headers()
 
         await HTTPLogger.log_request("POST", url, data=payload)
 
-        async with session.post(url, json=payload, headers=headers, timeout=_TIMEOUT) as resp:
+        resp = await self._sm.request("POST", url, json=payload, headers=headers, timeout=_TIMEOUT)
+        async with resp as post_resp:
             await HTTPLogger.log_response(
-                resp.status, url,
-                content_type=resp.content_type,
+                post_resp.status, url,
+                content_type=post_resp.content_type,
             )
 
-            self._check_status(resp, url)
-            self._sm._extract_cookies_from_response(resp)
+            self._check_status(post_resp, url)
+            self._sm._extract_cookies_from_response(post_resp)
             try:
-                return await resp.json(content_type=None)
+                return await post_resp.json(content_type=None)
             except (json.JSONDecodeError, aiohttp.ContentTypeError):
-                text = await resp.text()
+                text = await post_resp.text()
                 logger.debug("Не-JSON от %s: %s", url, text[:300])
                 return {}
 
-    @retry(
-        stop=stop_after_attempt(config.max_retries),
-        wait=wait_exponential(multiplier=1, min=config.retry_delay, max=60),
-        retry=retry_if_exception_type(
-            (aiohttp.ClientError, asyncio.TimeoutError)
-        ),
-        reraise=True,
-    )
     async def _post_form(self, url: str, raw_data: str) -> Any:
         """POST с application/x-www-form-urlencoded телом."""
-        session = await self._sm.get_session()
         headers = self._sm._build_headers({"content-type": "application/x-www-form-urlencoded"})
 
         await HTTPLogger.log_request("POST", url, headers=headers, data=raw_data[:300])
 
-        async with session.post(
-            url, data=raw_data, headers=headers, timeout=_TIMEOUT
-        ) as resp:
+        resp = await self._sm.request("POST", url, data=raw_data, headers=headers, timeout=_TIMEOUT)
+        async with resp as form_resp:
             await HTTPLogger.log_response(
-                resp.status, url,
-                content_type=resp.content_type,
+                form_resp.status, url,
+                content_type=form_resp.content_type,
             )
 
-            self._check_status(resp, url)
-            self._sm._extract_cookies_from_response(resp)
+            self._check_status(form_resp, url)
+            self._sm._extract_cookies_from_response(form_resp)
             try:
-                return await resp.json(content_type=None)
+                return await form_resp.json(content_type=None)
             except (json.JSONDecodeError, aiohttp.ContentTypeError):
-                text = await resp.text()
+                text = await form_resp.text()
                 logger.debug("Не-JSON от %s: %s", url, text[:300])
                 return {}
 
-    @retry(
-        stop=stop_after_attempt(config.max_retries),
-        wait=wait_exponential(multiplier=1, min=config.retry_delay, max=60),
-        retry=retry_if_exception_type(
-            (aiohttp.ClientError, asyncio.TimeoutError)
-        ),
-        reraise=True,
-    )
     async def _get_html(self, url: str, params: dict | None = None) -> str:
-        session = await self._sm.get_session()
         headers = self._sm._build_headers()
 
         await HTTPLogger.log_request("GET", url, params=params)
 
-        async with session.get(url, params=params, headers=headers, timeout=_TIMEOUT) as resp:
+        resp = await self._sm.request("GET", url, params=params, headers=headers, timeout=_TIMEOUT)
+        async with resp as get_resp:
             await HTTPLogger.log_response(
-                resp.status, url,
-                content_type=resp.content_type,
+                get_resp.status, url,
+                content_type=get_resp.content_type,
             )
 
-            self._check_status(resp, url)
-            # Сохраняем куки из ответа (включая current_path)
-            self._sm._extract_cookies_from_response(resp)
-            return await resp.text()
+            self._check_status(get_resp, url)
+            self._sm._extract_cookies_from_response(get_resp)
+            return await get_resp.text()
 
     def _check_status(self, resp: aiohttp.ClientResponse, url: str) -> None:
         if resp.status in (401, 403):
@@ -365,7 +331,7 @@ class SimpleDNSParser:
 
         try:
             resp = await self._post_form(self._product_buy_url, raw_data)
-        except (RetryError, Exception) as exc:
+        except Exception as exc:
             logger.error("[PARSER] Ошибка product-buy: %s", exc)
             return []
 

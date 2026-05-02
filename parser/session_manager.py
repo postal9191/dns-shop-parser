@@ -10,6 +10,7 @@
 
 import asyncio
 import platform
+import random
 import re
 
 import aiohttp
@@ -133,14 +134,122 @@ def _parse_cookie_str(raw: str) -> dict[str, str]:
     return result
 
 
+class ProxyPool:
+    """Пул HTTP-прокси с ротацией по портам.
+
+    Каждый запрос берёт новый порт → новый IP (ротация).
+    При отказе порт помечается failed и берётся случайный из оставшихся.
+    После 5 неудачных попыток — переход на нативный IP (Semaphore(2)).
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port_start: int,
+        port_end: int,
+        user: str,
+        password: str,
+        concurrency: int = 100,
+    ) -> None:
+        self._host = host
+        self._user = user
+        self._password = password
+        self._concurrency = concurrency
+
+        # Все доступные порты
+        self._ports: list[int] = list(range(port_start, port_end + 1))
+        if not self._ports:
+            raise ValueError("ProxyPool: port range is empty")
+
+        self._failed: set[int] = set()
+        self._rotate_idx: int = 0
+        self._total_tries: int = 0
+        self._using_native: bool = False
+
+    def proxy_url(self, port: int) -> str:
+        return f"http://{self._user}:{self._password}@{self._host}:{port}"
+
+    def rotate(self) -> str | None:
+        """Round-robin по живым портам. Returns proxy URL or None if none left."""
+        alive = [p for p in self._ports if p not in self._failed]
+        if not alive:
+            return None
+        # Round-robin: двигаем idx пока не найдём живой
+        attempts = 0
+        while attempts < len(alive):
+            port = alive[self._rotate_idx % len(alive)]
+            self._rotate_idx = (self._rotate_idx + 1) % len(alive)
+            attempts += 1
+            if port not in self._failed:
+                logger.debug("[PROXY] rotate → port %d", port)
+                return self.proxy_url(port)
+        return None
+
+    def random_port(self) -> str | None:
+        """Случайный живой порт для fallback."""
+        alive = [p for p in self._ports if p not in self._failed]
+        if not alive:
+            return None
+        port = random.choice(alive)
+        logger.debug("[PROXY] random → port %d", port)
+        return self.proxy_url(port)
+
+    def mark_failed(self, port: int) -> None:
+        self._failed.add(port)
+        logger.warning("[PROXY] Port %d marked failed (%d failed total)", port, len(self._failed))
+
+    def all_failed(self) -> bool:
+        return len(self._failed) >= len(self._ports)
+
+    def reset(self) -> None:
+        """Сброс состояния пула в начале нового цикла парсинга."""
+        self._failed.clear()
+        self._rotate_idx = 0
+        self._total_tries = 0
+        self._using_native = False
+
+    @property
+    def concurrency(self) -> int:
+        return self._concurrency
+
+    @property
+    def using_native(self) -> bool:
+        return self._using_native
+
+    @using_native.setter
+    def using_native(self, value: bool) -> None:
+        self._using_native = value
+
+
 class SessionManager:
-    """Управляет HTTP-сессией: куки, CSRF-токен."""
+    """Управляет HTTP-сессией: куки, CSRF-токен, прокси."""
 
     def __init__(self) -> None:
         self._cookies: dict[str, str] = {}
         self._session: aiohttp.ClientSession | None = None
         self._csrf_token: str = ""
         self._initialized = False
+
+        # Proxy pool
+        self._proxy_pool: ProxyPool | None = None
+        self._proxy_semaphore: asyncio.Semaphore | None = None
+        self._native_semaphore = asyncio.Semaphore(2)  # строго 2 при fallback
+
+        if config.proxy_enabled():
+            self._proxy_pool = ProxyPool(
+                host=config.proxy_host,
+                port_start=config.proxy_port_start,
+                port_end=config.proxy_port_end,
+                user=config.proxy_user,
+                password=config.proxy_password,
+                concurrency=config.proxy_concurrency,
+            )
+            self._proxy_semaphore = asyncio.Semaphore(config.proxy_concurrency)
+            logger.info(
+                "[SESSION] ProxyPool активен: %s:%d-%d, concurrency=%d",
+                config.proxy_host, config.proxy_port_start, config.proxy_port_end,
+                config.proxy_concurrency,
+            )
 
     def _extract_cookies_from_response(self, resp: aiohttp.ClientResponse) -> None:
         """Извлекает куки из Set-Cookie заголовков ответа и добавляет в self._cookies.
@@ -403,6 +512,87 @@ class SessionManager:
         except Exception as exc:
             logger.error("[SESSION] Ошибка при получении CSRF токена: %s", exc)
             return None
+
+    async def _request_with_proxy_fallback(
+        self,
+        method: str,
+        url: str,
+        headers: dict | None,
+        **kwargs,
+    ):
+        """Выполняет запрос с прокси и fallback на нативный IP.
+
+        Логика:
+        1. Round-robin по живым портам прокси (через _proxy_semaphore)
+        2. При ошибке — случайный порт из оставшихся (до 5 попыток)
+        3. Если все порты упали — нативный IP через _native_semaphore (макс 2)
+        """
+        if not self._proxy_pool:
+            session = await self.get_session()
+            return await session.request(method, url, headers=headers, **kwargs)
+
+        # Пробуем натив, если пул уже перешёл на него
+        if self._proxy_pool.using_native:
+            async with self._native_semaphore:
+                session = await self.get_session()
+                logger.debug("[PROXY] → нативный IP (semaphore acquired)")
+                return await session.request(method, url, headers=headers, **kwargs)
+
+        # Пробуем прокси
+        for attempt in range(5):
+            proxy_url = self._proxy_pool.rotate() if attempt == 0 else self._proxy_pool.random_port()
+            if not proxy_url:
+                break
+
+            port = int(proxy_url.rsplit(":", 1)[-1])
+
+            async with self._proxy_semaphore:
+                try:
+                    logger.debug("[PROXY] → порт %d (attempt %d)", port, attempt + 1)
+                    # Создаём сессию с прокси на каждый запрос
+                    connector = aiohttp.TCPConnector(ssl=True, limit=1)
+                    session = aiohttp.ClientSession(
+                        connector=connector,
+                        headers=self._build_headers() if headers is None else headers,
+                        cookie_jar=aiohttp.DummyCookieJar(),
+                    )
+                    try:
+                        resp = await session.request(method, url, **kwargs)
+                        return resp
+                    finally:
+                        # Не закрываем сессию сразу — дадим соединению переиспользоваться
+                        await session.close()
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning("[PROXY] Ошибка на порту %d: %s", port, exc)
+                    self._proxy_pool.mark_failed(port)
+                    continue
+
+        # Все порты прокси упали — переходим на нативный IP
+        self._proxy_pool.using_native = True
+        logger.warning("[PROXY] Все прокси порты недоступны, переключаюсь на нативный IP")
+
+        async with self._native_semaphore:
+            session = await self.get_session()
+            return await session.request(method, url, headers=headers, **kwargs)
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict | None = None,
+        **kwargs,
+    ):
+        """Универсальный запрос: с прокси или напрямую."""
+        if not config.proxy_enabled():
+            session = await self.get_session()
+            return await session.request(method, url, headers=headers, **kwargs)
+        return await self._request_with_proxy_fallback(method, url, headers, **kwargs)
+
+    async def reset_proxy(self) -> None:
+        """Сброс прокси пула в начале нового цикла парсинга."""
+        if self._proxy_pool:
+            self._proxy_pool.reset()
+            logger.info("[PROXY] ProxyPool сброшен для нового цикла")
 
     async def close(self) -> None:
         if self._session and not self._session.closed:

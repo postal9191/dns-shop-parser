@@ -60,10 +60,12 @@ class DNSMonitorBrowserless:
         is_first_run: bool,
         all_price_changes: list,
         all_new_products: list,
+        retry_count: int = 0,
     ) -> tuple[int, int]:
         """
         Обрабатывает одну категорию (fetch UUID, детали, сохранение в БД).
         Возвращает (total_new_products, total_updated).
+        При ошибке 503 делает retry до 3 раз с небольшой задержкой.
         """
         total_new_products = 0
         total_updated = 0
@@ -73,9 +75,30 @@ class DNSMonitorBrowserless:
         last_count = state["last_product_count"] if state else 0
         last_hash = state["uuid_hash"] if state else None
 
-        # Получаем UUID раздельно по типу товара для маркировки Новый/Б/У
-        uuids_new = await self.parser.fetch_product_uuids(cat.id, status=0)
-        uuids_used = await self.parser.fetch_product_uuids(cat.id, status=1)
+        try:
+            # Получаем UUID раздельно по типу товара для маркировки Новый/Б/У
+            uuids_new = await self.parser.fetch_product_uuids(cat.id, status=0)
+            uuids_used = await self.parser.fetch_product_uuids(cat.id, status=1)
+        except Exception as exc:
+            # Retry логика при ошибках парсинга
+            if retry_count < 3:
+                wait_time = (2 ** retry_count) + 0.5
+                logger.warning(
+                    "[PARSE] Категория %d/%d: %s - ошибка: %s. Retry %d/3 через %.1f сек",
+                    i, total_categories, cat.label, exc, retry_count + 1, wait_time
+                )
+                await asyncio.sleep(wait_time)
+                return await self._process_category(
+                    cat, i, total_categories, is_first_run,
+                    all_price_changes, all_new_products, retry_count + 1
+                )
+            else:
+                logger.error(
+                    "[PARSE] Категория %d/%d: %s - ошибка после 3 попыток: %s",
+                    i, total_categories, cat.label, exc
+                )
+                return (0, 0)
+
         uuid_to_status = {u: "Новый" for u in uuids_new}
         uuid_to_status.update({u: "Б/У" for u in uuids_used})
 
@@ -140,10 +163,27 @@ class DNSMonitorBrowserless:
             else self.db.get_new_products_in_category(cat.id, uuids, self.city_slug)
         )
 
-        # Получаем детали товаров
-        products = await self.parser.fetch_products_details(
-            uuids, cat.id, cat.label, uuid_to_status=uuid_to_status
-        )
+        # Получаем детали товаров (с retry)
+        products = None
+        for attempt in range(3):
+            try:
+                products = await self.parser.fetch_products_details(
+                    uuids, cat.id, cat.label, uuid_to_status=uuid_to_status
+                )
+                break
+            except Exception as exc:
+                if attempt < 2:
+                    wait_time = (2 ** attempt) + 0.5
+                    logger.warning(
+                        "[PARSE] Категория %d/%d: %s - ошибка fetch_products_details: %s. Retry %d/3 через %.1f сек",
+                        i, total_categories, cat.label, exc, attempt + 1, wait_time
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(
+                        "[PARSE] Категория %d/%d: %s - ошибка fetch_products_details после 3 попыток: %s",
+                        i, total_categories, cat.label, exc
+                    )
 
         price_changes = []
         if products:
@@ -244,8 +284,14 @@ class DNSMonitorBrowserless:
                 len(categories),
             )
 
+            # Сбрасываем прокси пул перед новым циклом парсинга
+            await self.session_manager.reset_proxy()
+
             # Шаг 2: товары по каждой категории (параллельно с ограничением)
-            semaphore = asyncio.Semaphore(config.parse_concurrency)
+            # При использовании прокси используем proxy_concurrency, иначе parse_concurrency
+            concurrency = config.proxy_concurrency if config.proxy_enabled() else config.parse_concurrency
+            semaphore = asyncio.Semaphore(concurrency)
+            logger.info("[PARSE] Параллельная обработка: %d потоков", concurrency)
             all_price_changes: list = []
             all_new_products: list = []
 

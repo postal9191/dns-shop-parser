@@ -30,6 +30,14 @@ class Config:
     # Кроссплатформенность
     use_platform_ua: bool = False  # Использовать реальный UserAgent для ОС
 
+    # Proxy (pool.proxy.market:10000–10999)
+    proxy_host: str = ""
+    proxy_port_start: int = 0
+    proxy_port_end: int = 10999
+    proxy_user: str = ""
+    proxy_password: str = ""
+    proxy_concurrency: int = 100  # параллельных запросов через прокси
+
     @classmethod
     def from_env(cls) -> "Config":
         token = os.getenv("TELEGRAM_TOKEN", "").strip()
@@ -51,7 +59,16 @@ class Config:
             retry_delay=float(os.getenv("RETRY_DELAY") or "5.0"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),  # INFO, DEBUG
             use_platform_ua=os.getenv("USE_PLATFORM_UA", "false").lower() == "true",
+            proxy_host=os.getenv("PROXY_HOST", "").strip(),
+            proxy_port_start=int(os.getenv("PROXY_PORT_START") or "0"),
+            proxy_port_end=int(os.getenv("PROXY_PORT_END") or "10999"),
+            proxy_user=os.getenv("PROXY_USER", "").strip(),
+            proxy_password=os.getenv("PROXY_PASSWORD", "").strip(),
+            proxy_concurrency=int(os.getenv("PROXY_CONCURRENCY") or "100"),
         )
+
+    def proxy_enabled(self) -> bool:
+        return bool(self.proxy_host and self.proxy_port_start > 0)
 
 
 config = Config.from_env()
