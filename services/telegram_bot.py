@@ -318,22 +318,37 @@ class TelegramBot:
     def _is_new_products_report(self, state: dict) -> bool:
         return state.get("kind") == "new_products"
 
+    def _is_sold_products_report(self, state: dict) -> bool:
+        return state.get("kind") == "sold_products"
+
+    def _is_no_discount_report(self, state: dict) -> bool:
+        return self._is_new_products_report(state) or self._is_sold_products_report(state)
+
     def _report_title(self, state: dict) -> str:
-        return "Новые товары" if self._is_new_products_report(state) else "Скидки"
+        if self._is_new_products_report(state):
+            return "Новые товары"
+        if self._is_sold_products_report(state):
+            return "Проданные товары"
+        return "Скидки"
 
     def _report_steps_total(self, state: dict) -> int:
-        return 3 if self._is_new_products_report(state) else 4
+        return 3 if self._is_no_discount_report(state) else 4
 
     def _report_condition_text(self, state: dict) -> str:
         return f"📊 <b>{self._report_title(state)} — Шаг 1 из {self._report_steps_total(state)}</b>\nВыберите состояние товара:"
 
     def _report_categories_text(self, state: dict) -> str:
-        step = 2 if self._is_new_products_report(state) else 3
+        step = 2 if self._is_no_discount_report(state) else 3
         return f"📊 <b>{self._report_title(state)} — Шаг {step} из {self._report_steps_total(state)}</b>\nВыберите категории (пусто = все):"
 
     def _report_period_text(self, state: dict) -> str:
-        step = 3 if self._is_new_products_report(state) else 4
-        date_hint = "по дате добавления товара" if self._is_new_products_report(state) else "по дате последнего обновления цены"
+        step = 3 if self._is_no_discount_report(state) else 4
+        if self._is_new_products_report(state):
+            date_hint = "по дате добавления товара"
+        elif self._is_sold_products_report(state):
+            date_hint = "по дате продажи/исчезновения товара"
+        else:
+            date_hint = "по дате последнего обновления цены"
         return f"📊 <b>{self._report_title(state)} — Шаг {step} из {self._report_steps_total(state)}</b>\nВыберите период ({date_hint}):"
 
     def _build_report_type_keyboard(self) -> dict:
@@ -341,6 +356,7 @@ class TelegramBot:
             "inline_keyboard": [
                 [{"text": "🏷 Скидки", "callback_data": "report_kind:discounts"}],
                 [{"text": "🆕 Новые товары", "callback_data": "report_kind:new_products"}],
+                [{"text": "🛒 Проданные товары", "callback_data": "report_kind:sold_products"}],
                 [{"text": "🏠 Главная", "callback_data": "menu_back"}],
             ]
         }
@@ -385,8 +401,12 @@ class TelegramBot:
         """Клавиатура выбора категорий для отчёта (пагинация как в /categories)."""
         if not self.db:
             return {"inline_keyboard": []}
-        all_cats = self.db.get_all_known_categories()
         state = self._get_report_state(user_id)
+        all_cats = (
+            self.db.get_sold_known_categories()
+            if self._is_sold_products_report(state)
+            else self.db.get_all_known_categories()
+        )
         user_cats = set(state.get("cats", []))
         query = state.get("cat_query", "").strip().lower()
         sorted_cats = sorted(all_cats, key=lambda c: (0 if c["id"] in user_cats else 1, c["name"]))
@@ -747,7 +767,7 @@ class TelegramBot:
 
         if data.startswith("report_kind:"):
             kind = data[len("report_kind:"):]
-            if kind not in ("discounts", "new_products"):
+            if kind not in ("discounts", "new_products", "sold_products"):
                 await self._answer_callback(callback_id, "❌ Недопустимый отчет", alert=True)
                 return
             self._report_state[user_id] = self._new_report_state(kind)
@@ -785,8 +805,11 @@ class TelegramBot:
             if not state["new"] and not state["bu"]:
                 await self._answer_callback(callback_id, "⚠️ Выберите хотя бы одно состояние", alert=True)
                 return
-            if self._is_new_products_report(state):
-                cats = await self._db_call(self.db.get_all_known_categories) if self.db else []
+            if self._is_no_discount_report(state):
+                if self._is_sold_products_report(state):
+                    cats = await self._db_call(self.db.get_sold_known_categories) if self.db else []
+                else:
+                    cats = await self._db_call(self.db.get_all_known_categories) if self.db else []
                 if not cats:
                     await self._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
                     return
@@ -858,7 +881,12 @@ class TelegramBot:
         if data.startswith("report_cat_toggle:"):
             cat_id = data[len("report_cat_toggle:"):]
             if self.db:
-                known_ids = {c["id"] for c in self.db.get_all_known_categories()}
+                known_categories = (
+                    self.db.get_sold_known_categories()
+                    if self._is_sold_products_report(state)
+                    else self.db.get_all_known_categories()
+                )
+                known_ids = {c["id"] for c in known_categories}
                 if cat_id not in known_ids:
                     await self._answer_callback(callback_id, "❌ Категория не найдена", alert=True)
                     return
@@ -945,7 +973,7 @@ class TelegramBot:
             period_label = dict(self._REPORT_PERIODS).get(state.get("period", "1d"), "1 день")
             cats = state.get("cats", [])
             cats_label = "все" if not cats else f"{len(cats)} шт."
-            discount_line = "" if self._is_new_products_report(state) else f"Скидка: от {state['discount']}%\n"
+            discount_line = "" if self._is_no_discount_report(state) else f"Скидка: от {state['discount']}%\n"
             await self._answer_callback(callback_id, "")
             if message_id:
                 await self.edit_message_text(
@@ -973,7 +1001,7 @@ class TelegramBot:
         if data == "report_back:2":
             await self._answer_callback(callback_id, "")
             if message_id:
-                if self._is_new_products_report(state):
+                if self._is_no_discount_report(state):
                     await self.edit_message_text(
                         chat_id, message_id,
                         self._report_condition_text(state),
@@ -1058,9 +1086,15 @@ class TelegramBot:
         user_settings = await self._db_call(self.db.get_user_settings, user_id)
         user_city = user_settings["city_slug"] if user_settings else None
         is_new_products_report = self._is_new_products_report(state)
+        is_sold_products_report = self._is_sold_products_report(state)
         if is_new_products_report:
             products = await self._db_call(
                 self.db.get_new_report_products,
+                statuses, period=period, category_ids=category_ids, city_slug=user_city,
+            )
+        elif is_sold_products_report:
+            products = await self._db_call(
+                self.db.get_sold_report_products,
                 statuses, period=period, category_ids=category_ids, city_slug=user_city,
             )
         else:
@@ -1076,7 +1110,7 @@ class TelegramBot:
         )
         report_title = self._report_title(state)
         filter_text = f"Состояние: {cond_text} | Период: {period_label}"
-        if not is_new_products_report:
+        if not self._is_no_discount_report(state):
             filter_text = f"Состояние: {cond_text} | Скидка: от {discount_pct}% | Период: {period_label}"
 
         if not products:
@@ -1100,7 +1134,12 @@ class TelegramBot:
         # Дедупликация: одинаковые позиции в отчёте показываем одной строкой с xN.
         seen: dict[tuple, dict] = {}
         for p in products:
-            key = (p.get("title"), p.get("current_price"), p.get("previous_price"), p.get("created_at"))
+            key = (
+                p.get("title"),
+                p.get("current_price"),
+                p.get("previous_price"),
+                p.get("created_at") or p.get("sold_at"),
+            )
             if key in seen:
                 seen[key]["_count"] += 1
             else:
@@ -1126,6 +1165,18 @@ class TelegramBot:
                 item_blocks.append(
                     f'• <a href="{safe_url}">{safe_title}{cnt}</a>\n'
                     f"  💰 {price_text} {icon}"
+                )
+            elif is_sold_products_report:
+                price_text = f"{cur} ₽"
+                previous_price = p.get("previous_price")
+                if previous_price and p.get("current_price") is not None and previous_price > p["current_price"]:
+                    prev = self._format_price(previous_price)
+                    price_text += f" <s>{prev} ₽</s>"
+                sold_at = str(p.get("sold_at") or "")[:10]
+                sold_text = f"\n  📅 {self._escape_html_text(sold_at)}" if sold_at else ""
+                item_blocks.append(
+                    f'🛒 <b><a href="{safe_url}">{safe_title}{cnt}</a></b>\n'
+                    f"💰 {price_text} {icon}{sold_text}"
                 )
             else:
                 prev = self._format_price(p.get("previous_price"))

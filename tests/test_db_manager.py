@@ -88,7 +88,7 @@ class TestDBManagerUpsertProducts:
 
 class TestDBManagerDeleteProducts:
     def test_delete_products_not_in_uuids(self, db_memory, sample_product, sample_product_no_discount):
-        """delete_products_not_in_uuids удаляет товары которые не в списке."""
+        """delete_products_not_in_uuids помечает купленными товары, которых нет в списке."""
         # Создаём третий товар в той же категории что и sample_product
         product_to_delete = Product(
             id="as-ToDelete",
@@ -111,12 +111,21 @@ class TestDBManagerDeleteProducts:
             sample_product.city_slug,
         )
 
-        # Должен удалить product_to_delete, но не sample_product_no_discount (другая категория)
+        # Должен скрыть product_to_delete из активных, но оставить его в истории.
         assert deleted == 1
         assert db_memory.get_product_count() == 2
+        assert db_memory.get_product_count(include_sold=True) == 3
+
+        with sqlite3.connect(db_memory.db_path) as conn:
+            row = conn.execute(
+                "SELECT is_sold, sold_at FROM products WHERE uuid = ?",
+                (product_to_delete.uuid,),
+            ).fetchone()
+        assert row[0] == 1
+        assert row[1] is not None
 
     def test_delete_products_keeps_needed_uuid(self, db_memory, sample_product, sample_product_no_discount):
-        """delete_products_not_in_uuids не удаляет товары которые в списке."""
+        """delete_products_not_in_uuids не помечает товары, которые есть в списке."""
         sample_product_no_discount.category_id = sample_product.category_id
         db_memory.upsert_products([sample_product, sample_product_no_discount])
 
@@ -129,10 +138,84 @@ class TestDBManagerDeleteProducts:
         assert deleted == 0
         assert db_memory.get_product_count() == 2
 
+    def test_sold_product_reappears_as_active(self, db_memory, sample_product):
+        """Повторный upsert товара снимает пометку купленного."""
+        db_memory.upsert_products([sample_product])
+        deleted = db_memory.delete_products_not_in_uuids(
+            sample_product.category_id,
+            ["other-uuid"],
+            sample_product.city_slug,
+        )
+        assert deleted == 1
+        assert db_memory.get_product_count() == 0
+        assert db_memory.get_product_count(include_sold=True) == 1
+
+        db_memory.upsert_products([sample_product])
+
+        assert db_memory.get_product_count() == 1
+        with sqlite3.connect(db_memory.db_path) as conn:
+            row = conn.execute(
+                "SELECT is_sold, sold_at, seen_at FROM products WHERE uuid = ?",
+                (sample_product.uuid,),
+            ).fetchone()
+        assert row[0] == 0
+        assert row[1] is None
+        assert row[2] is not None
+
+    def test_disappeared_category_is_marked_sold_not_deleted(self, db_memory, sample_product):
+        """Исчезнувшая категория и ее товары остаются в истории."""
+        db_memory.update_category_state(
+            sample_product.category_id,
+            sample_product.category_name,
+            1,
+            sample_product.city_slug,
+            [sample_product.uuid],
+        )
+        db_memory.set_user_categories("user-1", [sample_product.category_id])
+        db_memory.upsert_products([sample_product])
+
+        marked = db_memory.delete_all_products_in_category(
+            sample_product.category_id,
+            sample_product.city_slug,
+        )
+
+        assert marked == 1
+        assert db_memory.get_product_count() == 0
+        assert db_memory.get_product_count(include_sold=True) == 1
+        assert db_memory.get_user_categories("user-1") == [sample_product.category_id]
+
+        state = db_memory.get_category_state(sample_product.category_id, sample_product.city_slug)
+        assert state["is_sold"] is True
+        assert state["sold_at"] is not None
+
+    def test_sold_category_reappears_as_active(self, db_memory, sample_product):
+        """update_category_state снимает sold с вернувшейся категории."""
+        db_memory.update_category_state(
+            sample_product.category_id,
+            sample_product.category_name,
+            1,
+            sample_product.city_slug,
+            [sample_product.uuid],
+        )
+        db_memory.upsert_products([sample_product])
+        db_memory.delete_all_products_in_category(sample_product.category_id, sample_product.city_slug)
+
+        db_memory.update_category_state(
+            sample_product.category_id,
+            sample_product.category_name,
+            1,
+            sample_product.city_slug,
+            [sample_product.uuid],
+        )
+
+        state = db_memory.get_category_state(sample_product.category_id, sample_product.city_slug)
+        assert state["is_sold"] is False
+        assert state["sold_at"] is None
+
 
 class TestDBManagerGetters:
     def test_get_product_count(self, db_memory, sample_product):
-        """get_product_count возвращает количество товаров."""
+        """get_product_count возвращает количество активных товаров."""
         assert db_memory.get_product_count() == 0
 
         db_memory.upsert_products([sample_product])

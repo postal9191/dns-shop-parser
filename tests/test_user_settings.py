@@ -147,6 +147,13 @@ class TestUserCategories:
         assert "cat-1" in ids
         assert "cat-2" in ids
 
+    def test_get_all_known_categories_hides_sold(self, db_memory):
+        """get_all_known_categories скрывает исчезнувшие категории."""
+        db_memory.update_category_state("cat-1", "Ноутбуки", 1, "", ["uuid-1"])
+        db_memory.delete_all_products_in_category("cat-1", "")
+
+        assert db_memory.get_all_known_categories() == []
+
 
 # ─── TelegramNotifier: send_digest фильтрация ────────────────────────────────
 

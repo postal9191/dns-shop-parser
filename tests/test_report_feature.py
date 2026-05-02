@@ -55,6 +55,16 @@ def _set_product_dates(db: DBManager, uid: str, *, updated_at: datetime = None, 
         conn.commit()
 
 
+def _mark_product_sold(db: DBManager, uid: str, *, sold_at: datetime = None) -> None:
+    sold_at = sold_at or datetime.now()
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "UPDATE products SET is_sold = 1, sold_at = ?, updated_at = ? WHERE id = ?",
+            (sold_at.isoformat(), sold_at.isoformat(), f"as-{uid}"),
+        )
+        conn.commit()
+
+
 def _make_bot(db=None) -> TelegramBot:
     bot = TelegramBot.__new__(TelegramBot)
     bot.token = "test"
@@ -134,6 +144,23 @@ class TestGetReportProducts:
         for field in ("title", "url", "current_price", "previous_price", "status", "category_name", "discount_pct"):
             assert field in result[0]
 
+    def test_sold_products_hidden(self, db_memory):
+        self._seed(db_memory)
+        db_memory.delete_products_not_in_uuids(
+            "cat-1",
+            [
+                "bbb-0000-0000-0000-000000000000",
+                "eee-0000-0000-0000-000000000000",
+                "fff-0000-0000-0000-000000000000",
+            ],
+            "",
+        )
+
+        result = db_memory.get_report_products(["Новый", "Б/У"], 1, period="all")
+        titles = [r["title"] for r in result]
+
+        assert "Новый 30%" not in titles
+
     def test_limit_respected(self, db_memory):
         products = [_make_product(f"p{i}", f"Товар {i}", 500, 1000) for i in range(10)]
         db_memory.upsert_products(products)
@@ -187,6 +214,46 @@ class TestGetReportProducts:
         result_empty = db_memory.get_report_products(["Новый", "Б/У"], 1, period="all", category_ids=[])
         result_none = db_memory.get_report_products(["Новый", "Б/У"], 1, period="all", category_ids=None)
         assert len(result_empty) == len(result_none)
+
+
+class TestGetSoldReportProducts:
+    def _seed(self, db: DBManager) -> None:
+        products = [
+            _make_product("sold-new", "Проданный новый", 700, 1000, "Новый", "cat-1", "Ноутбуки"),
+            _make_product("sold-bu", "Проданный Б/У", 500, 1000, "Б/У", "cat-2", "Мониторы"),
+            _make_product("active", "Активный", 600, 1000, "Новый", "cat-1", "Ноутбуки"),
+        ]
+        db.upsert_products(products)
+        _mark_product_sold(db, "sold-new", sold_at=datetime.now() - timedelta(days=1))
+        _mark_product_sold(db, "sold-bu", sold_at=datetime.now() - timedelta(days=5))
+
+    def test_returns_only_sold_products(self, db_memory):
+        self._seed(db_memory)
+
+        result = db_memory.get_sold_report_products(["Новый", "Б/У"], period="all")
+        titles = [r["title"] for r in result]
+
+        assert "Проданный новый" in titles
+        assert "Проданный Б/У" in titles
+        assert "Активный" not in titles
+
+    def test_filters_status_period_category_and_city(self, db_memory):
+        self._seed(db_memory)
+
+        result = db_memory.get_sold_report_products(
+            ["Новый"], period="3d", category_ids=["cat-1"], city_slug=""
+        )
+
+        assert [r["title"] for r in result] == ["Проданный новый"]
+
+    def test_sold_known_categories_only_sold_history(self, db_memory):
+        self._seed(db_memory)
+        db_memory.update_category_state("cat-active", "Активная без продаж", 1, "")
+
+        cats = db_memory.get_sold_known_categories()
+        ids = {c["id"] for c in cats}
+
+        assert ids == {"cat-1", "cat-2"}
 
 
 class TestGetNewReportProducts:
@@ -372,6 +439,7 @@ class TestReportCallbacks:
         callbacks = [btn["callback_data"] for row in bot.edit_message_text.call_args.kwargs["reply_markup"]["inline_keyboard"] for btn in row]
         assert "report_kind:discounts" in callbacks
         assert "report_kind:new_products" in callbacks
+        assert "report_kind:sold_products" in callbacks
 
     def test_report_kind_discounts_starts_step1_of_4(self):
         bot = self._bot()
@@ -385,6 +453,13 @@ class TestReportCallbacks:
         self._run(bot._handle_report_callback("cb", "user1", "chat1", 42, "report_kind:new_products"))
         args = bot.edit_message_text.call_args[0]
         assert "Новые товары" in args[2]
+        assert "1 из 3" in args[2]
+
+    def test_report_kind_sold_products_starts_step1_of_3(self):
+        bot = self._bot()
+        self._run(bot._handle_report_callback("cb", "user1", "chat1", 42, "report_kind:sold_products"))
+        args = bot.edit_message_text.call_args[0]
+        assert "Проданные товары" in args[2]
         assert "1 из 3" in args[2]
 
     def test_toggle_new(self):
@@ -420,6 +495,18 @@ class TestReportCallbacks:
         args = bot.edit_message_text.call_args[0]
         assert "Новые товары" in args[2]
         assert "2 из 3" in args[2]
+
+    def test_sold_products_next1_goes_to_sold_cats(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_sold_known_categories.return_value = [{"id": "cat-1", "name": "Ноутбуки"}]
+        bot.db = mock_db
+        bot._report_state["user1"] = bot._new_report_state("sold_products")
+        self._run(bot._handle_report_callback("cb", "user1", "chat1", 42, "report_next:1"))
+        args = bot.edit_message_text.call_args[0]
+        assert "Проданные товары" in args[2]
+        assert "2 из 3" in args[2]
+        mock_db.get_sold_known_categories.assert_called()
 
     def test_cat_toggle_adds_category(self):
         bot = self._bot()
@@ -462,6 +549,15 @@ class TestReportCallbacks:
         args = bot.edit_message_text.call_args[0]
         assert "Новые товары" in args[2]
         assert "3 из 3" in args[2]
+
+    def test_sold_products_next_cats_goes_to_period(self):
+        bot = self._bot()
+        bot._report_state["user1"] = bot._new_report_state("sold_products")
+        self._run(bot._handle_report_callback("cb", "user1", "chat1", 42, "report_next:cats"))
+        args = bot.edit_message_text.call_args[0]
+        assert "Проданные товары" in args[2]
+        assert "3 из 3" in args[2]
+        assert "продажи/исчезновения" in args[2]
 
     def test_back_cats_goes_to_cats(self):
         bot = self._bot()
@@ -512,6 +608,18 @@ class TestReportCallbacks:
         self._run(bot._send_report("user1", "chat1", state))
         mock_db.get_new_report_products.assert_called_once_with(
             ["Новый"], period="3d", category_ids=["cat-1"], city_slug=ANY
+        )
+        mock_db.get_report_products.assert_not_called()
+
+    def test_send_sold_products_report_uses_sold_at_report(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_sold_report_products.return_value = []
+        bot.db = mock_db
+        state = {"kind": "sold_products", "new": True, "bu": False, "cats": ["cat-1"], "period": "7d"}
+        self._run(bot._send_report("user1", "chat1", state))
+        mock_db.get_sold_report_products.assert_called_once_with(
+            ["Новый"], period="7d", category_ids=["cat-1"], city_slug=ANY
         )
         mock_db.get_report_products.assert_not_called()
 
@@ -577,6 +685,30 @@ class TestReportCallbacks:
         product_message = bot.send_message.call_args_list[1].args[1]
         assert "Свежий товар" in product_message
         assert "<s>" not in product_message
+
+    def test_sold_products_report_uses_sold_format(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = None
+        mock_db.get_sold_report_products.return_value = [{
+            "title": "Проданный ноутбук",
+            "url": "/catalog/sold/",
+            "current_price": 1000,
+            "previous_price": 2000,
+            "status": "Новый",
+            "sold_at": "2026-05-01T10:00:00+00:00",
+        }]
+        bot.db = mock_db
+        state = {"kind": "sold_products", "new": True, "bu": False, "cats": [], "period": "all"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        header = bot.send_message.call_args_list[0].args[1]
+        product_message = bot.send_message.call_args_list[1].args[1]
+        assert "Проданные товары" in header
+        assert "🛒" in product_message
+        assert "Проданный ноутбук" in product_message
+        assert "2026-05-01" in product_message
 
     def test_send_report_escapes_html_title_and_url(self):
         bot = self._bot()

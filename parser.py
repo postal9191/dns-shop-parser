@@ -91,8 +91,19 @@ class DNSMonitorBrowserless:
             uuid_to_status = {u: uuid_to_status[u] for u in uuids if u in uuid_to_status}
 
         if not uuids:
+            if cat.count > 0:
+                logger.warning(
+                    "[PARSE] Категория %d/%d: %s - ожидалось %d товаров, но UUID не получены; "
+                    "считаем fetch подозрительным, state/sold-mark не обновляем",
+                    i,
+                    total_categories,
+                    cat.label,
+                    cat.count,
+                )
+                return (0, 0)
+
             logger.debug(
-                "[PARSE] Категория %d/%d: %s - товаров не найдено",
+                "[PARSE] Категория %d/%d: %s - товаров не найдено (count=0)",
                 i,
                 total_categories,
                 cat.label,
@@ -173,20 +184,25 @@ class DNSMonitorBrowserless:
             else:
                 logger.debug("[PARSE]   (новых товаров не найдено)")
         else:
-            logger.warning("[PARSE]   ⚠️ Товары не получены от сайта (может быть сбой парсинга)")
+            logger.warning(
+                "[PARSE]   ⚠️ UUID получены (%d), но детали товаров не получены; "
+                "sold-mark/state update пропущены, чтобы не потерять данные",
+                len(uuids),
+            )
+            return (0, 0)
 
-        # Удаляем проданные только если данные полные
+        # Помечаем купленными только если данные полные
         fetch_complete = (cat.count == 0) or (len(uuids) >= cat.count * 0.9)
         if not fetch_complete:
             logger.warning(
-                "[PARSE]   ⚠️ Неполный fetch: получено %d из %d ожидаемых — удаление пропущено, hash не обновляем",
+                "[PARSE]   ⚠️ Неполный fetch: получено %d из %d ожидаемых — sold-mark пропущен, hash не обновляем",
                 len(uuids), cat.count,
             )
             return (total_new_products, total_updated)
 
         deleted = self.db.delete_products_not_in_uuids(cat.id, uuids, self.city_slug)
         if deleted:
-            logger.info("[PARSE]   DEL Удалено %d проданных товаров", deleted)
+            logger.info("[PARSE]   SOLD Помечено купленными %d товаров", deleted)
 
         # Обновляем состояние категории (только при полных данных)
         self.db.update_category_state(cat.id, cat.label, len(uuids), self.city_slug, uuids)
@@ -199,7 +215,7 @@ class DNSMonitorBrowserless:
     async def parse_all(self) -> None:
         """
         Парсит все категории и товары в текущем городе.
-        ОПТИМИЗАЦИЯ: Загружает товары только если изменилось количество в категории.
+        Детали товаров загружаются каждый цикл, чтобы проверять изменения цен.
         """
         # Проверяем это первый запуск (БД пуста)
         total_before = self.db.get_product_count()
@@ -257,7 +273,7 @@ class DNSMonitorBrowserless:
             if all_new_products or all_price_changes:
                 await self.tg.send_digest(all_new_products, all_price_changes)
 
-            # Удаляем товары из категорий, которых больше нет на сайте
+            # Помечаем купленными товары из категорий, которых больше нет на сайте
             fetched_ids = {cat.id for cat in categories}
             db_category_ids = set(self.db.get_all_category_states(self.city_slug).keys())
             orphaned_ids = db_category_ids - fetched_ids
@@ -265,7 +281,7 @@ class DNSMonitorBrowserless:
                 deleted = self.db.delete_all_products_in_category(orphaned_id, self.city_slug)
                 if deleted:
                     logger.info(
-                        "[PARSE] Удалено %d товаров из исчезнувшей категории %s",
+                        "[PARSE] Помечено купленными %d товаров из исчезнувшей категории %s",
                         deleted, orphaned_id,
                     )
 
@@ -338,4 +354,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     finally:
+        # ВАЖНО: parser.py намеренно всегда завершается с кодом 0.
+        # run.py управляет жизненным циклом сервиса и не должен останавливать
+        # процесс из-за временных ошибок DNS/Qrator/Node/сети.
+        # Эту логику не менять без отдельного архитектурного решения.
         sys.exit(0)

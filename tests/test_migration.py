@@ -365,8 +365,21 @@ class TestFullMigrationFromLegacy:
         with sqlite3.connect(db_path) as conn:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
 
-        for expected in ("uuid", "status", "city_slug"):
+        for expected in ("uuid", "status", "city_slug", "is_sold", "sold_at", "seen_at"):
             assert expected in cols, f"Колонка {expected!r} должна быть в products"
+
+    def test_legacy_category_state_gets_sold_columns(self, tmp_path):
+        """Старая category_state получает поля soft-sold при миграции."""
+        db_path = str(tmp_path / "test.db")
+        _seed_old_schema(db_path)
+
+        DBManager(db_path, default_city_slug="krasnodar").close()
+
+        with sqlite3.connect(db_path) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(category_state)").fetchall()}
+
+        for expected in ("is_sold", "sold_at", "seen_at"):
+            assert expected in cols, f"Колонка {expected!r} должна быть в category_state"
 
     def test_legacy_product_gets_krasnodar(self, tmp_path):
         """Товар из старой БД получает city_slug='krasnodar' при миграции."""

@@ -106,6 +106,12 @@ class DBManager:
                 or 'status' not in product_cols
                 or 'city_slug' not in product_cols
                 or 'city_slug' not in category_cols
+                or 'is_sold' not in product_cols
+                or 'sold_at' not in product_cols
+                or 'seen_at' not in product_cols
+                or 'is_sold' not in category_cols
+                or 'sold_at' not in category_cols
+                or 'seen_at' not in category_cols
             )
             if need_migration and is_existing_db:
                 self._backup_db(conn)
@@ -139,6 +145,19 @@ class DBManager:
                     logger.info("Добавлен столбец city_slug в таблицу products")
                 except sqlite3.OperationalError:
                     pass
+
+            product_state_migrations = {
+                'is_sold': "ALTER TABLE products ADD COLUMN is_sold INTEGER NOT NULL DEFAULT 0",
+                'sold_at': "ALTER TABLE products ADD COLUMN sold_at TEXT",
+                'seen_at': "ALTER TABLE products ADD COLUMN seen_at TEXT",
+            }
+            for col, sql in product_state_migrations.items():
+                if col not in product_cols:
+                    try:
+                        conn.execute(sql)
+                        logger.info("Добавлен столбец %s в таблицу products", col)
+                    except sqlite3.OperationalError:
+                        pass
 
             # Идемпотентный бэкфилл: заполнить пустые city_slug при каждом старте
             # (страховка если первая миграция прошла без default_city_slug)
@@ -201,6 +220,21 @@ class DBManager:
                     )
                 """)
 
+            cursor = conn.execute("PRAGMA table_info(category_state)")
+            category_cols = [row[1] for row in cursor.fetchall()]
+            category_state_migrations = {
+                'is_sold': "ALTER TABLE category_state ADD COLUMN is_sold INTEGER NOT NULL DEFAULT 0",
+                'sold_at': "ALTER TABLE category_state ADD COLUMN sold_at TEXT",
+                'seen_at': "ALTER TABLE category_state ADD COLUMN seen_at TEXT",
+            }
+            for col, sql in category_state_migrations.items():
+                if col not in category_cols:
+                    try:
+                        conn.execute(sql)
+                        logger.info("Добавлен столбец %s в таблицу category_state", col)
+                    except sqlite3.OperationalError:
+                        pass
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_subscribers (
                     user_id TEXT PRIMARY KEY,
@@ -262,6 +296,8 @@ class DBManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_uuid ON products(uuid)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_city_slug ON products(city_slug)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_products_is_sold ON products(is_sold)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_category_state_is_sold ON category_state(is_sold)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id)")
             conn.commit()
         logger.debug("БД инициализирована: %s", self.db_path)
@@ -298,7 +334,7 @@ class DBManager:
                 if prod.uuid in existing:
                     update_rows.append((
                         prod.id, prod.title, prod.price, prod.price_old,
-                        prod.category_id, prod.category_name, prod.status, now, prod.uuid, prod.city_slug,
+                        prod.category_id, prod.category_name, prod.status, now, now, prod.uuid, prod.city_slug,
                     ))
                     if existing[prod.uuid] != prod.price:
                         price_history_rows.append((prod.uuid, prod.price, now))
@@ -316,14 +352,15 @@ class DBManager:
                     insert_rows.append((
                         prod.id, prod.uuid, prod.title, prod.url, prod.category_id,
                         prod.category_name, prod.price, prod.price_old, prod.status,
-                        prod.city_slug, now, now,
+                        prod.city_slug, 0, None, now, now, now,
                     ))
 
             if update_rows:
                 conn.executemany("""
                     UPDATE products
                     SET id = ?, title = ?, current_price = ?, previous_price = ?,
-                        category_id = ?, category_name = ?, status = ?, updated_at = ?
+                        category_id = ?, category_name = ?, status = ?,
+                        is_sold = 0, sold_at = NULL, updated_at = ?, seen_at = ?
                     WHERE uuid = ? AND city_slug = ?
                 """, update_rows)
 
@@ -331,8 +368,9 @@ class DBManager:
                 conn.executemany("""
                     INSERT INTO products
                     (id, uuid, title, url, category_id, category_name,
-                     current_price, previous_price, status, city_slug, updated_at, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     current_price, previous_price, status, city_slug,
+                     is_sold, sold_at, seen_at, updated_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, insert_rows)
 
             if price_history_rows:
@@ -346,40 +384,64 @@ class DBManager:
         return len(products), price_changes
 
     def delete_all_products_in_category(self, category_id: str, city_slug: str) -> int:
-        """Удаляет все товары категории и саму запись category_state (категория исчезла с сайта).
-        Также очищает user_categories, чтобы пользователи не зависли на несуществующей категории."""
+        """Помечает категорию и ее товары купленными/исчезнувшими, не удаляя историю."""
+        now = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "DELETE FROM products WHERE category_id = ? AND city_slug = ?",
-                (category_id, city_slug),
+                """
+                UPDATE products
+                SET is_sold = 1,
+                    sold_at = COALESCE(sold_at, ?),
+                    updated_at = ?
+                WHERE category_id = ? AND city_slug = ? AND is_sold = 0
+                """,
+                (now, now, category_id, city_slug),
             )
             conn.execute(
-                "DELETE FROM category_state WHERE category_id = ? AND city_slug = ?",
-                (category_id, city_slug),
+                """
+                UPDATE category_state
+                SET is_sold = 1,
+                    sold_at = COALESCE(sold_at, ?),
+                    last_product_count = 0,
+                    last_checked_at = ?
+                WHERE category_id = ? AND city_slug = ?
+                """,
+                (now, now, category_id, city_slug),
             )
-            conn.execute("DELETE FROM user_categories WHERE category_id = ?", (category_id,))
             conn.commit()
             return cursor.rowcount
 
     def delete_products_not_in_uuids(
         self, category_id: str, current_uuids: list[str], city_slug: str
     ) -> int:
-        """Удаляет из БД товары категории, которых нет в current_uuids (проданы)."""
+        """Помечает купленными товары категории, которых нет в current_uuids."""
         if not current_uuids:
             return 0
+        now = datetime.now(timezone.utc).isoformat()
         placeholders = ",".join("?" * len(current_uuids))
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                f"DELETE FROM products WHERE category_id = ? AND city_slug = ? AND uuid NOT IN ({placeholders})",
-                [category_id, city_slug] + list(current_uuids),
+                f"""
+                UPDATE products
+                SET is_sold = 1,
+                    sold_at = COALESCE(sold_at, ?),
+                    updated_at = ?
+                WHERE category_id = ? AND city_slug = ?
+                  AND is_sold = 0
+                  AND uuid NOT IN ({placeholders})
+                """,
+                [now, now, category_id, city_slug] + list(current_uuids),
             )
             conn.commit()
             return cursor.rowcount
 
-    def get_product_count(self) -> int:
-        """Возвращает количество товаров в БД."""
+    def get_product_count(self, include_sold: bool = False) -> int:
+        """Возвращает количество активных товаров в БД, либо всех с include_sold=True."""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM products")
+            if include_sold:
+                cursor = conn.execute("SELECT COUNT(*) FROM products")
+            else:
+                cursor = conn.execute("SELECT COUNT(*) FROM products WHERE is_sold = 0")
             return cursor.fetchone()[0]
 
     def get_products_by_category(
@@ -391,13 +453,13 @@ class DBManager:
                 cursor = conn.execute("""
                     SELECT id, uuid, title, url, category_id, category_name,
                            current_price, previous_price, city_slug
-                    FROM products WHERE category_id = ? AND city_slug = ?
+                    FROM products WHERE category_id = ? AND city_slug = ? AND is_sold = 0
                 """, (category_id, city_slug))
             else:
                 cursor = conn.execute("""
                     SELECT id, uuid, title, url, category_id, category_name,
                            current_price, previous_price, city_slug
-                    FROM products WHERE category_id = ?
+                    FROM products WHERE category_id = ? AND is_sold = 0
                 """, (category_id,))
             rows = cursor.fetchall()
 
@@ -433,6 +495,7 @@ class DBManager:
                        ROUND(100.0 * (previous_price - current_price) / previous_price, 1) as drop_percent
                 FROM products
                 WHERE previous_price > 0 AND current_price < previous_price
+                      AND is_sold = 0
                       AND ROUND(100.0 * (previous_price - current_price) / previous_price, 1) >= ?
                       {city_clause}
                 ORDER BY drop_percent DESC
@@ -457,7 +520,8 @@ class DBManager:
         """Получает последнее состояние категории для указанного города."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT category_id, category_name, last_product_count, uuid_hash, last_checked_at
+                SELECT category_id, category_name, last_product_count, uuid_hash,
+                       last_checked_at, is_sold, sold_at, seen_at
                 FROM category_state WHERE category_id = ? AND city_slug = ?
             """, (category_id, city_slug))
             row = cursor.fetchone()
@@ -469,6 +533,9 @@ class DBManager:
                 "last_product_count": row[2],
                 "uuid_hash": row[3],
                 "last_checked_at": row[4],
+                "is_sold": bool(row[5]),
+                "sold_at": row[6],
+                "seen_at": row[7],
             }
         return None
 
@@ -488,9 +555,10 @@ class DBManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO category_state
-                (category_id, city_slug, category_name, last_product_count, uuid_hash, last_checked_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (category_id, city_slug, category_name, product_count, uuid_hash, now))
+                (category_id, city_slug, category_name, last_product_count, uuid_hash,
+                 last_checked_at, is_sold, sold_at, seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?)
+            """, (category_id, city_slug, category_name, product_count, uuid_hash, now, now))
             conn.commit()
 
     def get_new_products_in_category(
@@ -572,17 +640,18 @@ class DBManager:
             return cursor.fetchone()[0]
 
     def get_all_category_states(self, city_slug: str = None) -> dict[str, int]:
-        """Возвращает {category_id: last_product_count} для категорий в БД.
+        """Возвращает {category_id: last_product_count} для активных категорий в БД.
         Если city_slug задан — только для этого города."""
         with sqlite3.connect(self.db_path) as conn:
             if city_slug is not None:
                 cursor = conn.execute("""
                     SELECT category_id, last_product_count FROM category_state
-                    WHERE city_slug = ?
+                    WHERE city_slug = ? AND is_sold = 0
                 """, (city_slug,))
             else:
                 cursor = conn.execute("""
                     SELECT category_id, last_product_count FROM category_state
+                    WHERE is_sold = 0
                 """)
             return {row[0]: row[1] for row in cursor.fetchall()}
 
@@ -633,6 +702,7 @@ class DBManager:
                        ROUND(100.0 * (previous_price - current_price) / previous_price, 1) AS discount_pct
                 FROM products
                 WHERE status IN ({placeholders})
+                  AND is_sold = 0
                   AND previous_price > 0
                   AND current_price < previous_price
                   AND ROUND(100.0 * (previous_price - current_price) / previous_price, 1) >= ?
@@ -698,6 +768,7 @@ class DBManager:
                 SELECT title, url, current_price, previous_price, status, category_name, created_at
                 FROM products
                 WHERE status IN ({placeholders})
+                  AND is_sold = 0
                   {date_clause}
                   {cat_clause}
                   {city_clause}
@@ -720,6 +791,70 @@ class DBManager:
             for row in rows
         ]
 
+    def get_sold_report_products(
+        self,
+        statuses: list[str],
+        period: str = "1d",
+        category_ids: list[str] = None,
+        limit: int = 50,
+        city_slug: str = None,
+    ) -> list[dict]:
+        """Возвращает купленные/исчезнувшие товары за выбранный период по sold_at."""
+        if not statuses:
+            return []
+
+        date_clause = ""
+        cat_clause = ""
+        city_clause = ""
+        params: list = list(statuses)
+
+        cutoff = self._report_period_cutoff(period) if period != "all" else None
+        if cutoff:
+            date_clause = "AND sold_at >= ?"
+            params.append(cutoff)
+
+        if category_ids:
+            cat_placeholders = ",".join("?" * len(category_ids))
+            cat_clause = f"AND category_id IN ({cat_placeholders})"
+            params.extend(category_ids)
+
+        if city_slug is not None:
+            city_clause = "AND city_slug = ?"
+            params.append(city_slug)
+
+        params.append(limit)
+
+        placeholders = ",".join("?" * len(statuses))
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT title, url, current_price, previous_price, status, category_name, sold_at
+                FROM products
+                WHERE status IN ({placeholders})
+                  AND is_sold = 1
+                  AND sold_at IS NOT NULL
+                  {date_clause}
+                  {cat_clause}
+                  {city_clause}
+                ORDER BY sold_at DESC
+                LIMIT ?
+                """,
+                params,
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "title": row[0],
+                "url": row[1],
+                "current_price": row[2],
+                "previous_price": row[3],
+                "status": row[4],
+                "category_name": row[5],
+                "sold_at": row[6],
+            }
+            for row in rows
+        ]
+
     def get_today_discounts(self, city_slug: str = None) -> list[dict]:
         """Получает товары с обновленными ценами за сегодня (была скидка)."""
         from datetime import date
@@ -736,6 +871,7 @@ class DBManager:
                        ROUND(100.0 * (previous_price - current_price) / previous_price, 1) as drop_percent
                 FROM products
                 WHERE DATE(updated_at) = ? AND previous_price > 0 AND current_price < previous_price
+                      AND is_sold = 0
                       {city_clause}
                 ORDER BY drop_percent DESC
                 """,
@@ -828,7 +964,10 @@ class DBManager:
             if category_ids:
                 placeholders = ",".join("?" * len(category_ids))
                 cursor = conn.execute(
-                    f"SELECT category_id, category_name FROM category_state WHERE category_id IN ({placeholders})",
+                    f"""
+                    SELECT category_id, category_name FROM category_state
+                    WHERE is_sold = 0 AND category_id IN ({placeholders})
+                    """,
                     category_ids,
                 )
                 names = {row[0]: row[1] for row in cursor.fetchall()}
@@ -863,7 +1002,7 @@ class DBManager:
                 return False
             else:
                 cursor = conn.execute(
-                    "SELECT category_name FROM category_state WHERE category_id = ?",
+                    "SELECT category_name FROM category_state WHERE category_id = ? AND is_sold = 0",
                     (category_id,),
                 )
                 row = cursor.fetchone()
@@ -876,10 +1015,30 @@ class DBManager:
                 return True
 
     def get_all_known_categories(self) -> list[dict]:
-        """Получает все известные категории из category_state (заполняется при парсинге)."""
+        """Получает активные категории из category_state (заполняется при парсинге)."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT DISTINCT category_id, category_name FROM category_state ORDER BY category_name"
+                """
+                SELECT DISTINCT category_id, category_name
+                FROM category_state
+                WHERE is_sold = 0
+                ORDER BY category_name
+                """
+            )
+            return [{"id": row[0], "name": row[1]} for row in cursor.fetchall()]
+
+    def get_sold_known_categories(self) -> list[dict]:
+        """Получает категории, связанные с историей купленных/исчезнувших товаров."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT category_id, category_name FROM category_state
+                WHERE is_sold = 1
+                UNION
+                SELECT category_id, category_name FROM products
+                WHERE is_sold = 1
+                ORDER BY category_name
+                """
             )
             return [{"id": row[0], "name": row[1]} for row in cursor.fetchall()]
 
