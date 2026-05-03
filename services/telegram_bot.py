@@ -1395,7 +1395,7 @@ class TelegramBot:
 
         if data == "menu_admin":
             await self._answer_callback(callback_id, "")
-            await self._handle_admin_command(user_id, chat_id)
+            await self._handle_admin_command(user_id, chat_id, message_id)
             return
 
         if data.startswith("city:"):
@@ -1523,7 +1523,12 @@ class TelegramBot:
 
         await self._answer_callback(callback_id, "❓ Неизвестная команда", alert=True)
 
-    async def _handle_admin_command(self, user_id: str, chat_id: str) -> None:
+    async def _handle_admin_command(
+        self,
+        user_id: str,
+        chat_id: str,
+        message_id: Optional[int] = None,
+    ) -> None:
         """Обработка команды /admin с меню управления."""
         # Проверка прав администратора
         if user_id != self.admin_id:
@@ -1535,7 +1540,6 @@ class TelegramBot:
             await self.send_message(chat_id, "❌ Контроллер парсера не инициализирован")
             return
 
-        # Создаем inline-кнопки
         markup = {
             "inline_keyboard": [
                 [
@@ -1559,13 +1563,16 @@ class TelegramBot:
             ]
         }
 
-        logger.info("[TG BOT ADMIN] Админ-панель открыта для %s", user_id)
-        await self.send_message(
-            chat_id,
+        text = (
             "🎛️ <b>Админ-панель парсера DNS</b>\n\n"
-            "Выберите действие:",
-            reply_markup=markup
+            "Выберите действие:"
         )
+        logger.info("[TG BOT ADMIN] Админ-панель открыта для %s", user_id)
+
+        if message_id:
+            await self.edit_message_text(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, reply_markup=markup)
 
     async def _handle_callback_query(self, callback_query: dict) -> None:
         """Обработка нажатий inline-кнопок."""
