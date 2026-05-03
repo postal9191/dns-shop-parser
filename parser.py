@@ -345,6 +345,16 @@ class DNSMonitorBrowserless:
                 delta,
             )
 
+            # Уведомление админу о завершении цикла
+            await self.tg.send_admin_parse_finish(
+                new_cnt=total_new_products,
+                updated_cnt=total_updated,
+                price_changed=len(all_price_changes),
+                total_db=total_in_db,
+                prev_cnt=total_before,
+                delta=delta,
+            )
+
             # Если есть расхождение - логируем дополнительную информацию
             if delta != total_new_products and total_new_products > 0:
                 logger.warning(

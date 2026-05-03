@@ -677,6 +677,21 @@ class TelegramBot:
         rows.append([{"text": "← Главное меню", "callback_data": "menu_back"}])
         return {"inline_keyboard": rows}
 
+    def _build_admin_notify_keyboard(self, s: dict) -> dict:
+        """Строит inline-клавиатуру уведомлений админа (✅ вкл / ❌ выкл)."""
+        err_on = s.get("notify_errors", True)
+        pf_on = s.get("notify_parse_finish", True)
+        on_off = lambda v: "✅" if v else "❌"
+        return {
+            "inline_keyboard": [
+                [{"text": f"{on_off(err_on)} Ошибки: {'ВКЛ' if err_on else 'ВЫКЛ'}",
+                  "callback_data": f"set_err:{0 if err_on else 1}"},
+                 {"text": f"{on_off(pf_on)} Парсинг: {'ВКЛ' if pf_on else 'ВЫКЛ'}",
+                  "callback_data": f"set_pf:{0 if pf_on else 1}"}],
+                [{"text": "← Назад в админ-панель", "callback_data": "admin_back"}],
+            ]
+        }
+
     def _build_categories_keyboard(self, user_id: str, page: int) -> dict:
         """Строит inline-клавиатуру выбора категорий с пагинацией и поиском."""
         if not self.db:
@@ -1471,12 +1486,14 @@ class TelegramBot:
 
         # set_* — настройки уведомлений
         setting_map = {
-            "set_new:":   ("notify_new",          0, 1),
-            "set_drop:":  ("notify_price_drop",   0, 1),
-            "set_pct:":   ("min_price_drop_pct",  0, 100),
-            "set_notif:": ("notifications_on",    0, 1),
+            "set_new:":   ("notify_new",          0, 1,  False),
+            "set_drop:":  ("notify_price_drop",    0, 1,  False),
+            "set_pct:":   ("min_price_drop_pct",   0, 100, False),
+            "set_notif:": ("notifications_on",     0, 1,  False),
+            "set_err:":   ("notify_errors",         0, 1,  True),
+            "set_pf:":     ("notify_parse_finish",  0, 1,  True),
         }
-        for prefix, (field, min_val, max_val) in setting_map.items():
+        for prefix, (field, min_val, max_val, is_admin) in setting_map.items():
             if data.startswith(prefix):
                 try:
                     value = int(data[len(prefix):])
@@ -1490,11 +1507,18 @@ class TelegramBot:
                 await self._answer_callback(callback_id, "✅ Сохранено")
                 if message_id:
                     s = self.db.get_user_settings(user_id)
-                    await self.edit_message_text(
-                        chat_id, message_id,
-                        "⚙️ <b>Настройки уведомлений</b>\nВыберите что хотите изменить:",
-                        reply_markup=self._build_settings_keyboard(s),
-                    )
+                    if is_admin:
+                        await self.edit_message_text(
+                            chat_id, message_id,
+                            "🔔 <b>Уведомления админа</b>\n\nВключите или выключите уведомления:",
+                            reply_markup=self._build_admin_notify_keyboard(s),
+                        )
+                    else:
+                        await self.edit_message_text(
+                            chat_id, message_id,
+                            "⚙️ <b>Настройки уведомлений</b>\nВыберите что хотите изменить:",
+                            reply_markup=self._build_settings_keyboard(s),
+                        )
                 return
 
         await self._answer_callback(callback_id, "❓ Неизвестная команда", alert=True)
@@ -1526,7 +1550,11 @@ class TelegramBot:
                     {"text": "📄 Логи", "callback_data": "admin_logs"}
                 ],
                 [
-                    {"text": "📊 Статус", "callback_data": "admin_status"}
+                    {"text": "📊 Статус", "callback_data": "admin_status"},
+                    {"text": "🔔 Уведомления", "callback_data": "admin_notify"}
+                ],
+                [
+                    {"text": "⬅️ Назад в главное меню", "callback_data": "menu_back"}
                 ]
             ]
         }
@@ -1554,7 +1582,7 @@ class TelegramBot:
             )
 
             # Пользовательские настройки — не требуют прав админа
-            _user_prefixes = ("city:", "cat_", "set_new:", "set_drop:", "set_pct:", "set_notif:", "menu_", "report_")
+            _user_prefixes = ("city:", "cat_", "set_new:", "set_drop:", "set_pct:", "set_notif:", "set_err:", "set_pf:", "menu_", "report_")
             if any(data.startswith(p) for p in _user_prefixes):
                 if user_id not in self.subscribed_users:
                     await self._answer_callback(callback_id, "❌ Сначала подпишитесь через /start", alert=True)
@@ -1571,6 +1599,64 @@ class TelegramBot:
             if user_id != self.admin_id:
                 logger.warning("[TG BOT ADMIN] Попытка доступа от %s (админ: %s)", user_id, self.admin_id)
                 await self._answer_callback(callback_id, "❌ Нет доступа", alert=True)
+                return
+
+            # Команды, не требующие parser_controller
+            if data == "admin_notify":
+                logger.info("[TG BOT ADMIN] Запрос меню уведомлений админом %s", user_id)
+                await self._answer_callback(callback_id, "")
+                s = self.db.get_user_settings(user_id) if self.db else {}
+                if message_id:
+                    await self.edit_message_text(
+                        chat_id, message_id,
+                        "🔔 <b>Уведомления админа</b>\n\nВключите или выключите уведомления:",
+                        reply_markup=self._build_admin_notify_keyboard(s),
+                    )
+                else:
+                    await self.send_message(
+                        chat_id,
+                        "🔔 <b>Уведомления админа</b>\n\nВключите или выключите уведомления:",
+                        reply_markup=self._build_admin_notify_keyboard(s),
+                    )
+                return
+
+            elif data == "admin_back":
+                logger.info("[TG BOT ADMIN] Возврат в админ-панель для %s", user_id)
+                await self._answer_callback(callback_id, "")
+                markup = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "▶️ Запустить", "callback_data": "admin_start"},
+                            {"text": "⏹ Остановить", "callback_data": "admin_stop"}
+                        ],
+                        [
+                            {"text": "🔄 Перезапустить", "callback_data": "admin_restart"},
+                            {"text": "⏱ Интервал", "callback_data": "admin_interval"}
+                        ],
+                        [
+                            {"text": "📄 Логи", "callback_data": "admin_logs"}
+                        ],
+                        [
+                            {"text": "📊 Статус", "callback_data": "admin_status"},
+                            {"text": "🔔 Уведомления", "callback_data": "admin_notify"}
+                        ],
+                        [
+                            {"text": "⬅️ Назад в главное меню", "callback_data": "menu_back"}
+                        ]
+                    ]
+                }
+                if message_id:
+                    await self.edit_message_text(
+                        chat_id, message_id,
+                        "🎛️ <b>Админ-панель парсера DNS</b>\n\nВыберите действие:",
+                        reply_markup=markup,
+                    )
+                else:
+                    await self.send_message(
+                        chat_id,
+                        "🎛️ <b>Админ-панель парсера DNS</b>\n\nВыберите действие:",
+                        reply_markup=markup,
+                    )
                 return
 
             if not self.parser_controller:

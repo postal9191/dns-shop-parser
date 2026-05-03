@@ -309,44 +309,50 @@ class SimpleDNSParser:
         category_name: str = "",
         uuid_to_status: Optional[dict] = None,
     ) -> list[Product]:
-        """POST ajax-state/product-buy одним запросом для всех UUID."""
-        logger.info("[PARSER] Загружаю детали %d товаров одним запросом", len(uuids))
+        """POST ajax-state/product-buy батчами по _BATCH_SIZE UUID."""
+        _BATCH_SIZE = 50
+        logger.info("[PARSER] Загружаю детали %d товаров батчами по %d", len(uuids), _BATCH_SIZE)
 
-        container_map: dict[str, str] = {}
-        containers = []
-        for uuid in uuids:
-            cid = _random_container_id()
-            container_map[cid] = uuid
-            containers.append({
-                "id": cid,
-                "data": {
-                    "id": uuid,
-                    "type": 4,
-                    "params": {"hideButtons": True},
-                },
-            })
+        all_products: list[Product] = []
+        for i in range(0, len(uuids), _BATCH_SIZE):
+            batch = uuids[i:i + _BATCH_SIZE]
+            logger.debug("[PARSER] Батч %d–%d из %d", i + 1, min(i + _BATCH_SIZE, len(uuids)), len(uuids))
 
-        payload_obj = {"type": "product-buy", "containers": containers}
-        raw_data = "data=" + json.dumps(payload_obj, ensure_ascii=False)
+            container_map: dict[str, str] = {}
+            containers = []
+            for uuid in batch:
+                cid = _random_container_id()
+                container_map[cid] = uuid
+                containers.append({
+                    "id": cid,
+                    "data": {
+                        "id": uuid,
+                        "type": 4,
+                        "params": {"hideButtons": True},
+                    },
+                })
 
-        try:
-            resp = await self._post_form(self._product_buy_url, raw_data)
-        except Exception as exc:
-            logger.error("[PARSER] Ошибка product-buy: %s", exc)
-            return []
+            payload_obj = {"type": "product-buy", "containers": containers}
+            raw_data = "data=" + json.dumps(payload_obj, ensure_ascii=False)
 
-        if not (isinstance(resp, dict) and resp.get("result")):
-            logger.warning("[PARSER] product-buy вернул result=false: %s", str(resp)[:200])
-            return []
+            try:
+                resp = await self._post_form(self._product_buy_url, raw_data)
+            except Exception as exc:
+                logger.warning("[PARSER] Батч %d–%d: ошибка product-buy: %s", i + 1, min(i + _BATCH_SIZE, len(uuids)), exc)
+                continue
 
-        products: list[Product] = []
-        for state in resp.get("data", {}).get("states", []):
-            p = self._parse_state(state, container_map, category_id, category_name, uuid_to_status)
-            if p:
-                products.append(p)
+            if not (isinstance(resp, dict) and resp.get("result")):
+                logger.warning("[PARSER] Батч %d–%d: product-buy вернул result=false: %s",
+                             i + 1, min(i + _BATCH_SIZE, len(uuids)), str(resp)[:200])
+                continue
 
-        logger.info("[PARSER] Получено %d товаров", len(products))
-        return products
+            for state in resp.get("data", {}).get("states", []):
+                p = self._parse_state(state, container_map, category_id, category_name, uuid_to_status)
+                if p:
+                    all_products.append(p)
+
+        logger.info("[PARSER] Получено %d товаров из %d", len(all_products), len(uuids))
+        return all_products
 
     def _parse_state(
         self,

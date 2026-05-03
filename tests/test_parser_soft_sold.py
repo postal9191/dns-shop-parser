@@ -86,6 +86,12 @@ def _monitor(fake_parser, fake_db):
     monitor.db = fake_db
     monitor.tg = SimpleNamespace(send_digest=AsyncMock(), send_admin_alert=AsyncMock())
     monitor.parse_interval = 3600
+    # Фиктивный session_manager чтобы избежать AttributeError
+    monitor.session_manager = SimpleNamespace(
+        _init_session=AsyncMock(return_value=True),
+        reset_proxy=AsyncMock(),
+        close=AsyncMock(),
+    )
     return monitor
 
 

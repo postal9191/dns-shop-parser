@@ -326,12 +326,61 @@ class TelegramNotifier:
         """Форматирует дайджест-сообщение (все чанки объединены, для тестов и превью)."""
         return "\n\n".join(self._build_digest_chunks(new_products, price_changes))
 
-    async def send_admin_alert(self, text: str) -> None:
-        """Отправляет сообщение напрямую администратору (не всем подписчикам)."""
-        if self.bot and self.bot.admin_id:
-            await self.bot.send_message(self.bot.admin_id, text)
+    async def send_admin_alert(self, text: str, msg_type: str = "error") -> None:
+        """Отправляет сообщение напрямую администратору (не всем подписчикам).
+
+        msg_type: "error" — проверяет notify_errors; "parse_finish" — notify_parse_finish.
+        """
+        if not (self.bot and self.bot.admin_id):
+            return
+
+        # Проверяем настройки админа
+        admin_settings = self._get_admin_settings()
+        if msg_type == "error" and not admin_settings.get("notify_errors", True):
+            return
+        if msg_type == "parse_finish" and not admin_settings.get("notify_parse_finish", True):
+            return
+
+        await self.bot.send_message(self.bot.admin_id, text)
+
+    def _get_admin_settings(self) -> dict:
+        """Возвращает настройки админа из БД, кеширует результат."""
+        if not hasattr(self, "_admin_settings") or self._admin_settings is None:
+            self._admin_settings = {}
+            if self.db and self.bot and self.bot.admin_id:
+                subs = self.db.get_all_subscribers_with_settings()
+                for sub in subs:
+                    if sub["user_id"] == self.bot.admin_id:
+                        self._admin_settings = sub
+                        break
+        return self._admin_settings
+
+    def _invalidate_admin_settings(self) -> None:
+        """Сбрасывает кеш настроек админа (вызывать после изменения настроек)."""
+        self._admin_settings = None
+
+    async def send_admin_parse_finish(
+        self,
+        new_cnt: int,
+        updated_cnt: int,
+        price_changed: int,
+        total_db: int,
+        prev_cnt: int,
+        delta: int,
+    ) -> None:
+        """Отправляет админу сводку о завершённом цикле парсинга."""
+        delta_str = f"(+{delta})" if delta > 0 else f"({delta})" if delta < 0 else "(0)"
+        text = (
+            f"📋 <b>Парсинг завершён</b>\n"
+            f"🆕 Новых: {new_cnt}\n"
+            f"🔄 Обновлено: {updated_cnt}\n"
+            f"💰 Цены изменились: {price_changed}\n"
+            f"📦 Всего в БД: {total_db} {delta_str}"
+        )
+        await self.send_admin_alert(text, msg_type="parse_finish")
 
     async def close(self) -> None:
-        """Закрывает Telegram notifier."""
+        """Закрывает сессию."""
+        self._admin_settings = None
         if self.bot:
             await self.bot.close()

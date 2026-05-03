@@ -1,4 +1,5 @@
 import re
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -257,3 +258,85 @@ class TestParseState:
         )
 
         assert product is None
+
+
+class TestFetchProductsDetailsBatching:
+    """Тесты на батчинг в fetch_products_details."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_products_details_batches_correctly(self):
+        """fetch_products_details разбивает на батчи по 50."""
+        mock_sm = MagicMock()
+        parser = SimpleDNSParser(mock_sm)
+
+        async def mock_post(url, data):
+            from urllib.parse import parse_qs
+            import json
+            params = parse_qs(data)
+            payload = json.loads(params["data"][0])
+            containers = payload["containers"]
+            states = []
+            for c in containers:
+                states.append({
+                    "id": c["id"],
+                    "data": {
+                        "id": c["data"]["id"],
+                        "name": f"Товар {c['data']['id'][:8]}",
+                        "price": {"current": 1000, "previous": 1500},
+                    },
+                })
+            return {"result": True, "data": {"states": states}}
+
+        parser._post_form = mock_post
+
+        uuids = [f"uuid-{i:04d}-1234-5678-123456789abc" for i in range(120)]
+        products = await parser.fetch_products_details(uuids, "cat-1", "Тест")
+        assert len(products) == 120
+
+    @pytest.mark.asyncio
+    async def test_fetch_products_details_continues_on_batch_error(self):
+        """Ошибка в одном батче не прерывает остальные."""
+        mock_sm = MagicMock()
+        parser = SimpleDNSParser(mock_sm)
+        call_count = 0
+
+        async def mock_post(url, data):
+            nonlocal call_count
+            call_count += 1
+            from urllib.parse import parse_qs
+            import json
+            params = parse_qs(data)
+            payload = json.loads(params["data"][0])
+            containers = payload["containers"]
+            # 2-й батч падает — теряем 50 товаров
+            if call_count == 2:
+                raise Exception("Network error")
+            states = []
+            for c in containers:
+                states.append({
+                    "id": c["id"],
+                    "data": {
+                        "id": c["data"]["id"],
+                        "name": f"Товар {c['data']['id'][:8]}",
+                        "price": {"current": 1000, "previous": 1500},
+                    },
+                })
+            return {"result": True, "data": {"states": states}}
+
+        parser._post_form = mock_post
+        uuids = [f"uuid-{i:04d}-1234-5678-123456789abc" for i in range(110)]
+        products = await parser.fetch_products_details(uuids, "cat-1", "Тест")
+        # 1-й батч (50) + 3-й батч (10) = 60. 2-й батч потерян.
+        assert len(products) == 60
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_fetch_products_details_empty_uuid_list(self):
+        """Пустой список UUID — возвращает пустой список."""
+        mock_sm = MagicMock()
+        parser = SimpleDNSParser(mock_sm)
+        parser._post_form = AsyncMock()
+
+        products = await parser.fetch_products_details([], "cat-1", "Тест")
+        assert products == []
+        parser._post_form.assert_not_called()

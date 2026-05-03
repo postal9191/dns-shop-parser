@@ -270,9 +270,23 @@ class DBManager:
                     notify_new INTEGER NOT NULL DEFAULT 1,
                     notify_price_drop INTEGER NOT NULL DEFAULT 1,
                     min_price_drop_pct INTEGER NOT NULL DEFAULT 0,
-                    notifications_on INTEGER NOT NULL DEFAULT 1
+                    notifications_on INTEGER NOT NULL DEFAULT 1,
+                    notify_errors INTEGER NOT NULL DEFAULT 1,
+                    notify_parse_finish INTEGER NOT NULL DEFAULT 1
                 )
             """)
+            user_settings_migrations = {
+                'notify_errors':        'ALTER TABLE user_settings ADD COLUMN notify_errors INTEGER NOT NULL DEFAULT 1',
+                'notify_parse_finish': 'ALTER TABLE user_settings ADD COLUMN notify_parse_finish INTEGER NOT NULL DEFAULT 1',
+            }
+            cursor = conn.execute("PRAGMA table_info(user_settings)")
+            us_cols = [row[1] for row in cursor.fetchall()]
+            if any(col not in us_cols for col in user_settings_migrations):
+                self._backup_db(conn)
+                for col, sql in user_settings_migrations.items():
+                    if col not in us_cols:
+                        conn.execute(sql)
+                        logger.info("user_settings: добавлен столбец %s", col)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_categories (
                     user_id TEXT NOT NULL,
@@ -893,11 +907,13 @@ class DBManager:
         ]
 
     _SETTING_SQLS = {
-        "city_slug":          "UPDATE user_settings SET city_slug = ? WHERE user_id = ?",
-        "notify_new":         "UPDATE user_settings SET notify_new = ? WHERE user_id = ?",
-        "notify_price_drop":  "UPDATE user_settings SET notify_price_drop = ? WHERE user_id = ?",
+        "city_slug":           "UPDATE user_settings SET city_slug = ? WHERE user_id = ?",
+        "notify_new":          "UPDATE user_settings SET notify_new = ? WHERE user_id = ?",
+        "notify_price_drop":   "UPDATE user_settings SET notify_price_drop = ? WHERE user_id = ?",
         "min_price_drop_pct": "UPDATE user_settings SET min_price_drop_pct = ? WHERE user_id = ?",
-        "notifications_on":   "UPDATE user_settings SET notifications_on = ? WHERE user_id = ?",
+        "notifications_on":    "UPDATE user_settings SET notifications_on = ? WHERE user_id = ?",
+        "notify_errors":       "UPDATE user_settings SET notify_errors = ? WHERE user_id = ?",
+        "notify_parse_finish": "UPDATE user_settings SET notify_parse_finish = ? WHERE user_id = ?",
     }
 
     def upsert_user_settings(self, user_id: str, **kwargs) -> None:
@@ -914,7 +930,9 @@ class DBManager:
         """Получает настройки пользователя."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT user_id, city_slug, notify_new, notify_price_drop, min_price_drop_pct, notifications_on
+                SELECT user_id, city_slug, notify_new, notify_price_drop,
+                       min_price_drop_pct, notifications_on,
+                       notify_errors, notify_parse_finish
                 FROM user_settings WHERE user_id = ?
             """, (user_id,))
             row = cursor.fetchone()
@@ -926,6 +944,8 @@ class DBManager:
                 "notify_price_drop": bool(row[3]),
                 "min_price_drop_pct": row[4],
                 "notifications_on": bool(row[5]),
+                "notify_errors": bool(row[6]),
+                "notify_parse_finish": bool(row[7]),
             }
         return None
 
@@ -938,7 +958,9 @@ class DBManager:
                        COALESCE(us.notify_new, 1) AS notify_new,
                        COALESCE(us.notify_price_drop, 1) AS notify_price_drop,
                        COALESCE(us.min_price_drop_pct, 0) AS min_price_drop_pct,
-                       COALESCE(us.notifications_on, 1) AS notifications_on
+                       COALESCE(us.notifications_on, 1) AS notifications_on,
+                       COALESCE(us.notify_errors, 1) AS notify_errors,
+                       COALESCE(us.notify_parse_finish, 1) AS notify_parse_finish
                 FROM telegram_subscribers ts
                 LEFT JOIN user_settings us ON ts.user_id = us.user_id
                 WHERE ts.is_active = 1
@@ -953,6 +975,8 @@ class DBManager:
                 "notify_price_drop": bool(row[3]),
                 "min_price_drop_pct": row[4],
                 "notifications_on": bool(row[5]),
+                "notify_errors": bool(row[6]),
+                "notify_parse_finish": bool(row[7]),
             }
             for row in rows
         ]
