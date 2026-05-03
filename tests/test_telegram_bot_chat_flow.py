@@ -15,16 +15,19 @@ def _make_bot(db=None, parser_controller=None) -> TelegramBot:
     bot.admin_id = "999"
     bot.subscribed_users = set()
     bot._session = None
-    bot._waiting_for_interval = set()
-    bot._broadcast_lock = asyncio.Lock()
-    bot._subscriber_lock = asyncio.Lock()
-    bot._user_cat_page = {}
-    bot._report_state = {}
-    bot._report_cat_page = {}
-    bot._report_search_mode = {}
-    bot._settings_search_mode = {}
-    bot._user_cat_query = {}
     bot.parser_controller = parser_controller
+    from services.telegram_bot.state import UserState
+    # __init__ is not called via __new__, so call UserState.__init__ manually
+    bot._user_state = object.__new__(UserState)
+    UserState.__init__(bot._user_state)
+    # Initialize handlers
+    from services.telegram_bot.handlers.reports import ReportWizard
+    from services.telegram_bot.handlers.settings import SettingsHandler
+    from services.telegram_bot.handlers.admin import AdminHandler
+    bot._report_wizard = ReportWizard(bot)
+    bot._settings = SettingsHandler(bot, bot._report_wizard)
+    bot._admin = AdminHandler(bot)
+    # _handle_interval_input and _send_logs are now methods on the bot class (aliases)
     return bot
 
 
@@ -116,7 +119,10 @@ async def test_broadcast_message_counts_success_and_removes_blocked(monkeypatch)
 async def test_broadcast_message_uses_in_memory_fallback(monkeypatch):
     bot = _make_bot(db=None)
     bot.subscribed_users = {"u1", "u2"}
-    bot.send_message = AsyncMock(side_effect=["ok", "ok"])
+    # Use a proper async function to avoid StopAsyncIteration exhaustion
+    async def _mock_send(chat_id, text):
+        return "ok"
+    bot.send_message = AsyncMock(side_effect=_mock_send)
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
     result = await bot.broadcast_message("digest")
@@ -186,7 +192,7 @@ async def test_handle_update_settings_requires_subscription():
 async def test_handle_update_settings_dispatches_for_subscriber():
     bot = _make_bot()
     bot.subscribed_users = {"123"}
-    bot._handle_settings_command = AsyncMock()
+    bot._settings.handle_command = AsyncMock()
 
     await bot.handle_update({
         "message": {
@@ -196,7 +202,7 @@ async def test_handle_update_settings_dispatches_for_subscriber():
         }
     })
 
-    bot._handle_settings_command.assert_awaited_once_with("123", "555")
+    bot._settings.handle_command.assert_awaited_once_with("123", "555", "/settings")
 
 
 @pytest.mark.asyncio

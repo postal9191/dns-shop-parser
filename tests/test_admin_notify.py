@@ -199,19 +199,32 @@ def _make_bot(db=None, parser_controller=None, admin_id="999"):
     bot.admin_id = admin_id
     bot.subscribed_users = set()
     bot._session = None
-    bot._waiting_for_interval = set()
-    bot._broadcast_lock = asyncio.Lock()
-    bot._subscriber_lock = asyncio.Lock()
-    bot._user_cat_page = {}
-    bot._report_state = {}
-    bot._report_cat_page = {}
-    bot._report_search_mode = {}
-    bot._settings_search_mode = {}
-    bot._user_cat_query = {}
     bot.parser_controller = parser_controller
-    # Инициализируем admin_panel для доступа к admin-функциям
-    from services.admin_panel import ParserController
-    bot._parser_controller = parser_controller if parser_controller else MagicMock(spec=ParserController)
+    # backward-compat aliases (same as TelegramBot.__init__ sets)
+    from services.telegram_bot import keyboards as _kb
+    bot._build_admin_notify_keyboard = _kb._build_admin_notify_keyboard
+    from services.telegram_bot.state import UserState, ReportMachine
+    bot._user_state = UserState()
+    bot._report_state = bot._user_state.report_state
+    bot._report_cat_page = bot._user_state.report_cat_page
+    bot._report_search_mode = bot._user_state.report_search_mode
+    bot._user_cat_page = bot._user_state.user_cat_page
+    bot._user_cat_query = bot._user_state.user_cat_query
+    bot._settings_search_mode = bot._user_state.settings_search_mode
+    bot._broadcast_lock = bot._user_state.broadcast_lock
+    bot._subscriber_lock = bot._user_state.subscriber_lock
+    # _waiting_for_interval accessed via @property in TelegramBot class
+    _rm = ReportMachine(bot._user_state)
+    bot._get_report_state = _rm.get_state
+    from services.telegram_bot.handlers.reports import ReportWizard
+    from services.telegram_bot.handlers.settings import SettingsHandler
+    from services.telegram_bot.handlers.admin import AdminHandler
+    bot._report_wizard = ReportWizard(bot)
+    bot._settings = SettingsHandler(bot, bot._report_wizard)
+    bot._admin = AdminHandler(bot)
+    # aliases that are set by TelegramBot.__init__ (not @property, can assign)
+    bot._handle_report_callback = bot._report_wizard.handle
+    bot._handle_user_settings_callback = bot._settings.handle_callback
     return bot
 
 

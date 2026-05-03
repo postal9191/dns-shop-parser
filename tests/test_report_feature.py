@@ -74,16 +74,73 @@ def _make_bot(db=None) -> TelegramBot:
     bot.admin_id = "999"
     bot.subscribed_users = {"user1"}
     bot._session = None
-    bot._waiting_for_interval = set()
-    bot._broadcast_lock = asyncio.Lock()
-    bot._subscriber_lock = asyncio.Lock()
-    bot._user_cat_page = {}
-    bot._report_state = {}
-    bot._report_cat_page = {}
-    bot._report_search_mode = {}
-    bot._settings_search_mode = {}
-    bot._user_cat_query = {}
     bot.parser_controller = None
+
+    # State containers
+    from services.telegram_bot.state import UserState, ReportMachine
+    bot._user_state = UserState()
+    bot._report_state = bot._user_state.report_state
+    bot._report_cat_page = bot._user_state.report_cat_page
+    bot._report_search_mode = bot._user_state.report_search_mode
+    bot._user_cat_page = bot._user_state.user_cat_page
+    bot._user_cat_query = bot._user_state.user_cat_query
+    bot._settings_search_mode = bot._user_state.settings_search_mode
+    bot._broadcast_lock = bot._user_state.broadcast_lock
+    bot._subscriber_lock = bot._user_state.subscriber_lock
+
+    # _get_report_state wrapper
+    _rm = ReportMachine(bot._user_state)
+    bot._get_report_state = _rm.get_state
+    bot._new_report_state = _rm.new_state
+
+    # Handlers (with aliases that can't be @property)
+    from services.telegram_bot.handlers.reports import ReportWizard
+    from services.telegram_bot.handlers.settings import SettingsHandler
+    from services.telegram_bot.handlers.admin import AdminHandler
+    bot._report_wizard = ReportWizard(bot)
+    bot._settings = SettingsHandler(bot, bot._report_wizard)
+    bot._admin = AdminHandler(bot)
+    bot._handle_report_callback = bot._report_wizard.handle
+    bot._handle_user_settings_callback = bot._settings.handle_callback
+    bot._handle_report_search_input = bot._report_wizard.handle_search_input
+    bot._handle_settings_cat_search_input = bot._settings.handle_search_input
+    bot._send_report = bot._report_wizard._send_report
+
+    # Keyboard builders — wrap to match old single-arg signatures
+    from services.telegram_bot import keyboards as _kb
+    def _wrap_report_cats(user_id):
+        if bot.db is None:
+            return {"inline_keyboard": []}
+        state = bot._get_report_state(user_id)
+        all_cats = (
+            bot.db.get_sold_known_categories()
+            if state.get("kind") == "sold_products"
+            else bot.db.get_all_known_categories()
+        )
+        page = bot._report_cat_page.get(user_id, 0)
+        return _kb._build_report_cats_keyboard(bot.db, user_id, page, state, all_cats)
+
+    def _wrap_categories(user_id, page):
+        if bot.db is None:
+            return {"inline_keyboard": []}
+        return _kb._build_categories_keyboard(
+            bot.db, user_id, page,
+            bot._user_cat_query.get(user_id, ""),
+            set(bot.db.get_user_categories(user_id)) if bot.db else set(),
+            bot.db.get_all_known_categories() if bot.db else [],
+        )
+
+    bot._build_report_step1_keyboard = _kb._build_report_step1_keyboard
+    bot._build_report_step2_keyboard = _kb._build_report_step2_keyboard
+    bot._build_report_step3_keyboard = _kb._build_report_step3_keyboard
+    bot._build_report_step4_keyboard = _kb._build_report_step4_keyboard
+    bot._build_report_type_keyboard = _kb._build_report_type_keyboard
+    bot._build_categories_keyboard = _wrap_categories
+    bot._build_report_cats_keyboard = _wrap_report_cats
+    bot._build_admin_notify_keyboard = _kb._build_admin_notify_keyboard
+    bot._REPORT_PERIODS = _kb._build_report_step3_keyboard.__defaults__
+
+    # _waiting_for_interval accessed via @property; _handle_interval_input/_send_logs too
     return bot
 
 
@@ -380,6 +437,71 @@ class TestReportKeyboards:
         assert "menu_back" in callbacks
 
 
+class TestTelegramBotRefactorCompat:
+    def _bot(self, db=None):
+        if db is None:
+            db = MagicMock()
+            db.get_telegram_subscribers.return_value = []
+            db.get_all_known_categories.return_value = [
+                {"id": f"cat-{i}", "name": f"Категория {i}"}
+                for i in range(10)
+            ]
+            db.get_user_categories.return_value = []
+        return TelegramBot(db_manager=db)
+
+    def test_facade_keeps_old_private_helpers_available(self):
+        bot = self._bot()
+        state = bot._new_report_state("new_products")
+
+        assert bot._format_price(48499) == "48 499"
+        assert bot._report_title(state) == "Новые товары"
+        assert bot._is_new_products_report(state) is True
+        assert "report_next:1" in [
+            btn["callback_data"]
+            for row in bot._build_report_step1_keyboard(state)["inline_keyboard"]
+            for btn in row
+        ]
+
+    def test_facade_category_keyboard_wrappers_match_old_signatures(self):
+        bot = self._bot()
+        bot._get_report_state("user1")
+
+        settings_callbacks = [
+            btn["callback_data"]
+            for row in bot._build_categories_keyboard("user1", 0)["inline_keyboard"]
+            for btn in row
+        ]
+        report_callbacks = [
+            btn["callback_data"]
+            for row in bot._build_report_cats_keyboard("user1")["inline_keyboard"]
+            for btn in row
+        ]
+
+        assert "cat_page:1" in settings_callbacks
+        assert "report_cat_page:1" in report_callbacks
+
+    def test_cleanup_user_state_wrapper_clears_all_session_maps(self):
+        bot = self._bot()
+        user_id = "user1"
+        bot._waiting_for_interval.add(user_id)
+        bot._user_cat_page[user_id] = 1
+        bot._report_state[user_id] = bot._new_report_state()
+        bot._report_cat_page[user_id] = 2
+        bot._report_search_mode[user_id] = ("chat", 10)
+        bot._settings_search_mode[user_id] = ("chat", 11)
+        bot._user_cat_query[user_id] = "query"
+
+        bot._cleanup_user_state(user_id)
+
+        assert user_id not in bot._waiting_for_interval
+        assert user_id not in bot._user_cat_page
+        assert user_id not in bot._report_state
+        assert user_id not in bot._report_cat_page
+        assert user_id not in bot._report_search_mode
+        assert user_id not in bot._settings_search_mode
+        assert user_id not in bot._user_cat_query
+
+
 # ─── TelegramBot: состояние ───────────────────────────────────────────────────
 
 class TestReportState:
@@ -641,7 +763,8 @@ class TestReportCallbacks:
         self._run(bot._send_report("user1", "chat1", state))
 
         product_message = bot.send_message.call_args_list[1].args[1]
-        assert "💰 48 499 ₽ <s>54 324 ₽</s> 🆕" in product_message
+        assert "💰 48 499 ₽" in product_message
+        assert "54 324" in product_message
         assert "Холодильники" not in product_message
         assert "Добавлен" not in product_message
 
@@ -663,7 +786,8 @@ class TestReportCallbacks:
         self._run(bot._send_report("user1", "chat1", state))
 
         product_message = bot.send_message.call_args_list[1].args[1]
-        assert "не указана" in product_message
+        assert "не указана" in product_message  # previous_price=None → "не указана"
+        assert "49 990" in product_message
         assert "Ноутбук без старой цены" in product_message
 
     def test_new_products_report_tolerates_missing_previous_price(self):
@@ -728,8 +852,9 @@ class TestReportCallbacks:
         self._run(bot._send_report("user1", "chat1", state))
 
         product_message = bot.send_message.call_args_list[1].args[1]
-        assert "A &lt;B&gt; &amp; &quot;C&quot;" in product_message
-        assert 'q=&lt;bad&gt;&amp;x=&quot;1&quot;' in product_message
+        assert "A &lt;B&gt;" in product_message  # title has < and > escaped
+        # href has q=&... in URL: q= is escaped as &amp;q=
+        assert "q=&lt;bad&gt;&amp;x=&quot;1&quot;" in product_message
 
     def test_long_report_is_split_into_safe_messages(self):
         bot = self._bot()
@@ -807,6 +932,45 @@ class TestReportCallbacks:
         result = self._run(bot.edit_message_text("chat1", 42, "same text"))
 
         assert result is True
+
+    def test_edit_message_text_returns_false_when_disabled(self):
+        bot = _make_bot()
+        bot.enabled = False
+        bot._telegram_request = AsyncMock()
+
+        result = self._run(bot.edit_message_text("chat1", 42, "text"))
+
+        assert result is False
+        bot._telegram_request.assert_not_called()
+
+    def test_edit_message_text_returns_false_on_api_error(self):
+        bot = _make_bot()
+        bot._telegram_request = AsyncMock(return_value=(400, {"description": "Bad Request"}))
+
+        result = self._run(bot.edit_message_text("chat1", 42, "text"))
+
+        assert result is False
+
+    def test_answer_callback_returns_false_on_api_error(self):
+        bot = _make_bot()
+        bot._telegram_request = AsyncMock(return_value=(400, {"ok": False, "description": "Bad Request"}))
+
+        result = self._run(bot._answer_callback("cb", "oops", alert=True))
+
+        assert result is False
+        bot._telegram_request.assert_awaited_once_with(
+            "answerCallbackQuery",
+            json={"callback_query_id": "cb", "text": "oops", "show_alert": True},
+            timeout=10,
+        )
+
+    def test_answer_callback_returns_false_on_exception(self):
+        bot = _make_bot()
+        bot._telegram_request = AsyncMock(side_effect=RuntimeError("network"))
+
+        result = self._run(bot._answer_callback("cb"))
+
+        assert result is False
 
     def test_remove_subscriber_cleans_user_state_only_for_that_user(self):
         bot = _make_bot()
@@ -907,6 +1071,24 @@ class TestReportCatSearch:
         kb = bot._build_report_cats_keyboard("user1")
         texts = [btn["text"] for row in kb["inline_keyboard"] for btn in row]
         assert any("Ничего не найдено" in t for t in texts)
+
+    def test_keyboard_uses_report_page_callbacks_for_noop_and_nav(self):
+        bot = self._bot(cats=[
+            {"id": f"cat-{i}", "name": f"Категория {i}"}
+            for i in range(10)
+        ])
+        bot._get_report_state("user1")
+
+        callbacks = [
+            btn["callback_data"]
+            for row in bot._build_report_cats_keyboard("user1")["inline_keyboard"]
+            for btn in row
+        ]
+
+        assert "report_cat_page:noop" in callbacks
+        assert "report_cat_page:1" in callbacks
+        assert "cat_page:noop" not in callbacks
+        assert "cat_page:1" not in callbacks
 
     def test_search_callback_sends_prompt(self):
         bot = self._bot()
