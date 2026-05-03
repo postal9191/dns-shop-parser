@@ -32,11 +32,9 @@ class Config:
 
     # Proxy (pool.proxy.market:10000–10999)
     proxy_host: str = ""
-    proxy_port_start: int = 0
-    proxy_port_end: int = 10999
+    proxy_port: int = 0
     proxy_user: str = ""
     proxy_password: str = ""
-    proxy_concurrency: int = 10  # параллельных запросов через прокси
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -60,15 +58,13 @@ class Config:
             log_level=os.getenv("LOG_LEVEL", "INFO"),  # INFO, DEBUG
             use_platform_ua=os.getenv("USE_PLATFORM_UA", "false").lower() == "true",
             proxy_host=os.getenv("PROXY_HOST", "").strip(),
-            proxy_port_start=int(os.getenv("PROXY_PORT_START") or "0"),
-            proxy_port_end=int(os.getenv("PROXY_PORT_END") or "10999"),
+            proxy_port=int(os.getenv("PROXY_PORT") or "0"),
             proxy_user=os.getenv("PROXY_USER", "").strip(),
             proxy_password=os.getenv("PROXY_PASSWORD", "").strip(),
-            proxy_concurrency=int(os.getenv("PROXY_CONCURRENCY") or "10"),
         )
 
     def proxy_enabled(self) -> bool:
-        return bool(self.proxy_host and self.proxy_port_start > 0)
+        return bool(self.proxy_host and self.proxy_port > 0)
 
 
 config = Config.from_env()

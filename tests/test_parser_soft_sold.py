@@ -25,7 +25,7 @@ class FakeParser:
         self.products = products or []
         self.categories = categories or []
 
-    async def fetch_product_uuids(self, category_id: str, status: int = None):
+    async def fetch_product_uuids(self, category_id: str, expected_count: int = None, status: int = None):
         if status == 0:
             return list(self.uuids_new)
         if status == 1:

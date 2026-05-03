@@ -7,7 +7,7 @@
 - Зависимость Node.js: в коде используется `playwright-extra`, а не стандартный `playwright`
 - Убран `TELEGRAM_CHAT_ID` из обязательных — notifier рассылает всем подписчикам; значение в коде не активно
 - `PARSE_CONCURRENCY` default: документация указывала `5`, в коде `3`
-- Добавлены все прокси-переменные окружения: `PROXY_HOST`, `PROXY_PORT_START`, `PROXY_PORT_END`, `PROXY_USER`, `PROXY_PASSWORD`, `PROXY_CONCURRENCY`
+- Добавлены прокси-переменные окружения: `PROXY_HOST`, `PROXY_PORT`, `PROXY_USER`, `PROXY_PASSWORD`
 
 **Добавлено:**
 - `TELEGRAM_CHAT_ADMIN` — переменная окружения для ID администратора (не была задокументирована)
@@ -155,11 +155,9 @@ cp .env.example .env
 | `LOG_LEVEL`           | `INFO`                    | Нет            | Уровень логирования: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `USE_PLATFORM_UA`     | `false`                   | Нет            | `true` — Python-сессия использует User-Agent текущей ОС |
 | `PROXY_HOST`          | —                         | Нет            | Хост прокси (напр. `pool.proxy.market`) |
-| `PROXY_PORT_START`    | `0`                       | Нет            | Начальный порт прокси (напр. `10000`) |
-| `PROXY_PORT_END`      | `10999`                   | Нет            | Конечный порт диапазона |
+| `PROXY_PORT`          | `0`                       | Нет            | Порт прокси (напр. `10000`) |
 | `PROXY_USER`          | —                         | Нет            | Логин для аутентификации на прокси |
 | `PROXY_PASSWORD`      | —                         | Нет            | Пароль для аутентификации на прокси |
-| `PROXY_CONCURRENCY`  | `10`                      | Нет            | Макс. параллельных запросов через прокси |
 
 ### Минимальный `.env`
 
@@ -186,13 +184,11 @@ CITY_COOKIE_CURRENT=c5f58b981d1ed0bad05ae63f54072ea9dcdf57ac...
 PARSE_INTERVAL=3600
 PARSE_CONCURRENCY=5
 
-# Прокси pool.proxy.market:10000–10999
+# Прокси pool.proxy.market:10000
 PROXY_HOST=pool.proxy.market
-PROXY_PORT_START=10000
-PROXY_PORT_END=10999
+PROXY_PORT=10000
 PROXY_USER=AvZlDIK3ay
 PROXY_PASSWORD=your_password
-PROXY_CONCURRENCY=100
 ```
 
 ### Поддерживаемые города

@@ -57,7 +57,7 @@ run.py (asyncio event loop)
 |------|---------|
 | `run.py` | Entry point: asyncio loop + TG bot. Handles night mode, cron sync, circuit breaker (5 errors → exponential backoff) |
 | `parser.py` | Single parse cycle. Runs as subprocess from run.py, always exits 0 (don't change) |
-| `config.py` | `Config` dataclass, loads from `.env`. Proxy support via `PROXY_HOST`, `PROXY_PORT_START` |
+| `config.py` | `Config` dataclass, loads from `.env`. Proxy support via `PROXY_HOST`, `PROXY_PORT` |
 | `solve_qrator.js` | Node.js + Playwright for Qrator bypass. Outputs cookies to stdout |
 | `parser/qrator_resolver.py` | Runs `solve_qrator.js`, parses output, handles retries (3 attempts) |
 | `parser/session_manager.py` | aiohttp session, headers, cookie override for city |
@@ -90,7 +90,7 @@ Optional:
 - `PARSE_INTERVAL` — seconds between cycles (default: 3600)
 - `PARSE_CONCURRENCY` — parallel category processing (default: 5)
 - `LOG_LEVEL` — DEBUG/INFO/WARNING/ERROR
-- `PROXY_HOST`, `PROXY_PORT_START`, `PROXY_USER`, `PROXY_PASSWORD` — proxy pool support
+- `PROXY_HOST`, `PROXY_PORT`, `PROXY_USER`, `PROXY_PASSWORD` — proxy support
 
 ## Important Behaviors
 
@@ -102,7 +102,7 @@ Optional:
 
 ## Proxy Support
 
-Pool proxy: `pool.proxy.market:10000–10999`. Config via `PROXY_HOST`/`PROXY_PORT_START` in `.env`. Session manager rotates proxies. Proxy concurrency via `PROXY_CONCURRENCY` (default: 100).
+Pool proxy: `pool.proxy.market:10000`. Config via `PROXY_HOST`/`PROXY_PORT` in `.env`. Parallelism is controlled only by `PARSE_CONCURRENCY`.
 
 ## Dependencies
 

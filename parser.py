@@ -77,8 +77,8 @@ class DNSMonitorBrowserless:
 
         try:
             # Получаем UUID раздельно по типу товара для маркировки Новый/Б/У
-            uuids_new = await self.parser.fetch_product_uuids(cat.id, status=0)
-            uuids_used = await self.parser.fetch_product_uuids(cat.id, status=1)
+            uuids_new = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count, status=0)
+            uuids_used = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count, status=1)
         except Exception as exc:
             # Retry логика при ошибках парсинга
             if retry_count < 3:
@@ -288,8 +288,7 @@ class DNSMonitorBrowserless:
             await self.session_manager.reset_proxy()
 
             # Шаг 2: товары по каждой категории (параллельно с ограничением)
-            # При использовании прокси используем proxy_concurrency, иначе parse_concurrency
-            concurrency = config.proxy_concurrency if config.proxy_enabled() else config.parse_concurrency
+            concurrency = config.parse_concurrency
             semaphore = asyncio.Semaphore(concurrency)
             logger.info("[PARSE] Параллельная обработка: %d потоков", concurrency)
             all_price_changes: list = []

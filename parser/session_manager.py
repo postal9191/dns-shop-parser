@@ -10,7 +10,6 @@
 
 import asyncio
 import platform
-import random
 import re
 
 import aiohttp
@@ -146,7 +145,6 @@ class ProxyPool:
         self,
         host: str,
         port_start: int,
-        port_end: int,
         user: str,
         password: str,
         concurrency: int = 100,
@@ -156,50 +154,40 @@ class ProxyPool:
         self._password = password
         self._concurrency = concurrency
 
-        # Все доступные порты
-        self._ports: list[int] = list(range(port_start, port_end + 1))
-        if not self._ports:
-            raise ValueError("ProxyPool: port range is empty")
+        # Single configured proxy port.
+        if port_start <= 0:
+            raise ValueError("ProxyPool: port must be positive")
 
         self._failed: set[int] = set()
         self._rotate_idx: int = 0
         self._total_tries: int = 0
         self._using_native: bool = False
+        self._sticky_port: int = port_start
 
     def proxy_url(self, port: int) -> str:
         return f"http://{self._user}:{self._password}@{self._host}:{port}"
 
-    def rotate(self) -> str | None:
-        """Round-robin по живым портам. Returns proxy URL or None if none left."""
-        alive = [p for p in self._ports if p not in self._failed]
-        if not alive:
+    def sticky(self) -> str | None:
+        """Returns the stable proxy URL used for Qrator-bound cookies."""
+        if self._sticky_port in self._failed:
             return None
-        # Round-robin: двигаем idx пока не найдём живой
-        attempts = 0
-        while attempts < len(alive):
-            port = alive[self._rotate_idx % len(alive)]
-            self._rotate_idx = (self._rotate_idx + 1) % len(alive)
-            attempts += 1
-            if port not in self._failed:
-                logger.debug("[PROXY] rotate → port %d", port)
-                return self.proxy_url(port)
-        return None
+        logger.debug("[PROXY] sticky → port %d", self._sticky_port)
+        return self.proxy_url(self._sticky_port)
+
+    def rotate(self) -> str | None:
+        """Compatibility alias: this proxy setup uses only one configured port."""
+        return self.sticky()
 
     def random_port(self) -> str | None:
-        """Случайный живой порт для fallback."""
-        alive = [p for p in self._ports if p not in self._failed]
-        if not alive:
-            return None
-        port = random.choice(alive)
-        logger.debug("[PROXY] random → port %d", port)
-        return self.proxy_url(port)
+        """Compatibility alias: this proxy setup uses only one configured port."""
+        return self.sticky()
 
     def mark_failed(self, port: int) -> None:
         self._failed.add(port)
         logger.warning("[PROXY] Port %d marked failed (%d failed total)", port, len(self._failed))
 
     def all_failed(self) -> bool:
-        return len(self._failed) >= len(self._ports)
+        return self._sticky_port in self._failed
 
     def reset(self) -> None:
         """Сброс состояния пула в начале нового цикла парсинга."""
@@ -238,17 +226,16 @@ class SessionManager:
         if config.proxy_enabled():
             self._proxy_pool = ProxyPool(
                 host=config.proxy_host,
-                port_start=config.proxy_port_start,
-                port_end=config.proxy_port_end,
+                port_start=config.proxy_port,
                 user=config.proxy_user,
                 password=config.proxy_password,
-                concurrency=config.proxy_concurrency,
+                concurrency=config.parse_concurrency,
             )
-            self._proxy_semaphore = asyncio.Semaphore(config.proxy_concurrency)
+            self._proxy_semaphore = asyncio.Semaphore(config.parse_concurrency)
             logger.info(
-                "[SESSION] ProxyPool активен: %s:%d-%d, concurrency=%d",
-                config.proxy_host, config.proxy_port_start, config.proxy_port_end,
-                config.proxy_concurrency,
+                "[SESSION] Proxy активен: %s:%d, concurrency=%d",
+                config.proxy_host, config.proxy_port,
+                config.parse_concurrency,
             )
 
     def _extract_cookies_from_response(self, resp: aiohttp.ClientResponse) -> None:
@@ -538,38 +525,26 @@ class SessionManager:
                 logger.debug("[PROXY] → нативный IP (semaphore acquired)")
                 return await session.request(method, url, headers=headers, **kwargs)
 
-        # Пробуем прокси
-        for attempt in range(5):
-            proxy_url = self._proxy_pool.rotate() if attempt == 0 else self._proxy_pool.random_port()
-            if not proxy_url:
-                break
-
+        proxy_url = self._proxy_pool.sticky()
+        if proxy_url:
             port = int(proxy_url.rsplit(":", 1)[-1])
-
             async with self._proxy_semaphore:
                 try:
-                    logger.debug("[PROXY] → порт %d (attempt %d)", port, attempt + 1)
-                    # Создаём сессию с прокси на каждый запрос
-                    connector = aiohttp.TCPConnector(ssl=True, limit=1)
-                    session = aiohttp.ClientSession(
-                        connector=connector,
-                        headers=self._build_headers() if headers is None else headers,
-                        cookie_jar=aiohttp.DummyCookieJar(),
+                    logger.debug("[PROXY] → sticky port %d", port)
+                    session = await self.get_session()
+                    return await session.request(
+                        method,
+                        url,
+                        headers=headers,
+                        proxy=proxy_url,
+                        **kwargs,
                     )
-                    try:
-                        resp = await session.request(method, url, **kwargs)
-                        return resp
-                    finally:
-                        # Не закрываем сессию сразу — дадим соединению переиспользоваться
-                        await session.close()
                 except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                    logger.warning("[PROXY] Ошибка на порту %d: %s", port, exc)
+                    logger.warning("[PROXY] Ошибка на sticky port %d: %s", port, exc)
                     self._proxy_pool.mark_failed(port)
-                    continue
 
-        # Все порты прокси упали — переходим на нативный IP
         self._proxy_pool.using_native = True
-        logger.warning("[PROXY] Все прокси порты недоступны, переключаюсь на нативный IP")
+        logger.warning("[PROXY] Sticky proxy недоступен, переключаюсь на нативный IP")
 
         async with self._native_semaphore:
             session = await self.get_session()

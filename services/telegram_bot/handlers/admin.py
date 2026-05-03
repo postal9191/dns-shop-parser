@@ -3,8 +3,10 @@
 Управляет командами /admin, admin callbacks, интервалом и логами.
 """
 import html as _html
+import re
 from typing import TYPE_CHECKING, Optional
 
+from config import config
 from .. import keyboards as kb
 
 if TYPE_CHECKING:
@@ -201,12 +203,53 @@ class AdminHandler:
     # ── Logs ─────────────────────────────────────────────────────────────────
 
     async def _send_logs(self, chat_id: str) -> None:
+        def _redact_log_text(text: str) -> str:
+            redacted = text
+            for secret in (
+                getattr(config, "telegram_token", ""),
+                getattr(config, "proxy_password", ""),
+            ):
+                if secret:
+                    redacted = redacted.replace(secret, "[REDACTED]")
+
+            redacted = re.sub(
+                r"https?://([^:\s/@]+):([^@\s]+)@",
+                r"http://[REDACTED]:[REDACTED]@",
+                redacted,
+            )
+            redacted = re.sub(
+                r"(?i)(/bot)([0-9]{6,}:[A-Za-z0-9_-]{20,})",
+                r"\1[REDACTED]",
+                redacted,
+            )
+            redacted = re.sub(
+                r"(?i)\b([0-9]{6,}:[A-Za-z0-9_-]{20,})\b",
+                "[REDACTED]",
+                redacted,
+            )
+            redacted = re.sub(
+                r"(?im)^(\s*(?:cookie|authorization|x-csrf-token)\s*[:=]\s*).*$",
+                r"\1[REDACTED]",
+                redacted,
+            )
+            redacted = re.sub(
+                r"(?i)(['\"]?(?:cookie|authorization|x-csrf-token)['\"]?\s*:\s*['\"])[^'\"]*(['\"])",
+                r"\1[REDACTED]\2",
+                redacted,
+            )
+            redacted = re.sub(
+                r"(?im)^(\s*(?:TELEGRAM_TOKEN|PROXY_PASSWORD)\s*=\s*).*$",
+                r"\1[REDACTED]",
+                redacted,
+            )
+            return redacted
+
         try:
             log_file = "logs/app.log"
             with open(log_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
             last_lines = lines[-100:] if len(lines) > 100 else lines
-            logs_text = "".join(last_lines)
+            logs_text = _redact_log_text("".join(last_lines))
             logs_text = _html.escape(logs_text)
 
             if len(logs_text) > 4096:

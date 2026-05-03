@@ -133,10 +133,10 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
     # Прокидываем proxy в Node.js для Qrator (если настроен)
     if config.proxy_enabled():
         env["PROXY_HOST"] = config.proxy_host
-        env["PROXY_PORT"] = str(config.proxy_port_start)
+        env["PROXY_PORT"] = str(config.proxy_port)
         env["PROXY_USER"] = config.proxy_user
         env["PROXY_PASSWORD"] = config.proxy_password
-        logger.debug("[QRATOR] Прокси для Node: %s:%s", config.proxy_host, config.proxy_port_start)
+        logger.debug("[QRATOR] Прокси для Node: %s:%s", config.proxy_host, config.proxy_port)
 
     try:
         attempt_label = f"попытка {retry_count + 1}/{max_retries}" if retry_count > 0 else ""
