@@ -6,10 +6,11 @@
 - Структура БД: добавлены таблицы `user_settings` и `user_categories`, которые отсутствовали
 - Зависимость Node.js: в коде используется `playwright-extra`, а не стандартный `playwright`
 - Убран `TELEGRAM_CHAT_ID` из обязательных — notifier рассылает всем подписчикам; значение в коде не активно
+- `PARSE_CONCURRENCY` default: документация указывала `5`, в коде `3`
+- Добавлены все прокси-переменные окружения: `PROXY_HOST`, `PROXY_PORT_START`, `PROXY_PORT_END`, `PROXY_USER`, `PROXY_PASSWORD`, `PROXY_CONCURRENCY`
 
 **Добавлено:**
 - `TELEGRAM_CHAT_ADMIN` — переменная окружения для ID администратора (не была задокументирована)
-- `PARSE_CONCURRENCY` — переменная окружения параллелизма (не была задокументирована)
 - Полное описание Telegram бота: все команды, inline-меню, 4-шаговый мастер отчётов
 - Описание Circuit Breaker: 5 ошибок подряд → экспоненциальный backoff до 60 мин
 - Описание механизма автоматического бэкапа БД
@@ -18,6 +19,8 @@
 - Поведение Chromium-профиля: Windows = постоянный, Linux = временный
 - Ротация логов: 10 MB × 5 файлов
 - Раздел "Поток данных" с реальными вызовами и таймаутами
+- Пример `.env` с настроенным прокси
+- Раздел `bot_only.py` — запуск только Telegram бота
 
 **Удалено:**
 - Секция "История версий" (деградирует быстро, принадлежит CHANGELOG)
@@ -144,11 +147,17 @@ cp .env.example .env
 | `CITY_COOKIE_CURRENT` | —                         | Да             | SHA256-хеш данных города (региональная кука DNS Shop) |
 | `DB_PATH`             | `dns_monitor.db`          | Нет            | Путь к SQLite БД |
 | `PARSE_INTERVAL`      | `3600`                    | Нет            | Интервал между циклами парсинга, секунды |
-| `PARSE_CONCURRENCY`   | `5`                       | Нет            | Число параллельно обрабатываемых категорий |
+| `PARSE_CONCURRENCY`   | `3`                        | Нет            | Число параллельно обрабатываемых категорий |
 | `MAX_RETRIES`         | `4`                       | Нет            | Число попыток при HTTP-ошибке (tenacity) |
 | `RETRY_DELAY`         | `5.0`                     | Нет            | Начальная задержка между попытками, секунды |
 | `LOG_LEVEL`           | `INFO`                    | Нет            | Уровень логирования: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `USE_PLATFORM_UA`     | `false`                   | Нет            | `true` — Python-сессия использует User-Agent текущей ОС |
+| `PROXY_HOST`          | —                         | Нет            | Хост прокси (напр. `pool.proxy.market`) |
+| `PROXY_PORT_START`    | `0`                       | Нет            | Начальный порт прокси (напр. `10000`) |
+| `PROXY_PORT_END`      | `10999`                   | Нет            | Конечный порт диапазона |
+| `PROXY_USER`          | —                         | Нет            | Логин для аутентификации на прокси |
+| `PROXY_PASSWORD`      | —                         | Нет            | Пароль для аутентификации на прокси |
+| `PROXY_CONCURRENCY`  | `10`                      | Нет            | Макс. параллельных запросов через прокси |
 
 ### Минимальный `.env`
 
@@ -161,6 +170,27 @@ CITY_COOKIE_CURRENT=c5f58b981d1ed0bad05ae63f54072ea9dcdf57ac...
 
 PARSE_INTERVAL=3600
 LOG_LEVEL=INFO
+```
+
+### Пример с прокси
+
+```env
+TELEGRAM_TOKEN=1234567890:AAxxxxxx
+TELEGRAM_CHAT_ADMIN=123456789
+
+CITY_COOKIE_PATH=moscow
+CITY_COOKIE_CURRENT=c5f58b981d1ed0bad05ae63f54072ea9dcdf57ac...
+
+PARSE_INTERVAL=3600
+PARSE_CONCURRENCY=5
+
+# Прокси pool.proxy.market:10000–10999
+PROXY_HOST=pool.proxy.market
+PROXY_PORT_START=10000
+PROXY_PORT_END=10999
+PROXY_USER=AvZlDIK3ay
+PROXY_PASSWORD=your_password
+PROXY_CONCURRENCY=100
 ```
 
 ### Поддерживаемые города
@@ -200,6 +230,14 @@ python run.py
 2. **telegram_bot_polling** — бесконечный polling Telegram Bot API
 
 Остановка: `Ctrl+C`
+
+### Только Telegram бот
+
+```bash
+python bot_only.py
+```
+
+Запускает только Telegram polling без парсинга. Удобно когда парсер работает на отдельной машине.
 
 ### Однократный парсинг (для тестирования)
 
@@ -428,6 +466,7 @@ dns-shop-parser/
 ├── .env                      # Локальная конфигурация (не в git)
 ├── .env.example              # Шаблон
 ├── QUICKSTART_LINUX.sh       # Скрипт быстрой установки для Linux
+├── tests/                    # Тесты (pytest)
 │
 ├── parser/
 │   ├── models.py             # Dataclass Category, Product
@@ -561,6 +600,6 @@ MIT
 *Что ещё стоит добавить вручную:*
 - `CITY_COOKIE_CURRENT` для каждого города — значения специфичны для вашего аккаунта/региона и не могут быть указаны в документации
 - Инструкция по получению `CITY_COOKIE_CURRENT` (требует ручного анализа сетевых запросов в браузере)
+- Примеры значений `CITY_COOKIE_CURRENT` или способ их автоматического получения
 - Описание `QUICKSTART_LINUX.sh` — если скрипт актуален, добавьте его содержимое или инструкцию
 - Раздел Docker (если планируется контейнеризация)
-- Примеры значений `CITY_COOKIE_CURRENT` или способ их автоматического получения

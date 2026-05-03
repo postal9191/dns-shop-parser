@@ -36,7 +36,7 @@ class Config:
     proxy_port_end: int = 10999
     proxy_user: str = ""
     proxy_password: str = ""
-    proxy_concurrency: int = 100  # параллельных запросов через прокси
+    proxy_concurrency: int = 10  # параллельных запросов через прокси
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -64,7 +64,7 @@ class Config:
             proxy_port_end=int(os.getenv("PROXY_PORT_END") or "10999"),
             proxy_user=os.getenv("PROXY_USER", "").strip(),
             proxy_password=os.getenv("PROXY_PASSWORD", "").strip(),
-            proxy_concurrency=int(os.getenv("PROXY_CONCURRENCY") or "100"),
+            proxy_concurrency=int(os.getenv("PROXY_CONCURRENCY") or "10"),
         )
 
     def proxy_enabled(self) -> bool:
