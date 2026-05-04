@@ -1,4 +1,5 @@
 import os
+import platform
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -19,6 +20,9 @@ class Config:
     max_retries: int
     retry_delay: float
     log_level: str
+    qrator_init_timeout: float
+    qrator_node_timeout: float
+    qrator_proxy_check_timeout: float
 
     # Параллельная обработка
     parse_concurrency: int = 3
@@ -43,6 +47,8 @@ class Config:
         chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
         admin_id = os.getenv("TELEGRAM_CHAT_ADMIN", "").strip()
 
+        default_qrator_init_timeout = "360" if platform.system().lower() == "linux" else "330"
+
         return cls(
             telegram_token=token,
             telegram_chat_id=chat_id,
@@ -56,6 +62,9 @@ class Config:
             max_retries=int(os.getenv("MAX_RETRIES") or "4"),
             retry_delay=float(os.getenv("RETRY_DELAY") or "5.0"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),  # INFO, DEBUG
+            qrator_init_timeout=float(os.getenv("QRATOR_INIT_TIMEOUT") or default_qrator_init_timeout),
+            qrator_node_timeout=float(os.getenv("QRATOR_NODE_TIMEOUT") or "300"),
+            qrator_proxy_check_timeout=float(os.getenv("QRATOR_PROXY_CHECK_TIMEOUT") or "20"),
             use_platform_ua=os.getenv("USE_PLATFORM_UA", "false").lower() == "true",
             proxy_host=os.getenv("PROXY_HOST", "").strip(),
             proxy_port=int(os.getenv("PROXY_PORT") or "0"),

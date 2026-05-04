@@ -8,9 +8,13 @@ import pytest
 import tempfile
 import shutil
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch, MagicMock
+from unittest.mock import AsyncMock, Mock, patch
 
-from parser.qrator_resolver import resolve_qrator_cookies, cleanup_chromium_profile
+from parser.qrator_resolver import (
+    NodeSolverResult,
+    cleanup_chromium_profile,
+    resolve_qrator_cookies,
+)
 
 
 class TestCleanupChromiumProfile:
@@ -67,12 +71,8 @@ class TestResolveQratorWithRetry:
         with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
             with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('subprocess.run') as mock_run:
-                        mock_run.return_value = MagicMock(
-                            returncode=0,
-                            stdout=cookies_output,
-                            stderr='',
-                        )
+                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
+                        mock_run.return_value = NodeSolverResult(0, cookies_output, '')
 
                         result = await resolve_qrator_cookies()
 
@@ -91,11 +91,11 @@ class TestResolveQratorWithRetry:
         with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
             with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('subprocess.run') as mock_run:
+                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
                         # Первый раз ошибка, второй раз успех
                         mock_run.side_effect = [
-                            MagicMock(returncode=1, stdout='', stderr='403 Forbidden'),
-                            MagicMock(returncode=0, stdout=cookies_output, stderr=''),
+                            NodeSolverResult(1, '', '403 Forbidden'),
+                            NodeSolverResult(0, cookies_output, ''),
                         ]
 
                         with patch('asyncio.sleep', new_callable=AsyncMock):
@@ -112,13 +112,9 @@ class TestResolveQratorWithRetry:
         with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
             with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('subprocess.run') as mock_run:
+                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
                         # Все попытки падают
-                        mock_run.return_value = MagicMock(
-                            returncode=1,
-                            stdout='',
-                            stderr='403 Forbidden',
-                        )
+                        mock_run.return_value = NodeSolverResult(1, '', '403 Forbidden')
 
                         with patch('asyncio.sleep', new_callable=AsyncMock):
                             result = await resolve_qrator_cookies()
@@ -133,12 +129,8 @@ class TestResolveQratorWithRetry:
         with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
             with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('subprocess.run') as mock_run:
-                        mock_run.return_value = MagicMock(
-                            returncode=1,
-                            stdout='',
-                            stderr='error',
-                        )
+                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
+                        mock_run.return_value = NodeSolverResult(1, '', 'error')
 
                         sleep_calls = []
                         async def mock_sleep(duration):

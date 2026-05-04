@@ -370,16 +370,24 @@ class DNSMonitorBrowserless:
         """Парсинг один раз (без цикла) с инициализацией сессии."""
         logger.info("[MAIN] Запуск DNS Monitor")
 
-        from parser.qrator_resolver import check_node_health
+        from parser.qrator_resolver import check_node_health, qrator_preflight
         if not check_node_health():
             logger.error("[MAIN] ❌ Node.js недоступен. Установите Node.js: https://nodejs.org/")
             return
+        if not qrator_preflight():
+            logger.error("[MAIN] Qrator preflight failed. Check Node.js/Playwright/proxy diagnostics above.")
+            return
 
         try:
-            success = await asyncio.wait_for(self.init_session_browserless(), timeout=120.0)
+            success = await asyncio.wait_for(
+                self.init_session_browserless(),
+                timeout=config.qrator_init_timeout,
+            )
         except asyncio.TimeoutError:
-            logger.error("[MAIN] ❌ Таймаут инициализации сессии (120 сек) — Node.js завис")
-            await self.tg.send_admin_alert("❌ Парсер: таймаут инициализации сессии (120 сек) — Node.js завис")
+            logger.error("[MAIN] Qrator init timeout (%.0f sec)", config.qrator_init_timeout)
+            await self.tg.send_admin_alert(
+                f"Parser: Qrator init timeout ({config.qrator_init_timeout:.0f} sec)"
+            )
             return
         if not success:
             logger.error("[MAIN] ❌ Не удалось инициализировать сессию. Выход.")
