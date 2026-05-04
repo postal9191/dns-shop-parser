@@ -79,6 +79,12 @@ def _format_product_line(title: str, url: str, price_str: str, icon: str = "💰
     return line + f"  {icon} {price_str}\n\n"
 
 
+def _title_with_count(title: str, count: int) -> str:
+    if count > 1:
+        return f"{title} ({count} шт.)"
+    return title
+
+
 _BATCH_NEW_PRODUCTS = 10
 _BATCH_PRICE_CHANGES = 15
 _BATCH_DIGEST_NEW = 10
@@ -116,8 +122,7 @@ class TelegramNotifier:
             for prod in batch:
                 title = wrap_text(prod['title'])
                 count = prod.get('count', 1)
-                if count > 1:
-                    title = f"{title} (х{count})"
+                title = _title_with_count(title, count)
 
                 price = prod['price']
                 price_old = prod.get('price_old', 0)
@@ -164,8 +169,7 @@ class TelegramNotifier:
             for prod in grouped_batch:
                 title = wrap_text(prod['title'])
                 count = prod.get('count', 1)
-                if count > 1:
-                    title = f"{title} (х{count})"
+                title = _title_with_count(title, count)
 
                 new_price = prod['new_price']
                 old_price = prod['old_price']
@@ -283,16 +287,20 @@ class TelegramNotifier:
 
         if new_products:
             grouped = group_products(new_products)
-            total = len(grouped)
-            batches = [grouped[i : i + _BATCH_DIGEST_NEW] for i in range(0, total, _BATCH_DIGEST_NEW)]
+            total_raw = len(new_products)
+            total_grouped = len(grouped)
+            batches = [grouped[i : i + _BATCH_DIGEST_NEW] for i in range(0, total_grouped, _BATCH_DIGEST_NEW)]
             for batch_idx, batch in enumerate(batches, 1):
-                header = f"📊 <b>Дайджест DNS — {now}</b>\n\n🆕 <b>Новые товары ({total})</b>"
+                total_text = str(total_raw)
+                if total_grouped != total_raw:
+                    total_text += f", показано {total_grouped}"
+                header = f"📊 <b>Дайджест DNS — {now}</b>\n\n🆕 <b>Новые товары ({total_text})</b>"
                 if len(batches) > 1:
                     header += f" ({batch_idx}/{len(batches)})"
                 header += "\n\n"
                 body = ""
                 for prod in batch:
-                    title = wrap_text(prod["title"])
+                    title = _title_with_count(wrap_text(prod["title"]), prod.get("count", 1))
                     price_str = f"{_fmt_price(prod['price'])} ₽"
                     if prod.get("price_old") and prod["price_old"] > prod["price"]:
                         price_str += f" <s>{_fmt_price(prod['price_old'])}</s>"
@@ -311,7 +319,7 @@ class TelegramNotifier:
                 header += "\n\n"
                 body = ""
                 for prod in batch:
-                    title = wrap_text(prod["title"])
+                    title = _title_with_count(wrap_text(prod["title"]), prod.get("count", 1))
                     new_p = prod["new_price"]
                     old_p = prod["old_price"]
                     pct = round((old_p - new_p) / old_p * 100) if old_p else 0

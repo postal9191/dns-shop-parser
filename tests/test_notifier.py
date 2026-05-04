@@ -157,3 +157,20 @@ class TestTelegramNotifier:
         )
 
         assert result is False
+
+    def test_digest_shows_raw_and_grouped_new_product_counts(self):
+        """Дайджест показывает сырое количество и число строк после группировки."""
+        notifier = TelegramNotifier(bot=None)
+        products = [{"title": f"Товар {i}", "price": 100 + i} for i in range(21)]
+        products.extend([
+            {"title": "Товар 0", "price": 100},
+            {"title": "Товар 1", "price": 101},
+            {"title": "Товар 2", "price": 102},
+        ])
+
+        message = notifier._format_digest(products, [])
+
+        assert "Новые товары (24, показано 21)" in message
+        assert "Товар 0 (2 шт.)" in message
+        assert "Товар 1 (2 шт.)" in message
+        assert "Товар 2 (2 шт.)" in message
