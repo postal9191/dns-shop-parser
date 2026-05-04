@@ -369,7 +369,10 @@ run_service_foreground() {
 start_service() {
     print_header "Запуск приложения (постоянный режим)"
 
-    check_all_dependencies || return 1
+    if [ ! -d "$VENV_DIR" ] || [ ! -d "$PROJECT_DIR/node_modules" ]; then
+        print_warning "Окружение не найдено, запускаю проверку зависимостей..."
+        check_all_dependencies || return 1
+    fi
 
     # Создаём папку для логов
     print_info "Создание папки для логов..."
@@ -461,6 +464,9 @@ parse_env_interval() {
 }
 
 setup_cron_hourly() {
+    print_error "Cron support has been removed from this script. Use run.py/systemd instead."
+    return 1
+
     print_header "Установка Cron (из PARSE_INTERVAL в .env)"
 
     # Читаем интервал из .env
@@ -527,6 +533,9 @@ setup_cron_hourly() {
 }
 
 remove_cron() {
+    print_error "Cron support has been removed from this script. Remove old entries manually with crontab -e if needed."
+    return 1
+
     print_header "Удаление Cron"
 
     if ! crontab -l 2>/dev/null | grep -q "$PROJECT_DIR/parser.py"; then
@@ -550,6 +559,9 @@ remove_cron() {
 }
 
 show_cron_status() {
+    print_error "Cron support has been removed from this script."
+    return 1
+
     print_header "Статус Cron"
 
     if crontab -l 2>/dev/null | grep -q "$PROJECT_DIR/parser.py"; then
@@ -927,7 +939,6 @@ show_menu() {
     echo "  4 - Показать логи (tail -f)"
     echo "  5 - Проверить статус"
     echo "  6 - Управление systemd сервисом"
-    echo "  7 - Управление cron"
     echo "  0 - Выход"
     echo ""
     echo -n "Ваш выбор: "
@@ -966,6 +977,9 @@ kill_parser() {
 }
 
 show_cron_menu() {
+    print_error "Cron support has been removed from this script."
+    return 1
+
     while true; do
         echo ""
         echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
@@ -1037,15 +1051,12 @@ main_loop() {
             6)
                 show_systemd_menu
                 ;;
-            7)
-                show_cron_menu
-                ;;
             0)
                 print_info "До свидания!"
                 exit 0
                 ;;
             *)
-                print_error "Неверный выбор. Пожалуйста, выберите 0-7"
+                print_error "Неверный выбор. Пожалуйста, выберите 0-6"
                 ;;
         esac
     done
