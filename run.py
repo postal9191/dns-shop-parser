@@ -5,6 +5,8 @@
 """
 
 import asyncio
+import hashlib
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -19,6 +21,33 @@ from utils.logger import logger
 
 # Определяем директорию проекта
 PROJECT_DIR = Path(__file__).parent.absolute()
+
+
+def acquire_single_instance_lock():
+    """Не даёт запустить два постоянных run.py для одного проекта."""
+    try:
+        import fcntl
+    except ImportError:
+        return None
+
+    lock_id = hashlib.sha256(str(PROJECT_DIR).encode("utf-8")).hexdigest()[:12]
+    lock_path = Path("/tmp") / f"dns-parser-{lock_id}.lock"
+    lock_file = lock_path.open("a+", encoding="utf-8")
+
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.seek(0)
+        owner = lock_file.read().strip()
+        logger.error("[RUN] Уже запущен другой run.py для этого проекта%s", f": {owner}" if owner else "")
+        lock_file.close()
+        return None
+
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(f"pid={os.getpid()} project={PROJECT_DIR}\n")
+    lock_file.flush()
+    return lock_file
 
 async def _run_subprocess(script: str, log_name: str) -> bool:
     """Запускает Python-скрипт в отдельном процессе асинхронно."""
@@ -203,6 +232,10 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    _single_instance_lock = acquire_single_instance_lock()
+    if _single_instance_lock is None and sys.platform.startswith("linux"):
+        sys.exit(0)
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

@@ -51,6 +51,46 @@ print_info() {
     echo -e "${BLUE}ℹ $1${NC}"
 }
 
+get_project_pids() {
+    local script_name="$1"
+    pgrep -f "$PROJECT_DIR/$script_name" 2>/dev/null || true
+}
+
+is_systemd_active() {
+    [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null
+}
+
+stop_project_processes() {
+    local pids
+    pids="$(get_project_pids "run.py")"
+
+    if [ -n "$pids" ]; then
+        print_info "Остановка локального run.py: $(echo "$pids" | tr '\n' ' ')"
+        kill $pids 2>/dev/null || true
+        sleep 2
+
+        pids="$(get_project_pids "run.py")"
+        if [ -n "$pids" ]; then
+            print_warning "run.py не завершился, отправляю SIGKILL: $(echo "$pids" | tr '\n' ' ')"
+            kill -9 $pids 2>/dev/null || true
+        fi
+    fi
+
+    pids="$(get_project_pids "parser.py")"
+    if [ -n "$pids" ]; then
+        print_info "Остановка дочернего parser.py: $(echo "$pids" | tr '\n' ' ')"
+        kill $pids 2>/dev/null || true
+        sleep 1
+
+        pids="$(get_project_pids "parser.py")"
+        if [ -n "$pids" ]; then
+            kill -9 $pids 2>/dev/null || true
+        fi
+    fi
+
+    rm -f "$PID_FILE"
+}
+
 ################################################################################
 # Проверка и установка зависимостей
 ################################################################################
@@ -369,6 +409,19 @@ run_service_foreground() {
 start_service() {
     print_header "Запуск приложения (постоянный режим)"
 
+    if is_systemd_active; then
+        print_warning "systemd сервис уже запущен. Используй: sudo systemctl status $SERVICE_NAME"
+        return 0
+    fi
+
+    local existing_pids
+    existing_pids="$(get_project_pids "run.py")"
+    if [ -n "$existing_pids" ]; then
+        print_warning "run.py уже запущен: $(echo "$existing_pids" | tr '\n' ' ')"
+        print_info "Останови его перед повторным запуском: ./dns-parser.sh stop"
+        return 0
+    fi
+
     if [ ! -d "$VENV_DIR" ] || [ ! -d "$PROJECT_DIR/node_modules" ]; then
         print_warning "Окружение не найдено, запускаю проверку зависимостей..."
         check_all_dependencies || return 1
@@ -398,6 +451,7 @@ start_service() {
     sleep 1
 
     if kill -0 $PID 2>/dev/null; then
+        echo "$PID" > "$PID_FILE"
         print_success "Парсер запущен в фоне (PID: $PID)"
         print_info "Логи: tail -f $LOG_FILE"
     else
@@ -575,45 +629,53 @@ show_cron_status() {
 }
 
 stop_service() {
-    print_header "Остановка сервиса (systemd)"
+    print_header "Остановка приложения"
 
-    if [ ! -f "$SERVICE_FILE" ]; then
-        print_warning "Сервис не установлен в systemd"
-        return 0
+    if [ -f "$SERVICE_FILE" ]; then
+        print_info "Остановка systemd сервиса..."
+        sudo systemctl stop "$SERVICE_NAME" || true
+        sleep 1
+
+        if ! sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            print_success "systemd сервис остановлен"
+        else
+            print_warning "Не удалось остановить systemd сервис"
+        fi
     fi
 
-    print_info "Остановка сервиса..."
-    sudo systemctl stop "$SERVICE_NAME" || true
-    sleep 1
+    stop_project_processes
 
-    if ! sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-        print_success "Сервис остановлен"
+    if ! is_systemd_active && [ -z "$(get_project_pids "run.py")" ] && [ -z "$(get_project_pids "parser.py")" ]; then
+        print_success "Приложение остановлено"
     else
-        print_warning "Не удалось остановить сервис"
+        print_warning "Остались процессы парсера, проверь: pgrep -af 'run.py|parser.py'"
     fi
 }
 
 restart_service() {
-    print_header "Перезапуск сервиса (systemd)"
+    print_header "Перезапуск приложения"
 
-    if [ ! -f "$SERVICE_FILE" ]; then
-        print_warning "Сервис не установлен в systemd"
-        return 1
+    if [ -f "$SERVICE_FILE" ]; then
+        ensure_systemd_unit_current || return 1
+        check_all_dependencies || return 1
+
+        stop_project_processes
+
+        print_info "Перезапуск systemd сервиса..."
+        sudo systemctl restart "$SERVICE_NAME"
+        sleep 2
+
+        if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+            print_success "systemd сервис перезапущен"
+        else
+            print_error "Не удалось перезапустить systemd сервис"
+            return 1
+        fi
+        return 0
     fi
 
-    ensure_systemd_unit_current || return 1
-    check_all_dependencies || return 1
-
-    print_info "Перезапуск сервиса..."
-    sudo systemctl restart "$SERVICE_NAME"
-    sleep 2
-
-    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
-        print_success "Сервис перезапущен"
-    else
-        print_error "Не удалось перезапустить сервис"
-        return 1
-    fi
+    stop_service
+    start_service
 }
 
 show_logs() {
@@ -738,6 +800,11 @@ enable_systemd() {
 
     ensure_systemd_unit_current || return 1
 
+    if [ -n "$(get_project_pids "run.py")" ]; then
+        print_warning "Перед запуском systemd останавливаю локальный экземпляр из пункта 1"
+        stop_project_processes
+    fi
+
     print_info "Активация сервиса..."
     sudo systemctl enable "$SERVICE_NAME"
     print_success "Сервис активирован"
@@ -803,6 +870,11 @@ systemctl_start() {
     ensure_systemd_unit_current || return 1
     check_all_dependencies || return 1
 
+    if [ -n "$(get_project_pids "run.py")" ]; then
+        print_warning "Перед запуском systemd останавливаю локальный экземпляр из пункта 1"
+        stop_project_processes
+    fi
+
     print_info "Запуск сервиса..."
     sudo systemctl start "$SERVICE_NAME"
 
@@ -846,6 +918,7 @@ systemctl_restart() {
 
     ensure_systemd_unit_current || return 1
     check_all_dependencies || return 1
+    stop_project_processes
 
     print_info "Перезапуск сервиса..."
     sudo systemctl restart "$SERVICE_NAME"
