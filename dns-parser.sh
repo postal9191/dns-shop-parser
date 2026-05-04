@@ -387,8 +387,9 @@ start_service() {
     print_info "Запуск парсера (в фоне)..."
     print_info "Режим: Node.js + Playwright (безбраузерный)"
 
-    # Запускаем parser.py в фоне
-    nohup "$VENV_PYTHON" "$PROJECT_DIR/parser.py" >> "$LOG_FILE" 2>&1 &
+    # Запускаем run.py в фоне: он держит постоянный цикл и Telegram polling.
+    # parser.py - одноразовый subprocess из run.py, после одного прохода он завершает работу.
+    nohup "$VENV_PYTHON" "$PROJECT_DIR/run.py" >> "$LOG_FILE" 2>&1 &
     local PID=$!
 
     sleep 1
@@ -937,18 +938,18 @@ kill_parser() {
 
     local killed=0
 
-    # Ищем процессы парсера
-    if pgrep -f "parser.py" > /dev/null; then
+    # Ищем процессы основного сервиса и одноразового парсера
+    if pgrep -f "run.py|parser.py" > /dev/null; then
         print_info "Найдены процессы парсера, остановка..."
-        pkill -f "parser.py"
+        pkill -f "run.py|parser.py"
         sleep 1
 
-        if ! pgrep -f "parser.py" > /dev/null; then
+        if ! pgrep -f "run.py|parser.py" > /dev/null; then
             print_success "Парсер остановлен"
             killed=1
         else
             print_warning "Принудительная остановка..."
-            pkill -9 -f "parser.py"
+            pkill -9 -f "run.py|parser.py"
             print_success "Парсер остановлен (kill -9)"
             killed=1
         fi
