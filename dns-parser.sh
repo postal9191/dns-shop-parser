@@ -60,9 +60,19 @@ is_systemd_active() {
     [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null
 }
 
+get_systemd_main_pid() {
+    if [ -f "$SERVICE_FILE" ]; then
+        sudo systemctl show "$SERVICE_NAME" -p MainPID --value 2>/dev/null || true
+    fi
+}
+
 stop_project_processes() {
+    local exclude_pid="${1:-}"
     local pids
     pids="$(get_project_pids "run.py")"
+    if [ -n "$exclude_pid" ]; then
+        pids="$(echo "$pids" | grep -vx "$exclude_pid" || true)"
+    fi
 
     if [ -n "$pids" ]; then
         print_info "Остановка локального run.py: $(echo "$pids" | tr '\n' ' ')"
@@ -70,6 +80,9 @@ stop_project_processes() {
         sleep 2
 
         pids="$(get_project_pids "run.py")"
+        if [ -n "$exclude_pid" ]; then
+            pids="$(echo "$pids" | grep -vx "$exclude_pid" || true)"
+        fi
         if [ -n "$pids" ]; then
             print_warning "run.py не завершился, отправляю SIGKILL: $(echo "$pids" | tr '\n' ' ')"
             kill -9 $pids 2>/dev/null || true
@@ -196,8 +209,9 @@ dependencies_changed_since_last_check() {
 }
 
 dependencies_healthy() {
-    check_nodejs > /dev/null || return 1
-    check_python > /dev/null || return 1
+    command -v node > /dev/null 2>&1 || return 1
+    command -v npm > /dev/null 2>&1 || return 1
+    command -v "$PYTHON_CMD" > /dev/null 2>&1 || return 1
     validate_npm_dependencies || return 1
     validate_playwright_browser || return 1
     validate_python_dependencies || return 1
@@ -656,10 +670,19 @@ restart_service() {
     print_header "Перезапуск приложения"
 
     if [ -f "$SERVICE_FILE" ]; then
+        print_info "Найден systemd unit, перезапускаю через systemctl..."
         ensure_systemd_unit_current || return 1
-        check_all_dependencies || return 1
 
-        stop_project_processes
+        local systemd_pid
+        systemd_pid="$(get_systemd_main_pid)"
+        if [ "$systemd_pid" = "0" ]; then
+            systemd_pid=""
+        fi
+
+        stop_project_processes "$systemd_pid"
+
+        print_info "Проверка зависимостей перед стартом..."
+        check_all_dependencies || return 1
 
         print_info "Перезапуск systemd сервиса..."
         sudo systemctl restart "$SERVICE_NAME"
@@ -802,7 +825,7 @@ enable_systemd() {
 
     if [ -n "$(get_project_pids "run.py")" ]; then
         print_warning "Перед запуском systemd останавливаю локальный экземпляр из пункта 1"
-        stop_project_processes
+        stop_project_processes "$(get_systemd_main_pid)"
     fi
 
     print_info "Активация сервиса..."
@@ -872,7 +895,7 @@ systemctl_start() {
 
     if [ -n "$(get_project_pids "run.py")" ]; then
         print_warning "Перед запуском systemd останавливаю локальный экземпляр из пункта 1"
-        stop_project_processes
+        stop_project_processes "$(get_systemd_main_pid)"
     fi
 
     print_info "Запуск сервиса..."
@@ -917,8 +940,8 @@ systemctl_restart() {
     fi
 
     ensure_systemd_unit_current || return 1
+    stop_project_processes "$(get_systemd_main_pid)"
     check_all_dependencies || return 1
-    stop_project_processes
 
     print_info "Перезапуск сервиса..."
     sudo systemctl restart "$SERVICE_NAME"
