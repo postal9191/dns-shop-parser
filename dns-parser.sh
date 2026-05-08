@@ -1032,9 +1032,10 @@ show_menu() {
     echo "  1 - Запустить приложение"
     echo "  2 - Остановить приложение"
     echo "  3 - Перезапустить приложение"
-    echo "  4 - Показать логи (tail -f)"
-    echo "  5 - Проверить статус"
-    echo "  6 - Управление systemd сервисом"
+    echo "  4 - Обновить из Git и перезапустить"
+    echo "  5 - Показать логи (tail -f)"
+    echo "  6 - Проверить статус"
+    echo "  7 - Управление systemd сервисом"
     echo "  0 - Выход"
     echo ""
     echo -n "Ваш выбор: "
@@ -1123,6 +1124,32 @@ show_cron_menu() {
     done
 }
 
+update_and_restart() {
+    print_header "Обновление из Git и перезапуск"
+
+    if ! command -v git > /dev/null 2>&1; then
+        print_error "Git не установлен"
+        return 1
+    fi
+
+    cd "$PROJECT_DIR"
+
+    if [ ! -d "$PROJECT_DIR/.git" ]; then
+        print_error "Директория проекта не является Git-репозиторием"
+        return 1
+    fi
+
+    print_info "Получаю обновления из Git..."
+    if git pull --ff-only; then
+        print_success "Git успешно обновлён"
+        print_info "Перезапускаю парсер с новым кодом..."
+        restart_service
+    else
+        print_error "Git pull завершился с ошибкой. Перезапуск отменён."
+        return 1
+    fi
+}
+
 main_loop() {
     while true; do
         show_menu
@@ -1139,12 +1166,15 @@ main_loop() {
                 restart_service
                 ;;
             4)
-                show_logs
+                update_and_restart
                 ;;
             5)
-                show_status
+                show_logs
                 ;;
             6)
+                show_status
+                ;;
+            7)
                 show_systemd_menu
                 ;;
             0)
@@ -1152,7 +1182,7 @@ main_loop() {
                 exit 0
                 ;;
             *)
-                print_error "Неверный выбор. Пожалуйста, выберите 0-6"
+                print_error "Неверный выбор. Пожалуйста, выберите 0-7"
                 ;;
         esac
     done
