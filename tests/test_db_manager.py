@@ -184,7 +184,7 @@ class TestDBManagerDeleteProducts:
             sample_product.city_slug,
             [sample_product.uuid],
         )
-        db_memory.set_user_categories("user-1", [sample_product.category_id])
+        db_memory.set_user_categories("user-1", [sample_product.category_id], "moscow")
         db_memory.upsert_products([sample_product])
 
         marked = db_memory.delete_all_products_in_category(
@@ -195,7 +195,7 @@ class TestDBManagerDeleteProducts:
         assert marked == 1
         assert db_memory.get_product_count() == 0
         assert db_memory.get_product_count(include_sold=True) == 1
-        assert db_memory.get_user_categories("user-1") == [sample_product.category_id]
+        assert db_memory.get_user_categories("user-1", "moscow") == [sample_product.category_id]
 
         state = db_memory.get_category_state(sample_product.category_id, sample_product.city_slug)
         assert state["is_sold"] is True

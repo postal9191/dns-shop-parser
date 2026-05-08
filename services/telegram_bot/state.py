@@ -47,6 +47,9 @@ class UserState:
         self.report_search_mode: dict[str, tuple[str, int]] = {}
         self.settings_search_mode: dict[str, tuple[str, int]] = {}
         self.user_cat_query: dict[str, str] = {}
+        self.admin_rights_users: dict[str, list[dict]] = {}
+        self.admin_rights_draft: dict[str, dict[str, str]] = {}
+        self.admin_rights_page: dict[str, int] = {}
         self.broadcast_lock = asyncio.Lock()
         self.subscriber_lock = asyncio.Lock()
 
@@ -59,6 +62,9 @@ class UserState:
         self.report_search_mode.pop(user_id, None)
         self.settings_search_mode.pop(user_id, None)
         self.user_cat_query.pop(user_id, None)
+        self.admin_rights_users.pop(user_id, None)
+        self.admin_rights_draft.pop(user_id, None)
+        self.admin_rights_page.pop(user_id, None)
 
 
 # ─── ReportMachine — логика управления состоянием отчёта ──────────────────────

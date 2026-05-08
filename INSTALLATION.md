@@ -40,3 +40,8 @@ python parser.py --city-slug krasnodar
 - `CITY_COOKIE_PATH` и `CITY_COOKIE_CURRENT` больше не используются в `.env`.
 - Набор поддерживаемых городов задается в `data/cities.py`.
 - Если используете proxy, заполните `PROXY_*` переменные.
+## 2026-05-08 Notes
+
+- Category selections are stored per city: `(user_id, city_slug, category_id)`.
+- If a user switches city, category filters are read/written for that city only.
+- Test runs isolate `dns_monitor` logging and should not pollute production `logs/app.log`.

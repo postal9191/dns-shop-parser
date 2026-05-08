@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 class AdminHandler:
     """Обработчик админ-панели и admin callbacks."""
 
+    _PLAN_TYPES = {"free", "pro", "super"}
+
     def __init__(self, bot: "TelegramBot") -> None:
         self._bot = bot
 
@@ -33,6 +35,10 @@ class AdminHandler:
         branches = {
             "admin_notify":   self._on_admin_notify,
             "admin_back":     self._on_admin_back,
+            "admin_rights":   self._on_admin_rights,
+            "admin_rights_cancel": self._on_admin_rights_cancel,
+            "admin_rights_save": self._on_admin_rights_save,
+            "admin_rights_noop": self._on_admin_rights_noop,
             "admin_start":    self._on_admin_start,
             "admin_stop":     self._on_admin_stop,
             "admin_restart":  self._on_admin_restart,
@@ -45,6 +51,16 @@ class AdminHandler:
             if data == prefix:
                 await handler(callback_id, user_id, chat_id, message_id)
                 return
+
+        if data.startswith("admin_rights_page:"):
+            await self._on_admin_rights_page(callback_id, user_id, chat_id, message_id, data)
+            return
+        if data.startswith("admin_rights_pick:"):
+            await self._on_admin_rights_pick(callback_id, user_id, chat_id, message_id, data)
+            return
+        if data.startswith("admin_rights_set:"):
+            await self._on_admin_rights_set(callback_id, user_id, chat_id, message_id, data)
+            return
 
         await self._bot._answer_callback(callback_id, "❓ Неизвестная команда", alert=True)
 
@@ -174,6 +190,203 @@ class AdminHandler:
         await self._bot.send_message(chat_id, f"<b>📊 Статус парсера:</b>\n\n{status}")
 
     # ── Interval input ────────────────────────────────────────────────────────
+
+    def _rights_state(self, admin_id: str) -> tuple[list[dict], dict[str, str], int]:
+        us = self._bot._user_state
+        return (
+            us.admin_rights_users.setdefault(admin_id, []),
+            us.admin_rights_draft.setdefault(admin_id, {}),
+            us.admin_rights_page.get(admin_id, 0),
+        )
+
+    def _sort_rights_users(self, users: list[dict]) -> list[dict]:
+        priority = {"super": 0, "pro": 1, "free": 2}
+        return sorted(
+            users,
+            key=lambda u: (
+                priority.get(u.get("plan_type", "free"), 3),
+                (u.get("username") or "").lower(),
+                str(u.get("user_id")),
+            ),
+        )
+
+    def _find_rights_user(self, admin_id: str, target_user_id: str) -> dict | None:
+        users, _, _ = self._rights_state(admin_id)
+        return next((u for u in users if str(u.get("user_id")) == target_user_id), None)
+
+    async def _refresh_rights_users(self, admin_id: str) -> list[dict]:
+        if not self._bot.db:
+            return []
+        users = await self._bot._db_call(self._bot.db.get_active_users_with_plan_types)
+        users = self._sort_rights_users(users)
+        self._bot._user_state.admin_rights_users[admin_id] = users
+        self._bot._user_state.admin_rights_draft.setdefault(admin_id, {})
+        self._bot._user_state.admin_rights_page.setdefault(admin_id, 0)
+        return users
+
+    def _format_rights_list_text(self, users: list[dict], draft: dict[str, str]) -> str:
+        changed = sum(
+            1 for user in users
+            if draft.get(str(user.get("user_id")), user.get("plan_type", "free")) != user.get("plan_type", "free")
+        )
+        return (
+            "👤 <b>Права пользователей</b>\n\n"
+            "Выберите пользователя, измените plan_type и нажмите <b>Сохранить</b>.\n"
+            f"Активных пользователей: {len(users)}\n"
+            f"Несохранённых изменений: {changed}"
+        )
+
+    def _format_rights_user_text(self, user: dict, selected_plan: str) -> str:
+        username = user.get("username") or "-"
+        if username != "-" and not username.startswith("@"):
+            username = f"@{username}"
+        return (
+            "👤 <b>Права пользователя</b>\n\n"
+            f"UserName: <b>{_html.escape(username)}</b>\n"
+            f"UserId: <code>{_html.escape(str(user.get('user_id')))}</code>\n"
+            f"Текущий plan_type: <b>{_html.escape(str(user.get('plan_type', 'free')))}</b>\n"
+            f"Выбранный plan_type: <b>{_html.escape(selected_plan)}</b>"
+        )
+
+    async def _show_admin_rights_list(
+        self,
+        chat_id: str,
+        message_id: Optional[int],
+        admin_id: str,
+        *,
+        refresh: bool = False,
+    ) -> None:
+        if refresh or admin_id not in self._bot._user_state.admin_rights_users:
+            users = await self._refresh_rights_users(admin_id)
+        else:
+            users, _, _ = self._rights_state(admin_id)
+        _, draft, page = self._rights_state(admin_id)
+        text = self._format_rights_list_text(users, draft)
+        reply_markup = kb._build_admin_rights_users_keyboard(users, page, draft)
+        if message_id:
+            await self._bot.edit_message_text(chat_id, message_id, text, reply_markup=reply_markup)
+        else:
+            await self._bot.send_message(chat_id, text, reply_markup=reply_markup)
+
+    async def _on_admin_rights(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        await self._bot._answer_callback(callback_id, "")
+        await self._show_admin_rights_list(chat_id, message_id, user_id, refresh=True)
+
+    async def _on_admin_rights_noop(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        await self._bot._answer_callback(callback_id, "")
+
+    async def _on_admin_rights_page(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
+    ) -> None:
+        try:
+            page = max(0, int(data.split(":", 1)[1]))
+        except (IndexError, ValueError):
+            await self._bot._answer_callback(callback_id, "Ошибка страницы", alert=True)
+            return
+        self._bot._user_state.admin_rights_page[user_id] = page
+        await self._bot._answer_callback(callback_id, "")
+        await self._show_admin_rights_list(chat_id, message_id, user_id)
+
+    async def _on_admin_rights_pick(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
+    ) -> None:
+        target_user_id = data.split(":", 1)[1]
+        if user_id not in self._bot._user_state.admin_rights_users:
+            await self._refresh_rights_users(user_id)
+        target = self._find_rights_user(user_id, target_user_id)
+        if not target:
+            await self._bot._answer_callback(callback_id, "Пользователь не найден", alert=True)
+            return
+        _, draft, _ = self._rights_state(user_id)
+        selected = draft.get(target_user_id, target.get("plan_type", "free"))
+        has_changes = any(
+            draft.get(str(u.get("user_id")), u.get("plan_type", "free")) != u.get("plan_type", "free")
+            for u in self._bot._user_state.admin_rights_users[user_id]
+        )
+        await self._bot._answer_callback(callback_id, "")
+        await self._bot.edit_message_text(
+            chat_id,
+            message_id,
+            self._format_rights_user_text(target, selected),
+            reply_markup=kb._build_admin_rights_plan_keyboard(target, selected, has_changes),
+        )
+
+    async def _on_admin_rights_set(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
+    ) -> None:
+        try:
+            _, target_user_id, plan_type = data.split(":", 2)
+        except ValueError:
+            await self._bot._answer_callback(callback_id, "Ошибка", alert=True)
+            return
+        if plan_type not in self._PLAN_TYPES:
+            await self._bot._answer_callback(callback_id, "Недопустимый plan_type", alert=True)
+            return
+        if user_id not in self._bot._user_state.admin_rights_users:
+            await self._refresh_rights_users(user_id)
+        target = self._find_rights_user(user_id, target_user_id)
+        if not target:
+            await self._bot._answer_callback(callback_id, "Пользователь не найден", alert=True)
+            return
+        _, draft, _ = self._rights_state(user_id)
+        current = target.get("plan_type", "free")
+        if plan_type == current:
+            draft.pop(target_user_id, None)
+        else:
+            draft[target_user_id] = plan_type
+        has_changes = bool(draft)
+        await self._bot._answer_callback(callback_id, "Изменение в черновике")
+        await self._bot.edit_message_text(
+            chat_id,
+            message_id,
+            self._format_rights_user_text(target, plan_type),
+            reply_markup=kb._build_admin_rights_plan_keyboard(target, plan_type, has_changes),
+        )
+
+    async def _on_admin_rights_cancel(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        self._bot._user_state.admin_rights_draft[user_id] = {}
+        await self._bot._answer_callback(callback_id, "Изменения отменены")
+        await self._show_admin_rights_list(chat_id, message_id, user_id)
+
+    async def _on_admin_rights_save(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        users, draft, _ = self._rights_state(user_id)
+        if not self._bot.db:
+            await self._bot._answer_callback(callback_id, "БД не инициализирована", alert=True)
+            return
+        if not draft:
+            await self._bot._answer_callback(callback_id, "Нет изменений", alert=True)
+            return
+        users_by_id = {str(u.get("user_id")): u for u in users}
+        changes = []
+        for target_user_id, new_plan in list(draft.items()):
+            target = users_by_id.get(target_user_id)
+            if not target:
+                continue
+            old_plan = target.get("plan_type", "free")
+            if old_plan == new_plan:
+                continue
+            self._bot.db.upsert_user_settings(target_user_id, plan_type=new_plan)
+            target["plan_type"] = new_plan
+            username = target.get("username") or "-"
+            changes.append((username, target_user_id, old_plan, new_plan))
+        self._bot._user_state.admin_rights_draft[user_id] = {}
+        self._bot._user_state.admin_rights_users[user_id] = self._sort_rights_users(users)
+        await self._bot._answer_callback(callback_id, "Сохранено")
+        if changes:
+            lines = [
+                f"{_html.escape(name)} id {uid}: {_html.escape(old)} → {_html.escape(new)}"
+                for name, uid, old, new in changes
+            ]
+            await self._bot.send_message(chat_id, "✅ <b>Права обновлены</b>\n\n" + "\n".join(lines))
+        await self._show_admin_rights_list(chat_id, message_id, user_id)
 
     async def _handle_interval_input(self, user_id: str, chat_id: str, text: str) -> None:
         self._bot._user_state.waiting_for_interval.discard(user_id)

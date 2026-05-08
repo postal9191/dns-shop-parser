@@ -539,10 +539,12 @@ class TelegramBot:
         if not self.db:
             return {"inline_keyboard": []}
         state = self._get_report_state(user_id)
+        settings = self.db.get_user_settings(user_id) or {}
+        city_slug = settings.get("city_slug", "")
         all_cats = (
-            self.db.get_sold_known_categories()
+            self.db.get_sold_known_categories(city_slug=city_slug)
             if self._is_sold_products_report(state)
-            else self.db.get_all_known_categories()
+            else self.db.get_all_known_categories(city_slug=city_slug)
         )
         return kb._build_report_cats_keyboard(
             self.db,
@@ -567,8 +569,10 @@ class TelegramBot:
     def _build_categories_keyboard(self, user_id: str, page: int) -> dict:
         if not self.db:
             return {"inline_keyboard": []}
-        all_cats = self.db.get_all_known_categories()
-        user_cats = set(self.db.get_user_categories(user_id))
+        settings = self.db.get_user_settings(user_id) or {}
+        city_slug = settings.get("city_slug", "")
+        all_cats = self.db.get_all_known_categories(city_slug=city_slug)
+        user_cats = set(self.db.get_user_categories(user_id, city_slug))
         return kb._build_categories_keyboard(
             self.db,
             user_id,

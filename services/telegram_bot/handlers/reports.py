@@ -26,6 +26,20 @@ class ReportWizard:
         # shortcuts to bot state for convenience
         self._us: UserState = bot._user_state
 
+    async def _get_user_city_slug(self, user_id: str) -> str:
+        if not self._bot.db:
+            return ""
+        settings = await self._bot._db_call(self._bot.db.get_user_settings, user_id)
+        return (settings or {}).get("city_slug", "")
+
+    async def _load_report_categories(self, user_id: str, state: dict) -> list[dict]:
+        if not self._bot.db:
+            return []
+        city_slug = await self._get_user_city_slug(user_id)
+        if self._rm.is_sold_products_report(state):
+            return await self._bot._db_call(self._bot.db.get_sold_known_categories, city_slug=city_slug)
+        return await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=city_slug)
+
     # ── Public router ─────────────────────────────────────────────────────────
 
     async def handle(
@@ -136,9 +150,7 @@ class ReportWizard:
             return
         if self._rm.is_no_discount_report(state):
             # Skip discount step for new/sold reports
-            cats = await self._bot._db_call(self._bot.db.get_sold_known_categories) \
-                if self._rm.is_sold_products_report(state) \
-                else (await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else [])
+            cats = await self._load_report_categories(user_id, state)
             if not cats:
                 await self._bot._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
                 return
@@ -191,7 +203,7 @@ class ReportWizard:
     async def _on_report_next_2(
         self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
     ) -> None:
-        cats = await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else []
+        cats = await self._load_report_categories(user_id, self._rm.get_state(user_id))
         if not cats:
             await self._bot._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
             return
@@ -220,9 +232,7 @@ class ReportWizard:
         state["cat_query"] = ""
         self._us.report_cat_page[user_id] = 0
         await self._bot._answer_callback(callback_id, "✅ Все категории")
-        cats = await self._bot._db_call(self._bot.db.get_sold_known_categories) \
-            if self._rm.is_sold_products_report(state) \
-            else (await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else [])
+        cats = await self._load_report_categories(user_id, state)
         if message_id:
             await self._bot.edit_message_text(
                 chat_id, message_id,
@@ -246,9 +256,7 @@ class ReportWizard:
         else:
             cats_list.append(cat_id)
         state["cats"] = cats_list
-        cats = await self._bot._db_call(self._bot.db.get_sold_known_categories) \
-            if self._rm.is_sold_products_report(state) \
-            else (await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else [])
+        cats = await self._load_report_categories(user_id, state)
         await self._bot._answer_callback(callback_id, "")
         if message_id:
             await self._bot.edit_message_text(
@@ -276,9 +284,7 @@ class ReportWizard:
             return
         self._us.report_cat_page[user_id] = page
         state = self._rm.get_state(user_id)
-        cats = await self._bot._db_call(self._bot.db.get_sold_known_categories) \
-            if self._rm.is_sold_products_report(state) \
-            else (await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else [])
+        cats = await self._load_report_categories(user_id, state)
         await self._bot._answer_callback(callback_id, "")
         if message_id:
             await self._bot.edit_message_text(
@@ -304,9 +310,7 @@ class ReportWizard:
         state["cat_query"] = ""
         self._us.report_cat_page[user_id] = 0
         self._us.report_search_mode.pop(user_id, None)
-        cats = await self._bot._db_call(self._bot.db.get_sold_known_categories) \
-            if self._rm.is_sold_products_report(state) \
-            else (await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else [])
+        cats = await self._load_report_categories(user_id, state)
         await self._bot._answer_callback(callback_id, "")
         if message_id:
             await self._bot.edit_message_text(
@@ -395,9 +399,7 @@ class ReportWizard:
     ) -> None:
         state = self._rm.get_state(user_id)
         await self._bot._answer_callback(callback_id, "")
-        cats = await self._bot._db_call(self._bot.db.get_sold_known_categories) \
-            if self._rm.is_sold_products_report(state) \
-            else (await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else [])
+        cats = await self._load_report_categories(user_id, state)
         if message_id:
             await self._bot.edit_message_text(
                 chat_id, message_id,
@@ -444,9 +446,7 @@ class ReportWizard:
         state = self._rm.get_state(user_id)
         state["cat_query"] = text.strip()[:utils._MAX_SEARCH_LEN]
         self._us.report_cat_page[user_id] = 0
-        cats = await self._bot._db_call(self._bot.db.get_sold_known_categories) \
-            if self._rm.is_sold_products_report(state) \
-            else (await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else [])
+        cats = await self._load_report_categories(user_id, state)
         await self._bot.edit_message_text(
             orig_chat_id, orig_message_id,
             self._rm.categories_text(state),
@@ -511,9 +511,9 @@ class ReportWizard:
                 limited_categories = list(category_ids)
             else:
                 cats = (
-                    await self._bot._db_call(self._bot.db.get_sold_known_categories)
+                    await self._bot._db_call(self._bot.db.get_sold_known_categories, city_slug=user_city)
                     if is_sold_report
-                    else await self._bot._db_call(self._bot.db.get_all_known_categories)
+                    else await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=user_city)
                 )
                 limited_categories = [cat["id"] for cat in cats]
             today_msk = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()

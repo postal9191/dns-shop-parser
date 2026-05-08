@@ -236,7 +236,7 @@ class TelegramNotifier:
 
             user_id = sub["user_id"]
             user_city = sub["city_slug"]
-            user_cats = set(self.db.get_user_categories(user_id))  # пусто = все
+            user_cats = set(self.db.get_user_categories(user_id, user_city))  # пусто = все
 
             filtered_new: list[dict] = []
             if sub["notify_new"]:

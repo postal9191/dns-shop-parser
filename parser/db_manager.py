@@ -299,23 +299,88 @@ class DBManager:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_categories (
                     user_id TEXT NOT NULL,
+                    city_slug TEXT NOT NULL DEFAULT 'moscow',
                     category_id TEXT NOT NULL,
                     category_name TEXT,
-                    PRIMARY KEY (user_id, category_id)
+                    PRIMARY KEY (user_id, city_slug, category_id)
                 )
             """)
             cursor = conn.execute("PRAGMA table_info(user_categories)")
+            user_cat_info = cursor.fetchall()
+            user_cat_cols = [row[1] for row in user_cat_info]
+            user_cat_pk = [row[1] for row in sorted(user_cat_info, key=lambda row: row[5]) if row[5] > 0]
+            expected_user_cat_pk = ["user_id", "city_slug", "category_id"]
+            if user_cat_cols and (
+                "city_slug" not in user_cat_cols or user_cat_pk != expected_user_cat_pk
+            ):
+                self._backup_db(conn)
+                conn.execute("ALTER TABLE user_categories RENAME TO user_categories_old")
+                conn.execute("""
+                    CREATE TABLE user_categories (
+                        user_id TEXT NOT NULL,
+                        city_slug TEXT NOT NULL DEFAULT 'moscow',
+                        category_id TEXT NOT NULL,
+                        category_name TEXT,
+                        PRIMARY KEY (user_id, city_slug, category_id)
+                    )
+                """)
+                has_city = "city_slug" in user_cat_cols
+                has_name = "category_name" in user_cat_cols
+                if has_city and has_name:
+                    conn.execute("""
+                        INSERT INTO user_categories (user_id, city_slug, category_id, category_name)
+                        SELECT user_id, city_slug, category_id, category_name
+                        FROM user_categories_old
+                    """)
+                elif has_city and not has_name:
+                    conn.execute("""
+                        INSERT INTO user_categories (user_id, city_slug, category_id, category_name)
+                        SELECT uco.user_id, uco.city_slug, uco.category_id, cs.category_name
+                        FROM user_categories_old uco
+                        LEFT JOIN category_state cs
+                          ON cs.category_id = uco.category_id AND cs.city_slug = uco.city_slug
+                    """)
+                elif (not has_city) and has_name:
+                    conn.execute("""
+                        INSERT INTO user_categories (user_id, city_slug, category_id, category_name)
+                        SELECT uco.user_id,
+                               COALESCE(us.city_slug, 'moscow') AS city_slug,
+                               uco.category_id,
+                               uco.category_name
+                        FROM user_categories_old uco
+                        LEFT JOIN user_settings us ON us.user_id = uco.user_id
+                    """)
+                else:
+                    conn.execute("""
+                        INSERT INTO user_categories (user_id, city_slug, category_id, category_name)
+                        SELECT uco.user_id,
+                               COALESCE(us.city_slug, 'moscow') AS city_slug,
+                               uco.category_id,
+                               cs.category_name
+                        FROM user_categories_old uco
+                        LEFT JOIN user_settings us ON us.user_id = uco.user_id
+                        LEFT JOIN category_state cs
+                          ON cs.category_id = uco.category_id
+                         AND cs.city_slug = COALESCE(us.city_slug, 'moscow')
+                    """)
+                conn.execute("DROP TABLE user_categories_old")
+                logger.info("user_categories: migrated to PK (user_id, city_slug, category_id)")
+            cursor = conn.execute("PRAGMA table_info(user_categories)")
             user_cat_cols = [row[1] for row in cursor.fetchall()]
-            if 'category_name' not in user_cat_cols:
+            if "category_name" not in user_cat_cols:
                 self._backup_db(conn)
                 conn.execute("ALTER TABLE user_categories ADD COLUMN category_name TEXT")
                 conn.execute("""
-                    UPDATE user_categories SET category_name = (
-                        SELECT category_name FROM category_state
-                        WHERE category_state.category_id = user_categories.category_id
+                    UPDATE user_categories AS uc SET category_name = (
+                        SELECT category_name FROM category_state cs
+                        WHERE cs.category_id = uc.category_id
+                          AND cs.city_slug = uc.city_slug
                     )
                 """)
                 logger.info("Добавлен столбец category_name в таблицу user_categories")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_categories_user_city ON user_categories(user_id, city_slug)"
+            )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS report_limits (
                     user_id TEXT NOT NULL,
@@ -1073,89 +1138,148 @@ class DBManager:
             for row in rows
         ]
 
-    def set_user_categories(self, user_id: str, category_ids: list[str]) -> None:
+    def get_active_users_with_plan_types(self) -> list[dict]:
+        """Returns active Telegram users for admin plan management."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT ts.user_id,
+                       COALESCE(ts.username, '') AS username,
+                       COALESCE(us.plan_type, 'free') AS plan_type
+                FROM telegram_subscribers ts
+                LEFT JOIN user_settings us ON ts.user_id = us.user_id
+                WHERE ts.is_active = 1
+                ORDER BY
+                    CASE COALESCE(us.plan_type, 'free')
+                        WHEN 'super' THEN 0
+                        WHEN 'pro' THEN 1
+                        WHEN 'free' THEN 2
+                        ELSE 3
+                    END,
+                    LOWER(COALESCE(ts.username, '')),
+                    ts.user_id
+            """)
+            rows = cursor.fetchall()
+        allowed = {"free", "pro", "super"}
+        return [
+            {
+                "user_id": row[0],
+                "username": row[1] or "",
+                "plan_type": row[2] if row[2] in allowed else "free",
+            }
+            for row in rows
+        ]
+
+    def set_user_categories(self, user_id: str, category_ids: list[str], city_slug: str) -> None:
         """Устанавливает выбранные категории (пустой список = все категории)."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM user_categories WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM user_categories WHERE user_id = ? AND city_slug = ?", (user_id, city_slug))
             if category_ids:
                 placeholders = ",".join("?" * len(category_ids))
                 cursor = conn.execute(
                     f"""
                     SELECT category_id, category_name FROM category_state
-                    WHERE is_sold = 0 AND category_id IN ({placeholders})
+                    WHERE is_sold = 0 AND city_slug = ? AND category_id IN ({placeholders})
                     """,
-                    category_ids,
+                    [city_slug] + category_ids,
                 )
                 names = {row[0]: row[1] for row in cursor.fetchall()}
                 conn.executemany(
-                    "INSERT INTO user_categories (user_id, category_id, category_name) VALUES (?, ?, ?)",
-                    [(user_id, cid, names.get(cid)) for cid in category_ids],
+                    "INSERT INTO user_categories (user_id, city_slug, category_id, category_name) VALUES (?, ?, ?, ?)",
+                    [(user_id, city_slug, cid, names.get(cid)) for cid in category_ids],
                 )
             conn.commit()
 
-    def get_user_categories(self, user_id: str) -> list[str]:
+    def get_user_categories(self, user_id: str, city_slug: str) -> list[str]:
         """Получает выбранные категории пользователя (пусто = все)."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT category_id FROM user_categories WHERE user_id = ?", (user_id,)
+                "SELECT category_id FROM user_categories WHERE user_id = ? AND city_slug = ?",
+                (user_id, city_slug),
             )
             return [row[0] for row in cursor.fetchall()]
 
-    def toggle_user_category(self, user_id: str, category_id: str) -> bool:
+    def toggle_user_category(self, user_id: str, category_id: str, city_slug: str) -> bool:
         """Переключает категорию для пользователя. Возвращает True если добавлена, False если удалена."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT 1 FROM user_categories WHERE user_id = ? AND category_id = ?",
-                (user_id, category_id),
+                "SELECT 1 FROM user_categories WHERE user_id = ? AND city_slug = ? AND category_id = ?",
+                (user_id, city_slug, category_id),
             )
             exists = cursor.fetchone() is not None
             if exists:
                 conn.execute(
-                    "DELETE FROM user_categories WHERE user_id = ? AND category_id = ?",
-                    (user_id, category_id),
+                    "DELETE FROM user_categories WHERE user_id = ? AND city_slug = ? AND category_id = ?",
+                    (user_id, city_slug, category_id),
                 )
                 conn.commit()
                 return False
             else:
                 cursor = conn.execute(
-                    "SELECT category_name FROM category_state WHERE category_id = ? AND is_sold = 0",
-                    (category_id,),
+                    """
+                    SELECT category_name FROM category_state
+                    WHERE category_id = ? AND city_slug = ? AND is_sold = 0
+                    """,
+                    (category_id, city_slug),
                 )
                 row = cursor.fetchone()
                 cat_name = row[0] if row else None
                 conn.execute(
-                    "INSERT INTO user_categories (user_id, category_id, category_name) VALUES (?, ?, ?)",
-                    (user_id, category_id, cat_name),
+                    "INSERT INTO user_categories (user_id, city_slug, category_id, category_name) VALUES (?, ?, ?, ?)",
+                    (user_id, city_slug, category_id, cat_name),
                 )
                 conn.commit()
                 return True
 
-    def get_all_known_categories(self) -> list[dict]:
+    def get_all_known_categories(self, city_slug: str | None = None) -> list[dict]:
         """Получает активные категории из category_state (заполняется при парсинге)."""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                SELECT DISTINCT category_id, category_name
-                FROM category_state
-                WHERE is_sold = 0
-                ORDER BY category_name
-                """
-            )
+            if city_slug is None:
+                cursor = conn.execute(
+                    """
+                    SELECT DISTINCT category_id, category_name
+                    FROM category_state
+                    WHERE is_sold = 0
+                    ORDER BY category_name
+                    """
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT DISTINCT category_id, category_name
+                    FROM category_state
+                    WHERE is_sold = 0 AND city_slug = ?
+                    ORDER BY category_name
+                    """,
+                    (city_slug,),
+                )
             return [{"id": row[0], "name": row[1]} for row in cursor.fetchall()]
 
-    def get_sold_known_categories(self) -> list[dict]:
+    def get_sold_known_categories(self, city_slug: str | None = None) -> list[dict]:
         """Получает категории, связанные с историей купленных/исчезнувших товаров."""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                SELECT category_id, category_name FROM category_state
-                WHERE is_sold = 1
-                UNION
-                SELECT category_id, category_name FROM products
-                WHERE is_sold = 1
-                ORDER BY category_name
-                """
-            )
+            if city_slug is None:
+                cursor = conn.execute(
+                    """
+                    SELECT category_id, category_name FROM category_state
+                    WHERE is_sold = 1
+                    UNION
+                    SELECT category_id, category_name FROM products
+                    WHERE is_sold = 1
+                    ORDER BY category_name
+                    """
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT category_id, category_name FROM category_state
+                    WHERE is_sold = 1 AND city_slug = ?
+                    UNION
+                    SELECT category_id, category_name FROM products
+                    WHERE is_sold = 1 AND city_slug = ?
+                    ORDER BY category_name
+                    """,
+                    (city_slug, city_slug),
+                )
             return [{"id": row[0], "name": row[1]} for row in cursor.fetchall()]
 
     def get_active_free_subscribers_with_settings(self) -> list[dict]:

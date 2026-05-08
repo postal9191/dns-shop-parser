@@ -313,6 +313,77 @@ def _build_report_step4_keyboard() -> dict:
 
 # ─── Admin keyboard ────────────────────────────────────────────────────────────
 
+PLAN_TYPES = ("super", "pro", "free")
+ADMIN_RIGHTS_PAGE_SIZE = 10
+
+
+def _build_admin_rights_users_keyboard(
+    users: list[dict],
+    page: int,
+    draft: dict[str, str] | None = None,
+) -> dict:
+    """Admin keyboard with active users and pending plan changes."""
+    draft = draft or {}
+    total_pages = max(1, (len(users) + ADMIN_RIGHTS_PAGE_SIZE - 1) // ADMIN_RIGHTS_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * ADMIN_RIGHTS_PAGE_SIZE
+    rows: list[list[dict]] = []
+
+    for user in users[start:start + ADMIN_RIGHTS_PAGE_SIZE]:
+        uid = str(user.get("user_id"))
+        current = user.get("plan_type", "free")
+        effective = draft.get(uid, current)
+        dirty = "*" if effective != current else ""
+        username = user.get("username") or "-"
+        if username != "-" and not username.startswith("@"):
+            username = f"@{username}"
+        rows.append([{
+            "text": f"{dirty}{username} | {uid} | {effective}",
+            "callback_data": f"admin_rights_pick:{uid}",
+        }])
+
+    if not users:
+        rows.append([{"text": "Пользователей нет", "callback_data": "admin_rights_noop"}])
+
+    nav: list[dict] = []
+    if page > 0:
+        nav.append({"text": "←", "callback_data": f"admin_rights_page:{page - 1}"})
+    nav.append({"text": f"{page + 1}/{total_pages}", "callback_data": "admin_rights_noop"})
+    if page < total_pages - 1:
+        nav.append({"text": "→", "callback_data": f"admin_rights_page:{page + 1}"})
+    rows.append(nav)
+
+    rows.append([
+        {"text": "Сохранить", "callback_data": "admin_rights_save"},
+        {"text": "Отмена", "callback_data": "admin_rights_cancel"},
+    ])
+    rows.append([{"text": "← Назад в админ-панель", "callback_data": "admin_back"}])
+    return {"inline_keyboard": rows}
+
+
+def _build_admin_rights_plan_keyboard(
+    user: dict,
+    selected_plan: str,
+    has_changes: bool,
+) -> dict:
+    """Admin keyboard for one user's plan draft."""
+    rows = []
+    for plan in PLAN_TYPES:
+        mark = "✅ " if selected_plan == plan else ""
+        rows.append([{
+            "text": f"{mark}{plan}",
+            "callback_data": f"admin_rights_set:{user.get('user_id')}:{plan}",
+        }])
+    rows.append([
+        {"text": "Сохранить", "callback_data": "admin_rights_save"},
+        {"text": "К списку", "callback_data": "admin_rights"},
+    ])
+    if has_changes:
+        rows.append([{"text": "Отмена изменений", "callback_data": "admin_rights_cancel"}])
+    rows.append([{"text": "← Назад в админ-панель", "callback_data": "admin_back"}])
+    return {"inline_keyboard": rows}
+
+
 def _build_admin_menu_keyboard() -> dict:
     """Главное меню админ-панели (используется и в /admin, и в admin_back)."""
     return {
@@ -331,6 +402,9 @@ def _build_admin_menu_keyboard() -> dict:
             [
                 {"text": "📊 Статус",       "callback_data": "admin_status"},
                 {"text": "🔔 Уведомления",   "callback_data": "admin_notify"},
+            ],
+            [
+                {"text": "Права пользователей", "callback_data": "admin_rights"},
             ],
             [
                 {"text": "⬅️ Назад в главное меню", "callback_data": "menu_back"},

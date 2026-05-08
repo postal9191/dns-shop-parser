@@ -126,7 +126,7 @@ def _make_bot(db=None) -> TelegramBot:
         return _kb._build_categories_keyboard(
             bot.db, user_id, page,
             bot._user_cat_query.get(user_id, ""),
-            set(bot.db.get_user_categories(user_id)) if bot.db else set(),
+            set(bot.db.get_user_categories(user_id, "moscow")) if bot.db else set(),
             bot.db.get_all_known_categories() if bot.db else [],
         )
 

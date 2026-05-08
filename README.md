@@ -119,3 +119,14 @@ pytest -q
 
 - Не коммитьте `.env`.
 - При изменении логики городов обновляйте `data/cities.py` и документацию одновременно.
+## 2026-05-08: Category City Isolation
+
+- `user_categories` now stores categories by `(user_id, city_slug, category_id)`.
+- Category settings, report filters, and digest filtering use user's current `city_slug`.
+- Category IDs can overlap between cities safely; categories are isolated per city.
+- Empty category selection still means "all categories", but only inside current city.
+
+## 2026-05-08: Test Logging Isolation
+
+- Pytest no longer writes noisy admin callback/start-stop series into `logs/app.log`.
+- Test run logging for `dns_monitor` is isolated in tests (`WARNING` level, file handler detached).

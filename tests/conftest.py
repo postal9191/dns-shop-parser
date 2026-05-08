@@ -1,6 +1,8 @@
 import sqlite3
 import tempfile
 from pathlib import Path
+import logging
+from logging.handlers import RotatingFileHandler
 
 import pytest
 
@@ -49,3 +51,18 @@ def sample_product_no_discount():
         category_name="Мониторы",
         city_slug="moscow",
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_test_logging():
+    """Prevent pytest runs from polluting production logs/app.log."""
+    logger = logging.getLogger("dns_monitor")
+    file_handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+    for h in file_handlers:
+        logger.removeHandler(h)
+    logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        for h in file_handlers:
+            logger.addHandler(h)

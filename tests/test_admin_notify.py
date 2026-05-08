@@ -398,3 +398,102 @@ async def test_callback_admin_back_returns_to_admin_panel():
 
     args, kwargs = bot.edit_message_text.call_args
     assert "Админ-панель" in args[2]
+
+
+def test_admin_menu_includes_user_rights_button():
+    from services.telegram_bot import keyboards as _kb
+
+    keyboard = _kb._build_admin_menu_keyboard()
+    flat = [button for row in keyboard["inline_keyboard"] for button in row]
+    assert any(button["callback_data"] == "admin_rights" for button in flat)
+
+
+def test_admin_rights_keyboard_marks_draft_change():
+    from services.telegram_bot import keyboards as _kb
+
+    keyboard = _kb._build_admin_rights_users_keyboard(
+        [{"user_id": "1", "username": "biba", "plan_type": "free"}],
+        page=0,
+        draft={"1": "pro"},
+    )
+    first_button = keyboard["inline_keyboard"][0][0]
+    assert first_button["callback_data"] == "admin_rights_pick:1"
+    assert first_button["text"].startswith("*@biba")
+    assert first_button["text"].endswith("pro")
+
+
+def test_get_active_users_with_plan_types_filters_and_sorts(db_memory):
+    db_memory.add_telegram_subscriber("free-id", username="free_user")
+    db_memory.add_telegram_subscriber("pro-id", username="pro_user")
+    db_memory.add_telegram_subscriber("super-id", username="super_user")
+    db_memory.add_telegram_subscriber("inactive-id", username="inactive_user")
+    db_memory.remove_telegram_subscriber("inactive-id")
+    db_memory.upsert_user_settings("free-id", plan_type="free")
+    db_memory.upsert_user_settings("pro-id", plan_type="pro")
+    db_memory.upsert_user_settings("super-id", plan_type="super")
+    db_memory.upsert_user_settings("inactive-id", plan_type="super")
+
+    rows = db_memory.get_active_users_with_plan_types()
+
+    assert [row["user_id"] for row in rows] == ["super-id", "pro-id", "free-id"]
+    assert rows[0]["username"] == "super_user"
+    assert rows[0]["plan_type"] == "super"
+
+
+@pytest.mark.asyncio
+async def test_admin_rights_set_only_updates_draft():
+    db = MagicMock()
+    db.get_active_users_with_plan_types.return_value = [
+        {"user_id": "564654", "username": "biba", "plan_type": "free"},
+    ]
+    bot = _make_bot(db=db, admin_id="999")
+    bot._answer_callback = AsyncMock()
+    bot.edit_message_text = AsyncMock(return_value=True)
+    bot.send_message = AsyncMock(return_value="ok")
+
+    await bot._handle_callback_query({
+        "id": "q1",
+        "from": {"id": 999},
+        "message": {"chat": {"id": 111}, "message_id": 7},
+        "data": "admin_rights",
+    })
+    await bot._handle_callback_query({
+        "id": "q2",
+        "from": {"id": 999},
+        "message": {"chat": {"id": 111}, "message_id": 7},
+        "data": "admin_rights_set:564654:pro",
+    })
+
+    db.upsert_user_settings.assert_not_called()
+    assert bot._user_state.admin_rights_draft["999"] == {"564654": "pro"}
+
+
+@pytest.mark.asyncio
+async def test_admin_rights_save_updates_db_and_reports():
+    db = MagicMock()
+    db.get_active_users_with_plan_types.return_value = [
+        {"user_id": "564654", "username": "biba", "plan_type": "free"},
+    ]
+    bot = _make_bot(db=db, admin_id="999")
+    bot._answer_callback = AsyncMock()
+    bot.edit_message_text = AsyncMock(return_value=True)
+    bot.send_message = AsyncMock(return_value="ok")
+    bot._user_state.admin_rights_users["999"] = [
+        {"user_id": "564654", "username": "biba", "plan_type": "free"},
+    ]
+    bot._user_state.admin_rights_draft["999"] = {"564654": "pro"}
+
+    await bot._handle_callback_query({
+        "id": "q1",
+        "from": {"id": 999},
+        "message": {"chat": {"id": 111}, "message_id": 7},
+        "data": "admin_rights_save",
+    })
+
+    db.upsert_user_settings.assert_called_once_with("564654", plan_type="pro")
+    report_text = bot.send_message.call_args.args[1]
+    assert "biba" in report_text
+    assert "564654" in report_text
+    assert "free" in report_text
+    assert "pro" in report_text
+    assert bot._user_state.admin_rights_draft["999"] == {}

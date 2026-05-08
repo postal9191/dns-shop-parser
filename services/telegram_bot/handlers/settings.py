@@ -24,6 +24,12 @@ class SettingsHandler:
         self._rw = report_wizard
         self._us: UserState = bot._user_state
 
+    def _get_user_city_slug(self, user_id: str) -> str:
+        if not self._bot.db:
+            return ""
+        s = self._bot.db.get_user_settings(user_id) or {}
+        return s.get("city_slug", "")
+
     # ── Public router ─────────────────────────────────────────────────────────
 
     async def handle_command(self, user_id: str, chat_id: str, command: str) -> None:
@@ -113,7 +119,8 @@ class SettingsHandler:
         if not self._bot.db:
             await self._bot.send_message(chat_id, "❌ БД не инициализирована")
             return
-        cats = self._bot.db.get_all_known_categories()
+        city_slug = self._get_user_city_slug(user_id)
+        cats = self._bot.db.get_all_known_categories(city_slug=city_slug)
         if not cats:
             await self._bot.send_message(
                 chat_id,
@@ -121,7 +128,7 @@ class SettingsHandler:
             )
             return
         page = self._us.user_cat_page.get(user_id, 0)
-        user_cats = set(self._bot.db.get_user_categories(user_id))
+        user_cats = set(self._bot.db.get_user_categories(user_id, city_slug))
         await self._bot.send_message(
             chat_id,
             "📂 <b>Выберите категории</b> (пусто = все):",
@@ -139,7 +146,8 @@ class SettingsHandler:
             return
         self._bot.db.upsert_user_settings(user_id)
         s = self._bot.db.get_user_settings(user_id)
-        cats = self._bot.db.get_user_categories(user_id)
+        city_slug = s.get("city_slug", "")
+        cats = self._bot.db.get_user_categories(user_id, city_slug)
         text = utils.format_user_status_text(s, cats, SLUG_TO_CITY)
         await self._bot.send_message(
             chat_id,
@@ -204,14 +212,15 @@ class SettingsHandler:
     async def _on_menu_categories_cmd(
         self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
     ) -> None:
-        cats = await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else []
+        city_slug = self._get_user_city_slug(user_id)
+        cats = await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=city_slug) if self._bot.db else []
         if not cats:
             await self._bot._answer_callback(callback_id, "📭 Категории ещё не загружены", alert=True)
             return
         await self._bot._answer_callback(callback_id, "")
         self._us.user_cat_page[user_id] = 0
         if message_id:
-            user_cats = set(self._bot.db.get_user_categories(user_id)) if self._bot.db else set()
+            user_cats = set(self._bot.db.get_user_categories(user_id, city_slug)) if self._bot.db else set()
             await self._bot.edit_message_text(
                 chat_id, message_id,
                 "📂 <b>Выберите категории</b> (пусто = все):",
@@ -228,7 +237,8 @@ class SettingsHandler:
     ) -> None:
         await self._bot._answer_callback(callback_id, "")
         s = self._bot.db.get_user_settings(user_id) if self._bot.db else {}
-        cats = self._bot.db.get_user_categories(user_id) if self._bot.db else []
+        city_slug = s.get("city_slug", "")
+        cats = self._bot.db.get_user_categories(user_id, city_slug) if self._bot.db else []
         text = utils.format_user_status_text(s, cats, SLUG_TO_CITY)
         back_kb = {"inline_keyboard": [[{"text": "← Главное меню", "callback_data": "menu_back"}]]}
         if message_id:
@@ -276,8 +286,9 @@ class SettingsHandler:
         self._us.user_cat_page[user_id] = 0
         await self._bot._answer_callback(callback_id, "")
         if message_id:
-            cats = await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else []
-            user_cats = set(self._bot.db.get_user_categories(user_id)) if self._bot.db else set()
+            city_slug = self._get_user_city_slug(user_id)
+            cats = await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=city_slug) if self._bot.db else []
+            user_cats = set(self._bot.db.get_user_categories(user_id, city_slug)) if self._bot.db else set()
             await self._bot.edit_message_text(
                 chat_id, message_id,
                 "📂 <b>Выберите категории</b> (пусто = все):",
@@ -292,12 +303,13 @@ class SettingsHandler:
     async def _on_cat_all(
         self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
     ) -> None:
-        self._bot.db.set_user_categories(user_id, []) if self._bot.db else None
+        city_slug = self._get_user_city_slug(user_id)
+        self._bot.db.set_user_categories(user_id, [], city_slug) if self._bot.db else None
         self._us.user_cat_query[user_id] = ""
         self._us.user_cat_page[user_id] = 0
         await self._bot._answer_callback(callback_id, "✅ Выбраны все категории")
         if message_id:
-            cats = await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else []
+            cats = await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=city_slug) if self._bot.db else []
             await self._bot.edit_message_text(
                 chat_id, message_id,
                 "📂 <b>Выберите категории</b> (пусто = все):",
@@ -314,18 +326,20 @@ class SettingsHandler:
     ) -> None:
         cat_id = data[11:]
         if self._bot.db:
-            known_ids = {c["id"] for c in self._bot.db.get_all_known_categories()}
+            city_slug = self._get_user_city_slug(user_id)
+            known_ids = {c["id"] for c in self._bot.db.get_all_known_categories(city_slug=city_slug)}
             if cat_id not in known_ids:
                 await self._bot._answer_callback(callback_id, "❌ Категория не найдена", alert=True)
                 return
-            added = self._bot.db.toggle_user_category(user_id, cat_id)
+            added = self._bot.db.toggle_user_category(user_id, cat_id, city_slug)
         else:
             added = False
         await self._bot._answer_callback(callback_id, "✅ Добавлено" if added else "❌ Убрано")
         if message_id:
             page = self._us.user_cat_page.get(user_id, 0)
-            cats = await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else []
-            user_cats = set(self._bot.db.get_user_categories(user_id)) if self._bot.db else set()
+            city_slug = self._get_user_city_slug(user_id)
+            cats = await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=city_slug) if self._bot.db else []
+            user_cats = set(self._bot.db.get_user_categories(user_id, city_slug)) if self._bot.db else set()
             await self._bot.edit_message_text(
                 chat_id, message_id,
                 "📂 <b>Выберите категории</b> (пусто = все):",
@@ -352,8 +366,9 @@ class SettingsHandler:
         self._us.user_cat_page[user_id] = page
         await self._bot._answer_callback(callback_id, "")
         if message_id:
-            cats = await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else []
-            user_cats = set(self._bot.db.get_user_categories(user_id)) if self._bot.db else set()
+            city_slug = self._get_user_city_slug(user_id)
+            cats = await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=city_slug) if self._bot.db else []
+            user_cats = set(self._bot.db.get_user_categories(user_id, city_slug)) if self._bot.db else set()
             await self._bot.edit_message_text(
                 chat_id, message_id,
                 "📂 <b>Выберите категории</b> (пусто = все):",
@@ -421,8 +436,9 @@ class SettingsHandler:
         orig_chat_id, orig_message_id = self._us.settings_search_mode.pop(user_id)
         self._us.user_cat_query[user_id] = text.strip()[:utils._MAX_SEARCH_LEN]
         self._us.user_cat_page[user_id] = 0
-        cats = await self._bot._db_call(self._bot.db.get_all_known_categories) if self._bot.db else []
-        user_cats = set(self._bot.db.get_user_categories(user_id)) if self._bot.db else set()
+        city_slug = self._get_user_city_slug(user_id)
+        cats = await self._bot._db_call(self._bot.db.get_all_known_categories, city_slug=city_slug) if self._bot.db else []
+        user_cats = set(self._bot.db.get_user_categories(user_id, city_slug)) if self._bot.db else set()
         await self._bot.edit_message_text(
             orig_chat_id, orig_message_id,
             "📂 <b>Выберите категории</b> (пусто = все):",
