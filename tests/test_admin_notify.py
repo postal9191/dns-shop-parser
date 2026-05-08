@@ -75,6 +75,7 @@ class TestAdminAlerts:
         await notifier.send_admin_parse_finish(
             new_cnt=5, updated_cnt=100, price_changed=2,
             total_db=500, prev_cnt=510, delta=-10,
+            city_name="",
         )
         args = mock_bot.send_message.call_args[0]
         assert "📋" in args[1]
@@ -93,6 +94,32 @@ class TestAdminAlerts:
             total_db=20, prev_cnt=15, delta=5,
         )
         assert "(+5)" in mock_bot.send_message.call_args[0][1]
+
+    @pytest.mark.asyncio
+    async def test_send_admin_parse_finish_with_city_name(self):
+        """city_name добавляется в шапку через тире."""
+        notifier, mock_bot, _ = self._make_notifier(notify_parse_finish=True)
+        await notifier.send_admin_parse_finish(
+            new_cnt=10, updated_cnt=100, price_changed=5,
+            total_db=500, prev_cnt=490, delta=10,
+            city_name="Москва",
+        )
+        text = mock_bot.send_message.call_args[0][1]
+        assert "Парсинг завершён — Москва" in text
+        assert "🆕 Новых: 10" in text
+
+    @pytest.mark.asyncio
+    async def test_send_admin_parse_finish_without_city_name_backward_compat(self):
+        """Без city_name шапка как раньше (backward compatibility)."""
+        notifier, mock_bot, _ = self._make_notifier(notify_parse_finish=True)
+        await notifier.send_admin_parse_finish(
+            new_cnt=3, updated_cnt=50, price_changed=1,
+            total_db=200, prev_cnt=197, delta=3,
+            city_name="",
+        )
+        text = mock_bot.send_message.call_args[0][1]
+        assert "Парсинг завершён" in text
+        assert "Москва" not in text
 
     @pytest.mark.asyncio
     async def test_admin_settings_cached(self):
@@ -497,3 +524,99 @@ async def test_admin_rights_save_updates_db_and_reports():
     assert "free" in report_text
     assert "pro" in report_text
     assert bot._user_state.admin_rights_draft["999"] == {}
+
+
+# ─── TelegramBot: уведомление админу о новом пользователе ───────────────────────
+
+@pytest.mark.asyncio
+async def test_new_user_registration_notifies_admin():
+    """При /start от нового пользователя админу отправляется уведомление с данными."""
+    db = MagicMock()
+    bot = _make_bot(db=db, admin_id="999")
+    bot.send_message = AsyncMock(return_value="ok")
+    bot._add_subscriber = AsyncMock(return_value=True)
+    bot.db.upsert_user_settings = MagicMock()
+
+    update = {
+        "message": {
+            "message_id": 1,
+            "chat": {"id": 111},
+            "text": "/start",
+            "from": {
+                "id": 111,
+                "first_name": "Иван",
+                "last_name": "Петров",
+                "username": "ivan_p",
+                "language_code": "ru",
+            },
+        }
+    }
+
+    await bot.handle_update(update)
+
+    # Отправляются: 1) подтверждение подписки, 2) уведомление админу, 3) меню
+    calls = bot.send_message.call_args_list
+    assert len(calls) == 3
+
+    # Найти уведомление админу (chat_id == "999")
+    admin_calls = [c for c in calls if c[0][0] == "999"]
+    assert len(admin_calls) == 1
+    admin_text = admin_calls[0][0][1]
+    assert "Новый пользователь" in admin_text
+    assert "Иван" in admin_text
+    assert "Петров" in admin_text
+    assert "ivan_p" in admin_text
+    assert "111" in admin_text  # TG ID
+    assert "ru" in admin_text
+
+
+@pytest.mark.asyncio
+async def test_new_user_no_admin_notify_if_no_admin_id():
+    """Если admin_id не установлен — уведомление не отправляется (no crash)."""
+    db = MagicMock()
+    bot = _make_bot(db=db, admin_id=None)
+    bot.send_message = AsyncMock(return_value="ok")
+    bot._add_subscriber = AsyncMock(return_value=True)
+    bot.db.upsert_user_settings = MagicMock()
+
+    update = {
+        "message": {
+            "message_id": 1,
+            "chat": {"id": 111},
+            "text": "/start",
+            "from": {"id": 111, "first_name": "Test", "username": "test"},
+        }
+    }
+
+    await bot.handle_update(update)
+
+    # Подтверждение + меню. Нет уведомления админу (admin_id=None)
+    assert bot.send_message.call_count == 2
+    admin_calls = [c for c in bot.send_message.call_args_list if c[0][0] is None or c[0][0] == "None"]
+    assert len(admin_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_existing_user_no_duplicate_admin_notify():
+    """Повторный /start от существующего пользователя НЕ шлёт уведомление админу."""
+    db = MagicMock()
+    bot = _make_bot(db=db, admin_id="999")
+    bot.subscribed_users = {"111"}  # уже подписан
+    bot.send_message = AsyncMock(return_value="ok")
+
+    update = {
+        "message": {
+            "message_id": 1,
+            "chat": {"id": 111},
+            "text": "/start",
+            "from": {"id": 111, "first_name": "Existing", "username": "existing"},
+        }
+    }
+
+    await bot.handle_update(update)
+
+    # "Вы уже подписаны" + меню. Нет уведомления админу
+    assert bot.send_message.call_count == 2
+    assert any("уже подписаны" in c[0][1] for c in bot.send_message.call_args_list)
+    admin_calls = [c for c in bot.send_message.call_args_list if c[0][0] == "999"]
+    assert len(admin_calls) == 0

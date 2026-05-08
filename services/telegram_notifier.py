@@ -398,11 +398,13 @@ class TelegramNotifier:
         total_db: int,
         prev_cnt: int,
         delta: int,
+        city_name: str = "",
     ) -> None:
         """Отправляет админу сводку о завершённом цикле парсинга."""
+        city_header = f" — {city_name}" if city_name else ""
         delta_str = f"(+{delta})" if delta > 0 else f"({delta})" if delta < 0 else "(0)"
         text = (
-            f"📋 <b>Парсинг завершён</b>\n"
+            f"📋 <b>Парсинг завершён{city_header}</b>\n"
             f"🆕 Новых: {new_cnt}\n"
             f"🔄 Обновлено: {updated_cnt}\n"
             f"💰 Цены изменились: {price_changed}\n"

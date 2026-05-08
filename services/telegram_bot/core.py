@@ -380,6 +380,22 @@ class TelegramBot:
                     if self.db:
                         self.db.upsert_user_settings(user_id)
                     await self.send_message(chat_id, "✅ Подписка включена! Вы будете получать уведомления о новых товарах!")
+
+                    # Уведомление админу о новом пользователе
+                    if self.admin_id:
+                        user_info = message.get("from", {})
+                        first = user_info.get("first_name", "—")
+                        last = user_info.get("last_name", "—")
+                        username = user_info.get("username", "—")
+                        lang = user_info.get("language_code", "—")
+                        admin_text = (
+                            f"🆕 <b>Новый пользователь</b>\n"
+                            f"Имя: {first} {last}\n"
+                            f"Username: @{username}\n"
+                            f"TG ID: <code>{user_id}</code>\n"
+                            f"Язык: {lang}"
+                        )
+                        await self.send_message(self.admin_id, admin_text)
                 await self.send_message(
                     chat_id, "Выберите действие:",
                     reply_markup=self._build_main_menu_keyboard(user_id, self.admin_id),

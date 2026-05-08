@@ -15,7 +15,7 @@ import hashlib
 import json
 
 from config import config
-from data.cities import DEFAULT_CITY_SLUG
+from data.cities import DEFAULT_CITY_SLUG, SLUG_TO_CITY
 from parser.db_manager import DBManager
 from parser.simple_dns_parser import SimpleDNSParser
 from parser.session_manager import SessionManager
@@ -347,6 +347,7 @@ class DNSMonitorBrowserless:
             )
 
             # Уведомление админу о завершении цикла
+            city_name = SLUG_TO_CITY.get(self.city_slug, self.city_slug)
             await self.tg.send_admin_parse_finish(
                 new_cnt=total_new_products,
                 updated_cnt=total_updated,
@@ -354,6 +355,7 @@ class DNSMonitorBrowserless:
                 total_db=total_in_db,
                 prev_cnt=total_before,
                 delta=delta,
+                city_name=city_name,
             )
 
             # Если есть расхождение - логируем дополнительную информацию
