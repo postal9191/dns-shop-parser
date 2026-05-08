@@ -411,3 +411,41 @@ class TestFullMigrationFromLegacy:
         db2.close()
 
         assert count == 2  # p1 (из seed) + p2 (добавленный)
+
+
+class TestReportLimitsMigration:
+    def test_report_limits_migrates_to_include_report_type(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("""
+                CREATE TABLE report_limits (
+                    user_id TEXT NOT NULL,
+                    category_id TEXT NOT NULL,
+                    date_msk TEXT NOT NULL,
+                    used_count INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, category_id, date_msk)
+                )
+            """)
+            conn.execute(
+                """
+                INSERT INTO report_limits
+                    (user_id, category_id, date_msk, used_count, created_at, updated_at)
+                VALUES ('u1', 'cat-1', '2026-05-08', 1, '2026-05-08T10:00:00+03:00', '2026-05-08T10:00:00+03:00')
+                """
+            )
+            conn.commit()
+
+        DBManager(db_path).close()
+
+        with sqlite3.connect(db_path) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(report_limits)").fetchall()}
+            row = conn.execute(
+                """
+                SELECT user_id, category_id, report_type, date_msk
+                FROM report_limits
+                """
+            ).fetchone()
+        assert "report_type" in cols
+        assert row == ("u1", "cat-1", "discounts", "2026-05-08")

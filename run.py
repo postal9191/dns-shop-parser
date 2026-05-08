@@ -7,6 +7,7 @@
 import asyncio
 import hashlib
 import os
+import random
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,10 @@ from pathlib import Path
 
 from config import config
 from parser.db_manager import DBManager
+from data.cities import CITIES
+from services.daily_scheduler import DailyScheduler
 from services.telegram_bot import init_telegram_bot
+from services.telegram_notifier import TelegramNotifier
 from services.admin_panel import ParserController
 from utils.logger import logger
 
@@ -49,15 +53,16 @@ def acquire_single_instance_lock():
     lock_file.flush()
     return lock_file
 
-async def _run_subprocess(script: str, log_name: str) -> bool:
+async def _run_subprocess(script: str, log_name: str, args: list[str] | None = None) -> bool:
     """Запускает Python-скрипт в отдельном процессе асинхронно."""
     logger.info("[RUN] Запускаю: %s", log_name)
     loop = asyncio.get_running_loop()
+    command = [sys.executable, str(PROJECT_DIR / script)] + ([] if args is None else args)
     try:
         result = await loop.run_in_executor(
             None,
             lambda: subprocess.run(
-                [sys.executable, str(PROJECT_DIR / script)],
+                command,
                 cwd=str(PROJECT_DIR),
                 check=False,
                 timeout=600,
@@ -78,12 +83,51 @@ async def _run_subprocess(script: str, log_name: str) -> bool:
 
 
 _MSK = ZoneInfo("Europe/Moscow")
+NIGHT_START_HOUR = 22
+NIGHT_END_HOUR = 5
+NIGHT_END_MINUTE = 30
+DAY_CITY_SLUG = "krasnodar"
+NIGHT_CITY_SLUGS = [slug for slug in CITIES.values() if slug != DAY_CITY_SLUG]
+ESTIMATED_CITY_PARSE_SECONDS = int(os.getenv("CITY_PARSE_BUDGET_SECONDS", "1800"))
+NIGHT_CITY_EVENT = "night_city_parse"
+NIGHT_LOOP_POLL_SECONDS = 60
 
 
 def is_night_time() -> bool:
     """Проверяет если сейчас ночное время (22:00-6:00 МСК)."""
-    hour = datetime.now(_MSK).hour
-    return hour >= 22 or hour < 6
+    now = datetime.now(_MSK)
+    return now.hour >= NIGHT_START_HOUR or (
+        now.hour < NIGHT_END_HOUR
+        or (now.hour == NIGHT_END_HOUR and now.minute < NIGHT_END_MINUTE)
+    )
+
+
+def night_window_end(now: datetime | None = None) -> datetime:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    end = now.replace(hour=NIGHT_END_HOUR, minute=NIGHT_END_MINUTE, second=0, microsecond=0)
+    if now.hour >= NIGHT_START_HOUR:
+        end += timedelta(days=1)
+    return end
+
+
+def night_schedule_date(now: datetime | None = None) -> datetime.date:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    if now.hour < NIGHT_END_HOUR or (now.hour == NIGHT_END_HOUR and now.minute < NIGHT_END_MINUTE):
+        return (now - timedelta(days=1)).date()
+    return now.date()
+
+
+def night_window_bounds_for_date(schedule_date) -> tuple[datetime, datetime]:
+    start = datetime.combine(schedule_date, datetime.min.time(), tzinfo=_MSK).replace(
+        hour=NIGHT_START_HOUR, minute=0, second=0, microsecond=0
+    )
+    end = start + timedelta(hours=7, minutes=30)
+    return start, end
+
+
+def can_start_city_parse(now: datetime | None = None, estimated_seconds: int = ESTIMATED_CITY_PARSE_SECONDS) -> bool:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    return (night_window_end(now) - now).total_seconds() >= estimated_seconds
 
 
 def calculate_next_sync_sleep(interval_sec: int) -> int:
@@ -104,9 +148,67 @@ def calculate_next_sync_sleep(interval_sec: int) -> int:
     return interval_sec - remainder
 
 
-async def run_parser() -> bool:
+async def run_parser(city_slug: str | None = None) -> bool:
     """Запускает parser в отдельном процессе асинхронно."""
-    return await _run_subprocess("parser.py", "Парсинг товаров")
+    args = ["--city-slug", city_slug] if city_slug else None
+    label = f"Парсинг товаров ({city_slug})" if city_slug else "Парсинг товаров"
+    return await _run_subprocess("parser.py", label, args=args)
+
+
+def ensure_night_city_schedule(db: DBManager, now: datetime | None = None) -> list[dict]:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    schedule_date = night_schedule_date(now)
+    date_msk = schedule_date.isoformat()
+    existing = db.get_scheduled_events(NIGHT_CITY_EVENT, date_msk)
+    if existing:
+        return existing
+
+    start, end = night_window_bounds_for_date(schedule_date)
+    slots = max(1, int((end - start).total_seconds()) // max(1, len(NIGHT_CITY_SLUGS)))
+    city_slugs = list(NIGHT_CITY_SLUGS)
+    random.shuffle(city_slugs)
+    for index, city_slug in enumerate(city_slugs):
+        slot_start = start + timedelta(seconds=index * slots)
+        slot_end = min(end, slot_start + timedelta(seconds=slots))
+        span_seconds = max(1, int((slot_end - slot_start).total_seconds()))
+        run_at = slot_start + timedelta(seconds=random.randrange(span_seconds))
+        db.ensure_scheduled_event(
+            NIGHT_CITY_EVENT,
+            date_msk,
+            subject_id=city_slug,
+            run_at_utc=run_at.astimezone(timezone.utc).isoformat(),
+        )
+    return db.get_scheduled_events(NIGHT_CITY_EVENT, date_msk)
+
+
+def get_due_night_city_event(db: DBManager, now: datetime | None = None) -> dict | None:
+    now = now or datetime.now(timezone.utc)
+    now_msk = now.astimezone(_MSK)
+    events = ensure_night_city_schedule(db, now_msk)
+    for event in events:
+        if event["status"] != "pending":
+            continue
+        run_at_utc = event.get("run_at_utc")
+        if run_at_utc is None:
+            continue
+        run_at = datetime.fromisoformat(run_at_utc)
+        if run_at <= now:
+            return event
+    return None
+
+
+def skip_missed_night_city_events(db: DBManager, now: datetime | None = None) -> list[str]:
+    now = now or datetime.now(timezone.utc)
+    now_msk = now.astimezone(_MSK)
+    skipped: list[str] = []
+    for event in ensure_night_city_schedule(db, now_msk):
+        if event["status"] != "pending" or not event.get("run_at_utc"):
+            continue
+        run_at = datetime.fromisoformat(event["run_at_utc"])
+        if run_at < now:
+            db.mark_scheduled_event_skipped(event["event_key"], "missed during downtime")
+            skipped.append(str(event["subject_id"]))
+    return skipped
 
 
 async def telegram_bot_polling(telegram_bot) -> None:
@@ -114,7 +216,7 @@ async def telegram_bot_polling(telegram_bot) -> None:
     await telegram_bot.polling_loop()
 
 
-async def main_cycle(parser_controller: ParserController, telegram_bot=None) -> None:
+async def main_cycle(parser_controller: ParserController, db: DBManager, telegram_bot=None) -> None:
     """Главный цикл: парсинг товаров с поддержкой управления админом."""
     logger.info("="*70)
     logger.info("[RUN] Запущен автоматический парсер DNS Shop")
@@ -145,7 +247,48 @@ async def main_cycle(parser_controller: ParserController, telegram_bot=None) -> 
             logger.warning("[RUN] Подряд ошибок: %d/%d", consecutive_errors, max_consecutive_errors)
         logger.info("="*70)
 
-        if await run_parser():
+        parser_success = True
+        handled_night_iteration = False
+
+        if is_night_time():
+            skipped = skip_missed_night_city_events(db)
+            if skipped:
+                logger.info("[RUN] Night events skipped after downtime: %s", ", ".join(skipped))
+
+            due_event = get_due_night_city_event(db)
+            if due_event is None:
+                now_local = datetime.now(_MSK)
+                next_morning = night_window_end(now_local)
+                pending_events = [
+                    event for event in ensure_night_city_schedule(db, now_local)
+                    if event["status"] == "pending" and event.get("run_at_utc")
+                ]
+                if pending_events:
+                    next_run_utc = min(datetime.fromisoformat(event["run_at_utc"]) for event in pending_events)
+                    sleep_until = min(next_morning, next_run_utc.astimezone(_MSK))
+                else:
+                    sleep_until = next_morning
+                sleep_seconds = max(1, int((sleep_until - now_local).total_seconds()))
+                logger.info("[RUN] No due night city parses. Sleeping %d sec.", sleep_seconds)
+                try:
+                    await asyncio.sleep(sleep_seconds)
+                except KeyboardInterrupt:
+                    logger.info("[RUN] РћСЃС‚Р°РЅРѕРІР»РµРЅРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј (Ctrl+C)")
+                    break
+                continue
+
+            city_slug = str(due_event["subject_id"])
+            if not can_start_city_parse():
+                db.mark_scheduled_event_skipped(due_event["event_key"], "insufficient night window")
+                parser_success = False
+            else:
+                db.mark_scheduled_event_done(due_event["event_key"])
+                parser_success = await run_parser(city_slug)
+            handled_night_iteration = True
+        else:
+            parser_success = await run_parser(DAY_CITY_SLUG)
+
+        if parser_success:
             consecutive_errors = 0
             logger.info("[RUN] ✅ Парсер завершен успешно")
         else:
@@ -172,18 +315,25 @@ async def main_cycle(parser_controller: ParserController, telegram_bot=None) -> 
             logger.info("[RUN] ⏱️  Новый интервал: %d сек", wait_time)
 
         # Проверяем ночное время (22:00-6:00)
-        if is_night_time():
+        # Night window sleep until next scheduled city or end of window
+        if is_night_time() and handled_night_iteration:
             now = datetime.now(_MSK)
-            next_morning = now.replace(hour=6, minute=0, second=0, microsecond=0)
-            if now.hour >= 22:
-                # После 22:00 - спим до 6:00 следующего дня
-                next_morning += timedelta(days=1)
-            sleep_seconds = int((next_morning - now).total_seconds())
-            logger.info("[RUN] 🌙 Ночное время (22:00-6:00), ожидание до 6:00 (%d сек)...", sleep_seconds)
+            next_morning = night_window_end(now)
+            pending_events = [
+                event for event in ensure_night_city_schedule(db, now)
+                if event["status"] == "pending" and event.get("run_at_utc")
+            ]
+            if pending_events:
+                next_run_utc = min(datetime.fromisoformat(event["run_at_utc"]) for event in pending_events)
+                sleep_until = min(next_morning, next_run_utc.astimezone(_MSK))
+            else:
+                sleep_until = next_morning
+            sleep_seconds = max(1, int((sleep_until - now).total_seconds()))
+            logger.info("[RUN] Night window active, sleeping %d sec...", sleep_seconds)
             try:
                 await asyncio.sleep(sleep_seconds)
             except KeyboardInterrupt:
-                logger.info("[RUN] Остановлено пользователем (Ctrl+C)")
+                logger.info("[RUN] Stopped by user (Ctrl+C)")
                 break
             continue
 
@@ -204,6 +354,9 @@ async def main() -> None:
     parser_controller = ParserController()
     db = DBManager(config.db_path)
     telegram_bot = init_telegram_bot(db, parser_controller)
+    notifier = TelegramNotifier(bot=telegram_bot, db=db)
+    daily_scheduler = DailyScheduler(db, notifier)
+    daily_scheduler.ensure_due_events()
 
     # Автоматический старт парсера при запуске
     await parser_controller.start()
@@ -213,8 +366,9 @@ async def main() -> None:
     # 2. ТГ бот (polling - обработка команд)
 
     tasks = [
-        asyncio.create_task(main_cycle(parser_controller, telegram_bot)),
+        asyncio.create_task(main_cycle(parser_controller, db, telegram_bot)),
         asyncio.create_task(telegram_bot_polling(telegram_bot)),
+        asyncio.create_task(daily_scheduler.run_forever()),
     ]
 
     try:

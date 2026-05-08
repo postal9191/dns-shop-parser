@@ -209,6 +209,7 @@ class TelegramNotifier:
         self,
         new_products: list[dict],
         price_changes: list[dict],
+        plan_types: Optional[set[str]] = None,
     ) -> None:
         """Отправляет персональный дайджест каждому подписчику с учётом его настроек.
 
@@ -228,6 +229,8 @@ class TelegramNotifier:
         blocked: list[str] = []
 
         for sub in subscribers:
+            if plan_types is not None and sub.get("plan_type", "free") not in plan_types:
+                continue
             if not sub["notifications_on"]:
                 continue
 
@@ -329,6 +332,26 @@ class TelegramNotifier:
                 chunks.append(header + body)
 
         return chunks
+
+    async def send_daily_report_to_user(
+        self,
+        user_id: str,
+        new_products: list[dict],
+        price_changes: list[dict],
+    ) -> str:
+        """Sends one daily report to one user. Returns ok, blocked, fail, or empty."""
+        if not self.bot or not self.db:
+            return "fail"
+        if not new_products and not price_changes:
+            return "empty"
+
+        chunks = self._build_digest_chunks(new_products, price_changes)
+        for chunk in chunks:
+            result = await self.bot.send_message(user_id, chunk)
+            if result != "ok":
+                return result
+            await asyncio.sleep(0.5)
+        return "ok"
 
     def _format_digest(self, new_products: list[dict], price_changes: list[dict]) -> str:
         """Форматирует дайджест-сообщение (все чанки объединены, для тестов и превью)."""

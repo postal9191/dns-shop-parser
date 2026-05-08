@@ -85,6 +85,19 @@ class TestDBManagerUpsertProducts:
 
         assert changes == []
 
+    def test_upsert_writes_msk_timestamps(self, db_memory, sample_product):
+        db_memory.upsert_products([sample_product])
+
+        with sqlite3.connect(db_memory.db_path) as conn:
+            row = conn.execute(
+                "SELECT created_at, updated_at, seen_at FROM products WHERE uuid = ?",
+                (sample_product.uuid,),
+            ).fetchone()
+
+        assert row[0].endswith("+03:00")
+        assert row[1].endswith("+03:00")
+        assert row[2].endswith("+03:00")
+
 
 class TestDBManagerDeleteProducts:
     def test_delete_products_not_in_uuids(self, db_memory, sample_product, sample_product_no_discount):

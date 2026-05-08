@@ -53,7 +53,7 @@ def _is_qrator_challenge(html: str) -> bool:
 class SimpleDNSParser:
     def __init__(self, session_manager: SessionManager, city_slug: str = "") -> None:
         self._sm = session_manager
-        self.city_slug = city_slug  # slug города из config.city_cookie_path
+        self.city_slug = city_slug
         self._filters_url = config.api_base_url + config.filters_path
         self._catalog_url = config.api_base_url + "/catalog/markdown/"
         self._product_buy_url = config.api_base_url + "/ajax-state/product-buy/"

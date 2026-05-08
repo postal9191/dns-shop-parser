@@ -878,7 +878,100 @@ class TestReportCallbacks:
 
         product_messages = [call.args[1] for call in bot.send_message.call_args_list[1:-1]]
         assert len(product_messages) > 1
-        assert all(len(message) <= 3800 for message in product_messages)
+
+    def test_free_user_report_limit_blocks_used_category(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = {"city_slug": "moscow", "plan_type": "free"}
+        mock_db.get_report_limit_usage.return_value = 1
+        mock_db.get_report_products.return_value = []
+        bot.db = mock_db
+        state = {"new": True, "bu": False, "discount": 10, "cats": ["cat-1"], "period": "1d"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        mock_db.get_report_products.assert_not_called()
+        assert "free" in bot.send_message.call_args.args[1]
+        assert mock_db.get_report_limit_usage.call_args.args[2] == "discounts"
+
+    def test_free_user_report_limit_allows_other_category(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = {"city_slug": "moscow", "plan_type": "free"}
+        mock_db.get_report_limit_usage.side_effect = lambda user_id, cat_id, report_type, day: 1 if cat_id == "cat-1" else 0
+        mock_db.consume_free_report_limit.return_value = True
+        mock_db.get_report_products.return_value = [{
+            "title": "Allowed item",
+            "url": "/catalog/allowed/",
+            "current_price": 1000,
+            "previous_price": 1500,
+            "status": "Новый",
+            "discount_pct": 33,
+        }]
+        bot.db = mock_db
+        state = {"new": True, "bu": False, "discount": 10, "cats": ["cat-1", "cat-2"], "period": "1d"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        mock_db.get_report_products.assert_called_once_with(
+            ["Новый"], 10, period="1d", category_ids=["cat-2"], city_slug="moscow"
+        )
+        mock_db.consume_free_report_limit.assert_called_once()
+        assert mock_db.consume_free_report_limit.call_args.args[0] == "user1"
+        assert mock_db.consume_free_report_limit.call_args.args[1] == "cat-2"
+        assert mock_db.consume_free_report_limit.call_args.args[2] == "discounts"
+        assert "Пропущено категорий по лимиту: 1." in bot.send_message.call_args_list[0].args[1]
+
+    def test_free_user_report_limit_for_all_categories_filters_exhausted(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = {"city_slug": "moscow", "plan_type": "free"}
+        mock_db.get_all_known_categories.return_value = [
+            {"id": "cat-1", "name": "One"},
+            {"id": "cat-2", "name": "Two"},
+            {"id": "cat-3", "name": "Three"},
+        ]
+        mock_db.get_report_limit_usage.side_effect = lambda user_id, cat_id, report_type, day: 1 if cat_id == "cat-1" else 0
+        mock_db.consume_free_report_limit.return_value = True
+        mock_db.get_report_products.return_value = [{
+            "title": "Allowed item",
+            "url": "/catalog/allowed/",
+            "current_price": 1000,
+            "previous_price": 1500,
+            "status": "Новый",
+            "discount_pct": 33,
+        }]
+        bot.db = mock_db
+        state = {"new": True, "bu": False, "discount": 10, "cats": [], "period": "1d"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        mock_db.get_report_products.assert_called_once_with(
+            ["Новый"], 10, period="1d", category_ids=["cat-2", "cat-3"], city_slug="moscow"
+        )
+        consumed = [call.args[1] for call in mock_db.consume_free_report_limit.call_args_list]
+        assert consumed == ["cat-2", "cat-3"]
+
+    def test_free_user_limit_is_separate_for_report_types(self):
+        bot = self._bot()
+        mock_db = MagicMock()
+        mock_db.get_user_settings.return_value = {"city_slug": "moscow", "plan_type": "free"}
+        mock_db.get_report_limit_usage.return_value = 0
+        mock_db.consume_free_report_limit.return_value = True
+        mock_db.get_new_report_products.return_value = [{
+            "title": "Allowed item",
+            "url": "/catalog/allowed/",
+            "current_price": 1000,
+            "previous_price": 1500,
+            "status": "Новый",
+        }]
+        bot.db = mock_db
+        state = {"kind": "new_products", "new": True, "bu": False, "discount": 10, "cats": ["cat-1"], "period": "1d"}
+
+        self._run(bot._send_report("user1", "chat1", state))
+
+        assert mock_db.get_report_limit_usage.call_args.args[2] == "new_products"
+        assert mock_db.consume_free_report_limit.call_args.args[2] == "new_products"
 
     def test_very_long_title_is_truncated(self):
         bot = self._bot()

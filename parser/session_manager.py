@@ -15,6 +15,7 @@ import re
 import aiohttp
 
 from config import config
+from data.cities import DEFAULT_CITY_SLUG, get_city_cookies
 from parser.qrator_resolver import resolve_qrator_cookies, cleanup_chromium_profile
 from utils.logger import logger
 
@@ -212,7 +213,9 @@ class ProxyPool:
 class SessionManager:
     """Управляет HTTP-сессией: куки, CSRF-токен, прокси."""
 
-    def __init__(self) -> None:
+    def __init__(self, city_slug: str = DEFAULT_CITY_SLUG) -> None:
+        self.city_slug = city_slug
+        self._city_cookies = get_city_cookies(city_slug)
         self._cookies: dict[str, str] = {}
         self._session: aiohttp.ClientSession | None = None
         self._csrf_token: str = ""
@@ -351,15 +354,12 @@ class SessionManager:
                 logger.error("[SESSION] ❌ КРИТИЧНО: Qrator challenge не решён даже после повтора")
                 logger.error("[SESSION] Возможные причины: IP забанен, DNS-Shop усилил защиту, solve_qrator.js неработающий")
                 return False
-
-        # 2. Переписываем куки города из .env (браузер может выбрать иной регион, но мы выбираем нужный)
-        if not config.city_cookie_current:
-            logger.warning("[SESSION] ⚠️ CITY_COOKIE_CURRENT не задан в .env — кука current_path будет пустой")
-        self._cookies['city_path'] = config.city_cookie_path
-        self._cookies['current_path'] = config.city_cookie_current
+        # 2. Apply regional cookies from data/cities.py.
+        self._cookies['city_path'] = self._city_cookies['city_path']
+        self._cookies['current_path'] = self._city_cookies['current_path']
         self._cookies['IsInterregionalPickupAllowed'] = 'true'
         self._cookies['IsInterregionalCourierAllowed'] = 'false'
-        logger.info("[SESSION] Куки города установлены из .env")
+        logger.info("[SESSION] City cookies applied for %s", self.city_slug)
 
         logger.info(
             "[SESSION] ✅ Сессия инициализирована, всего кук: %d (%s)",

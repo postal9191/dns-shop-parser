@@ -5,11 +5,14 @@
 import hashlib
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from parser.models import Product
 from utils.logger import logger
+
+MSK = ZoneInfo("Europe/Moscow")
 
 
 class DBManager:
@@ -27,11 +30,15 @@ class DBManager:
         days = period_days.get(period)
         if days is None:
             return None
-        local_today_start = datetime.now().astimezone().replace(
+        local_today_start = datetime.now(MSK).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         cutoff = local_today_start - timedelta(days=days - 1)
-        return cutoff.astimezone(timezone.utc).isoformat()
+        return cutoff.isoformat()
+
+    @staticmethod
+    def _now_msk() -> str:
+        return datetime.now(MSK).isoformat()
 
     def _backup_db(self, conn: sqlite3.Connection) -> None:
         """Создает бэкап БД через SQLite online-backup API (безопасно при открытом соединении)."""
@@ -267,6 +274,7 @@ class DBManager:
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id TEXT PRIMARY KEY,
                     city_slug TEXT NOT NULL DEFAULT 'moscow',
+                    plan_type TEXT NOT NULL DEFAULT 'free',
                     notify_new INTEGER NOT NULL DEFAULT 1,
                     notify_price_drop INTEGER NOT NULL DEFAULT 1,
                     min_price_drop_pct INTEGER NOT NULL DEFAULT 0,
@@ -276,6 +284,7 @@ class DBManager:
                 )
             """)
             user_settings_migrations = {
+                'plan_type':           "ALTER TABLE user_settings ADD COLUMN plan_type TEXT NOT NULL DEFAULT 'free'",
                 'notify_errors':        'ALTER TABLE user_settings ADD COLUMN notify_errors INTEGER NOT NULL DEFAULT 1',
                 'notify_parse_finish': 'ALTER TABLE user_settings ADD COLUMN notify_parse_finish INTEGER NOT NULL DEFAULT 1',
             }
@@ -307,12 +316,92 @@ class DBManager:
                     )
                 """)
                 logger.info("Добавлен столбец category_name в таблицу user_categories")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS report_limits (
+                    user_id TEXT NOT NULL,
+                    category_id TEXT NOT NULL,
+                    report_type TEXT NOT NULL DEFAULT 'discounts',
+                    date_msk TEXT NOT NULL,
+                    used_count INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, category_id, report_type, date_msk)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scheduled_events (
+                    event_key TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    date_msk TEXT NOT NULL,
+                    user_id TEXT,
+                    subject_id TEXT,
+                    run_at_utc TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    processed_at TEXT
+                )
+            """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_uuid ON products(uuid)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_city_slug ON products(city_slug)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_is_sold ON products(is_sold)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_category_state_is_sold ON category_state(is_sold)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_events_status ON scheduled_events(status, event_type, date_msk)")
+            cursor = conn.execute("PRAGMA table_info(scheduled_events)")
+            scheduled_cols = [row[1] for row in cursor.fetchall()]
+            cursor = conn.execute("PRAGMA table_info(report_limits)")
+            report_limit_info = cursor.fetchall()
+            report_limit_cols = [row[1] for row in report_limit_info]
+            report_limit_pk = [row[1] for row in sorted(report_limit_info, key=lambda row: row[5]) if row[5] > 0]
+            expected_report_limit_pk = ["user_id", "category_id", "report_type", "date_msk"]
+            if report_limit_cols and (
+                "report_type" not in report_limit_cols or report_limit_pk != expected_report_limit_pk
+            ):
+                conn.execute("ALTER TABLE report_limits RENAME TO report_limits_old")
+                conn.execute("""
+                    CREATE TABLE report_limits (
+                        user_id TEXT NOT NULL,
+                        category_id TEXT NOT NULL,
+                        report_type TEXT NOT NULL DEFAULT 'discounts',
+                        date_msk TEXT NOT NULL,
+                        used_count INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (user_id, category_id, report_type, date_msk)
+                    )
+                """)
+                if "report_type" in report_limit_cols:
+                    conn.execute("""
+                        INSERT INTO report_limits
+                            (user_id, category_id, report_type, date_msk, used_count, created_at, updated_at)
+                        SELECT user_id, category_id, report_type, date_msk, used_count, created_at, updated_at
+                        FROM report_limits_old
+                    """)
+                else:
+                    conn.execute("""
+                        INSERT INTO report_limits
+                            (user_id, category_id, report_type, date_msk, used_count, created_at, updated_at)
+                        SELECT user_id, category_id, 'discounts', date_msk, used_count, created_at, updated_at
+                        FROM report_limits_old
+                    """)
+                conn.execute("DROP TABLE report_limits_old")
+            if "subject_id" not in scheduled_cols:
+                conn.execute("ALTER TABLE scheduled_events ADD COLUMN subject_id TEXT")
+            if "run_at_utc" not in scheduled_cols:
+                conn.execute("ALTER TABLE scheduled_events ADD COLUMN run_at_utc TEXT")
+            conn.execute(
+                """
+                UPDATE scheduled_events
+                SET subject_id = user_id, user_id = NULL
+                WHERE event_type = 'night_city_parse'
+                  AND subject_id IS NULL
+                  AND user_id IS NOT NULL
+                """
+            )
             conn.commit()
         logger.debug("БД инициализирована: %s", self.db_path)
 
@@ -324,7 +413,7 @@ class DBManager:
         if not products:
             return 0, []
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._now_msk()
         price_changes = []
 
         # Все продукты одного вызова принадлежат одному городу
@@ -399,7 +488,7 @@ class DBManager:
 
     def delete_all_products_in_category(self, category_id: str, city_slug: str) -> int:
         """Помечает категорию и ее товары купленными/исчезнувшими, не удаляя историю."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._now_msk()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
@@ -431,7 +520,7 @@ class DBManager:
         """Помечает купленными товары категории, которых нет в current_uuids."""
         if not current_uuids:
             return 0
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._now_msk()
         placeholders = ",".join("?" * len(current_uuids))
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
@@ -565,7 +654,7 @@ class DBManager:
         uuid_hash = None
         if uuids is not None:
             uuid_hash = hashlib.sha256(json.dumps(sorted(uuids)).encode()).hexdigest()
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._now_msk()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO category_state
@@ -608,7 +697,7 @@ class DBManager:
         language_code: str = None,
     ) -> None:
         """Добавляет или реактивирует подписчика. subscribed_at пишется только при первой вставке."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._now_msk()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO telegram_subscribers
@@ -626,7 +715,7 @@ class DBManager:
 
     def remove_telegram_subscriber(self, user_id: str) -> None:
         """Помечает подписчика неактивным (не удаляет из БД)."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._now_msk()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 UPDATE telegram_subscribers SET is_active = 0, updated_at = ? WHERE user_id = ?
@@ -871,8 +960,7 @@ class DBManager:
 
     def get_today_discounts(self, city_slug: str = None) -> list[dict]:
         """Получает товары с обновленными ценами за сегодня (была скидка)."""
-        from datetime import date
-        today = date.today().isoformat()
+        today = datetime.now(MSK).date().isoformat()
         city_clause = "AND city_slug = ?" if city_slug is not None else ""
         params: list = [today]
         if city_slug is not None:
@@ -908,6 +996,7 @@ class DBManager:
 
     _SETTING_SQLS = {
         "city_slug":           "UPDATE user_settings SET city_slug = ? WHERE user_id = ?",
+        "plan_type":           "UPDATE user_settings SET plan_type = ? WHERE user_id = ?",
         "notify_new":          "UPDATE user_settings SET notify_new = ? WHERE user_id = ?",
         "notify_price_drop":   "UPDATE user_settings SET notify_price_drop = ? WHERE user_id = ?",
         "min_price_drop_pct": "UPDATE user_settings SET min_price_drop_pct = ? WHERE user_id = ?",
@@ -930,7 +1019,7 @@ class DBManager:
         """Получает настройки пользователя."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT user_id, city_slug, notify_new, notify_price_drop,
+                SELECT user_id, city_slug, plan_type, notify_new, notify_price_drop,
                        min_price_drop_pct, notifications_on,
                        notify_errors, notify_parse_finish
                 FROM user_settings WHERE user_id = ?
@@ -940,12 +1029,13 @@ class DBManager:
             return {
                 "user_id": row[0],
                 "city_slug": row[1],
-                "notify_new": bool(row[2]),
-                "notify_price_drop": bool(row[3]),
-                "min_price_drop_pct": row[4],
-                "notifications_on": bool(row[5]),
-                "notify_errors": bool(row[6]),
-                "notify_parse_finish": bool(row[7]),
+                "plan_type": row[2],
+                "notify_new": bool(row[3]),
+                "notify_price_drop": bool(row[4]),
+                "min_price_drop_pct": row[5],
+                "notifications_on": bool(row[6]),
+                "notify_errors": bool(row[7]),
+                "notify_parse_finish": bool(row[8]),
             }
         return None
 
@@ -955,6 +1045,7 @@ class DBManager:
             cursor = conn.execute("""
                 SELECT ts.user_id,
                        COALESCE(us.city_slug, 'moscow') AS city_slug,
+                       COALESCE(us.plan_type, 'free') AS plan_type,
                        COALESCE(us.notify_new, 1) AS notify_new,
                        COALESCE(us.notify_price_drop, 1) AS notify_price_drop,
                        COALESCE(us.min_price_drop_pct, 0) AS min_price_drop_pct,
@@ -971,12 +1062,13 @@ class DBManager:
             {
                 "user_id": row[0],
                 "city_slug": row[1],
-                "notify_new": bool(row[2]),
-                "notify_price_drop": bool(row[3]),
-                "min_price_drop_pct": row[4],
-                "notifications_on": bool(row[5]),
-                "notify_errors": bool(row[6]),
-                "notify_parse_finish": bool(row[7]),
+                "plan_type": row[2],
+                "notify_new": bool(row[3]),
+                "notify_price_drop": bool(row[4]),
+                "min_price_drop_pct": row[5],
+                "notifications_on": bool(row[6]),
+                "notify_errors": bool(row[7]),
+                "notify_parse_finish": bool(row[8]),
             }
             for row in rows
         ]
@@ -1065,6 +1157,290 @@ class DBManager:
                 """
             )
             return [{"id": row[0], "name": row[1]} for row in cursor.fetchall()]
+
+    def get_active_free_subscribers_with_settings(self) -> list[dict]:
+        """Returns active free subscribers with their notification settings."""
+        return [
+            row for row in self.get_all_subscribers_with_settings()
+            if row.get("plan_type", "free") == "free"
+        ]
+
+    def consume_free_report_limit(
+        self,
+        user_id: str,
+        category_id: str,
+        report_type: str,
+        date_msk: str,
+    ) -> bool:
+        """Consumes one free report quota for a user/category/report-type/day."""
+        now = self._now_msk()
+        with sqlite3.connect(self.db_path) as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO report_limits
+                        (user_id, category_id, report_type, date_msk, used_count, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (user_id, category_id, report_type, date_msk, now, now),
+                )
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def get_report_limit_usage(self, user_id: str, category_id: str, report_type: str, date_msk: str) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT used_count FROM report_limits
+                WHERE user_id = ? AND category_id = ? AND report_type = ? AND date_msk = ?
+                """,
+                (user_id, category_id, report_type, date_msk),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    @staticmethod
+    def _event_key(
+        event_type: str,
+        date_msk: str,
+        user_id: str | None = None,
+        subject_id: str | None = None,
+    ) -> str:
+        identifier = user_id or subject_id or "_global"
+        return f"{event_type}:{date_msk}:{identifier}"
+
+    def ensure_scheduled_event(
+        self,
+        event_type: str,
+        date_msk: str,
+        user_id: str | None = None,
+        subject_id: str | None = None,
+        run_at_utc: str | None = None,
+    ) -> str:
+        now = self._now_msk()
+        event_key = self._event_key(event_type, date_msk, user_id, subject_id)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO scheduled_events
+                    (event_key, event_type, date_msk, user_id, subject_id, run_at_utc, status, attempts, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                """,
+                (event_key, event_type, date_msk, user_id, subject_id, run_at_utc, now, now),
+            )
+            conn.commit()
+        return event_key
+
+    def has_scheduled_event_history(self, include_maintenance: bool = True) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            if include_maintenance:
+                cursor = conn.execute("SELECT 1 FROM scheduled_events LIMIT 1")
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT 1
+                    FROM scheduled_events
+                    WHERE event_type != 'free_limit_maintenance'
+                    LIMIT 1
+                    """
+                )
+            return cursor.fetchone() is not None
+
+    def has_scheduled_event_type(self, event_type: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT 1 FROM scheduled_events WHERE event_type = ? LIMIT 1",
+                (event_type,),
+            )
+            return cursor.fetchone() is not None
+
+    def get_pending_scheduled_events(self, max_attempts: int = 3) -> list[dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT event_key, event_type, date_msk, user_id, subject_id, run_at_utc, status, attempts, last_error
+                FROM scheduled_events
+                WHERE status IN ('pending', 'failed') AND attempts < ?
+                ORDER BY date_msk, event_type, COALESCE(user_id, subject_id, '')
+                """,
+                (max_attempts,),
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "event_key": row[0],
+                "event_type": row[1],
+                "date_msk": row[2],
+                "user_id": row[3],
+                "subject_id": row[4],
+                "run_at_utc": row[5],
+                "status": row[6],
+                "attempts": row[7],
+                "last_error": row[8],
+            }
+            for row in rows
+        ]
+
+    def get_scheduled_events(self, event_type: str, date_msk: str) -> list[dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT event_key, event_type, date_msk, user_id, subject_id, run_at_utc, status, attempts, last_error, processed_at
+                FROM scheduled_events
+                WHERE event_type = ? AND date_msk = ?
+                ORDER BY run_at_utc, COALESCE(user_id, subject_id, '')
+                """,
+                (event_type, date_msk),
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                "event_key": row[0],
+                "event_type": row[1],
+                "date_msk": row[2],
+                "user_id": row[3],
+                "subject_id": row[4],
+                "run_at_utc": row[5],
+                "status": row[6],
+                "attempts": row[7],
+                "last_error": row[8],
+                "processed_at": row[9],
+            }
+            for row in rows
+        ]
+
+    def mark_scheduled_event_done(self, event_key: str) -> None:
+        now = self._now_msk()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE scheduled_events
+                SET status = 'done', updated_at = ?, processed_at = ?, last_error = NULL
+                WHERE event_key = ?
+                """,
+                (now, now, event_key),
+            )
+            conn.commit()
+
+    def mark_scheduled_event_failed(self, event_key: str, error: str) -> None:
+        now = self._now_msk()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE scheduled_events
+                SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = ?
+                WHERE event_key = ?
+                """,
+                (str(error)[:1000], now, event_key),
+            )
+            conn.commit()
+
+    def mark_scheduled_event_skipped(self, event_key: str, reason: str) -> None:
+        now = self._now_msk()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE scheduled_events
+                SET status = 'skipped', updated_at = ?, processed_at = ?, last_error = ?
+                WHERE event_key = ?
+                """,
+                (now, now, str(reason)[:1000], event_key),
+            )
+            conn.commit()
+
+    def get_scheduled_event(self, event_key: str) -> dict | None:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                SELECT event_key, event_type, date_msk, user_id, subject_id, run_at_utc, status, attempts, last_error, processed_at
+                FROM scheduled_events WHERE event_key = ?
+                """,
+                (event_key,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "event_key": row[0],
+            "event_type": row[1],
+            "date_msk": row[2],
+            "user_id": row[3],
+            "subject_id": row[4],
+            "run_at_utc": row[5],
+            "status": row[6],
+            "attempts": row[7],
+            "last_error": row[8],
+            "processed_at": row[9],
+        }
+
+    def get_daily_report_data(
+        self,
+        start_utc: str,
+        end_utc: str,
+        city_slug: str,
+        min_drop_pct: int = 0,
+        limit: int = 200,
+    ) -> tuple[list[dict], list[dict]]:
+        """Returns new products and price drops inside explicit UTC bounds for one city."""
+        with sqlite3.connect(self.db_path) as conn:
+            new_rows = conn.execute(
+                """
+                SELECT category_id, category_name, title, current_price, previous_price, url, status, city_slug
+                FROM products
+                WHERE city_slug = ?
+                  AND is_sold = 0
+                  AND created_at >= ?
+                  AND created_at < ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (city_slug, start_utc, end_utc, limit),
+            ).fetchall()
+            drop_rows = conn.execute(
+                """
+                SELECT category_id, title, url, current_price, previous_price, status, city_slug
+                FROM products
+                WHERE city_slug = ?
+                  AND is_sold = 0
+                  AND updated_at >= ?
+                  AND updated_at < ?
+                  AND previous_price > 0
+                  AND current_price < previous_price
+                  AND ROUND(100.0 * (previous_price - current_price) / previous_price, 1) >= ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (city_slug, start_utc, end_utc, min_drop_pct, limit),
+            ).fetchall()
+        new_products = [
+            {
+                "category_id": row[0],
+                "category": row[1],
+                "title": row[2],
+                "price": row[3],
+                "price_old": row[4],
+                "url": row[5],
+                "status": row[6],
+                "city_slug": row[7],
+            }
+            for row in new_rows
+        ]
+        price_changes = [
+            {
+                "category_id": row[0],
+                "title": row[1],
+                "url": row[2],
+                "new_price": row[3],
+                "old_price": row[4],
+                "price_old": row[4],
+                "status": row[5],
+                "city_slug": row[6],
+            }
+            for row in drop_rows
+        ]
+        return new_products, price_changes
 
     def close(self) -> None:
         """Нет-оп: все методы используют with sqlite3.connect(), соединения закрываются автоматически."""

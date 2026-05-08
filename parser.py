@@ -10,10 +10,12 @@ sys.path.insert(0, str(PROJECT_DIR))
 os.chdir(str(PROJECT_DIR))
 
 import asyncio
+import argparse
 import hashlib
 import json
 
 from config import config
+from data.cities import DEFAULT_CITY_SLUG
 from parser.db_manager import DBManager
 from parser.simple_dns_parser import SimpleDNSParser
 from parser.session_manager import SessionManager
@@ -25,9 +27,9 @@ from utils.logger import logger
 class DNSMonitorBrowserless:
     """Парсер DNS без браузера (Node.js + Playwright для Qrator)."""
 
-    def __init__(self) -> None:
-        self.city_slug = config.city_cookie_path
-        self.session_manager = SessionManager()
+    def __init__(self, city_slug: str | None = None) -> None:
+        self.city_slug = city_slug if city_slug is not None else DEFAULT_CITY_SLUG
+        self.session_manager = SessionManager(city_slug=self.city_slug)
         self.parser = SimpleDNSParser(self.session_manager, city_slug=self.city_slug)
         self.db = DBManager(config.db_path, default_city_slug=self.city_slug)
 
@@ -316,7 +318,7 @@ class DNSMonitorBrowserless:
 
             # Отправляем единый дайджест с новыми товарами и изменениями цен
             if all_new_products or all_price_changes:
-                await self.tg.send_digest(all_new_products, all_price_changes)
+                await self.tg.send_digest(all_new_products, all_price_changes, plan_types={"pro", "super"})
 
             # Помечаем купленными товары из категорий, которых больше нет на сайте
             fetched_ids = {cat.id for cat in categories}
@@ -409,7 +411,10 @@ class DNSMonitorBrowserless:
 
 async def main() -> None:
     """Точка входа - запуск один раз (безбраузерный режим, цикл управляется из run.py)."""
-    monitor = DNSMonitorBrowserless()
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument("--city-slug", default=None)
+    args = arg_parser.parse_args()
+    monitor = DNSMonitorBrowserless(city_slug=args.city_slug)
     await monitor.run_once()
 
 

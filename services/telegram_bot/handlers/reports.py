@@ -3,7 +3,9 @@
 Управляет 4-шаговым wizard: тип → состояние → скидка → категории → период → генерация.
 """
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
+from zoneinfo import ZoneInfo
 
 from data.cities import SLUG_TO_CITY
 
@@ -479,26 +481,62 @@ class ReportWizard:
 
     async def _send_report(self, user_id: str, chat_id: str, state: ReportState) -> None:
         if not self._bot.db:
-            await self._bot.send_message(chat_id, "❌ БД не инициализирована")
+            await self._bot.send_message(chat_id, "\u274c \u0411\u0414 \u043d\u0435 \u0438\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d\u0430")
             return
 
         statuses: list[str] = []
         if state.get("new"):
-            statuses.append("Новый")
+            statuses.append("\u041d\u043e\u0432\u044b\u0439")
         if state.get("bu"):
-            statuses.append("Б/У")
+            statuses.append("\u0411/\u0423")
         if not statuses:
-            await self._bot.send_message(chat_id, "❌ Не выбрано ни одно состояние товара")
+            await self._bot.send_message(chat_id, "\u274c \u041d\u0435 \u0432\u044b\u0431\u0440\u0430\u043d\u043e \u043d\u0438 \u043e\u0434\u043d\u043e \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435 \u0442\u043e\u0432\u0430\u0440\u0430")
             return
 
         discount_pct = state.get("discount", 10)
         period = state.get("period", "1d")
-        period_label = dict(_REPORT_PERIODS).get(period, "1 день")
+        period_label = dict(_REPORT_PERIODS).get(period, "1 \u0434\u0435\u043d\u044c")
         category_ids = state.get("cats") or None
         user_settings = await self._bot._db_call(self._bot.db.get_user_settings, user_id)
         user_city = user_settings["city_slug"] if user_settings else None
+        plan_type = user_settings.get("plan_type", "free") if user_settings else "free"
+        report_type = state.get("kind", "discounts")
         is_new_report = self._rm.is_new_products_report(state)
         is_sold_report = self._rm.is_sold_products_report(state)
+        limited_categories: list[str] | None = None
+        exhausted_categories: list[str] = []
+
+        if user_settings is not None and plan_type == "free":
+            if category_ids:
+                limited_categories = list(category_ids)
+            else:
+                cats = (
+                    await self._bot._db_call(self._bot.db.get_sold_known_categories)
+                    if is_sold_report
+                    else await self._bot._db_call(self._bot.db.get_all_known_categories)
+                )
+                limited_categories = [cat["id"] for cat in cats]
+            today_msk = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+            exhausted_categories = [
+                cat_id for cat_id in limited_categories
+                if await self._bot._db_call(
+                    self._bot.db.get_report_limit_usage,
+                    user_id,
+                    cat_id,
+                    report_type,
+                    today_msk,
+                )
+            ]
+            limited_categories = [cat_id for cat_id in limited_categories if cat_id not in exhausted_categories]
+            if not limited_categories:
+                await self._bot.send_message(
+                    chat_id,
+                    "\u041b\u0438\u043c\u0438\u0442 free: 1 \u043e\u0442\u0447\u0435\u0442 \u043d\u0430 \u043a\u0430\u0436\u0434\u0443\u044e \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044e \u0432 \u0441\u0443\u0442\u043a\u0438. \u041f\u043e \u0432\u0441\u0435\u043c \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u044b\u043c \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f\u043c \u043b\u0438\u043c\u0438\u0442 \u043d\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f \u0443\u0436\u0435 \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043d.",
+                    reply_markup={"inline_keyboard": [[{"text": "\u0413\u043b\u0430\u0432\u043d\u0430\u044f", "callback_data": "menu_back"}]]},
+                )
+                return
+            if category_ids is None or exhausted_categories:
+                category_ids = limited_categories
 
         if is_new_report:
             products = await self._bot._db_call(
@@ -518,32 +556,47 @@ class ReportWizard:
             )
 
         cond_text = ", ".join(
-            (["Новые"] if state.get("new") else []) +
-            (["Б/У"] if state.get("bu") else [])
+            (["\u041d\u043e\u0432\u044b\u0435"] if state.get("new") else []) +
+            (["\u0411/\u0423"] if state.get("bu") else [])
         )
         report_title = self._rm.report_title(state)
-        filter_text = f"Состояние: {cond_text} | Период: {period_label}"
+        filter_text = f"\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435: {cond_text} | \u041f\u0435\u0440\u0438\u043e\u0434: {period_label}"
         if not self._rm.is_no_discount_report(state):
-            filter_text = f"Состояние: {cond_text} | Скидка: от {discount_pct}% | Период: {period_label}"
+            filter_text = f"\u0421\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u0435: {cond_text} | \u0421\u043a\u0438\u0434\u043a\u0430: \u043e\u0442 {discount_pct}% | \u041f\u0435\u0440\u0438\u043e\u0434: {period_label}"
 
         if not products:
+            skipped_note = f"\n\n\u041f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439 \u043f\u043e \u043b\u0438\u043c\u0438\u0442\u0443: {len(exhausted_categories)}." if exhausted_categories else ""
             await self._bot.send_message(
                 chat_id,
-                f"📊 <b>{report_title}</b>\n\n{filter_text}\n\nТоваров не найдено.",
-                reply_markup={"inline_keyboard": [[{"text": "🏠 Главная", "callback_data": "menu_back"}]]},
+                f"\U0001f4ca <b>{report_title}</b>\n\n{filter_text}\n\n\u0422\u043e\u0432\u0430\u0440\u043e\u0432 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e.{skipped_note}",
+                reply_markup={"inline_keyboard": [[{"text": "\U0001f3e0 \u0413\u043b\u0430\u0432\u043d\u0430\u044f", "callback_data": "menu_back"}]]},
             )
             return
 
+        if user_settings is not None and plan_type == "free" and limited_categories:
+            today_msk = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+            for cat_id in limited_categories:
+                ok = await self._bot._db_call(
+                    self._bot.db.consume_free_report_limit,
+                    user_id,
+                    cat_id,
+                    report_type,
+                    today_msk,
+                )
+                if not ok:
+                    await self._bot.send_message(chat_id, "\u041b\u0438\u043c\u0438\u0442 free \u043d\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f \u0443\u0436\u0435 \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043d.")
+                    return
+
+        skipped_categories_note = f"\n\u041f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0439 \u043f\u043e \u043b\u0438\u043c\u0438\u0442\u0443: {len(exhausted_categories)}." if exhausted_categories else ""
         await self._bot.send_message(
             chat_id,
-            f"📊 <b>{report_title}</b>\n"
-            f"Найдено: {len(products)} тов. | {filter_text}",
+            f"\U0001f4ca <b>{report_title}</b>\n"
+            f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e: {len(products)} \u0442\u043e\u0432. | {filter_text}{skipped_categories_note}",
         )
 
         from config import config
         base_url = config.api_base_url.rstrip("/")
 
-        # Dedup
         seen: dict[tuple, dict] = {}
         for p in products:
             key = (
@@ -563,33 +616,33 @@ class ReportWizard:
             raw_url = p.get("url") or ""
             url = raw_url if raw_url.startswith("http") else base_url + raw_url
             safe_url = utils._escape_html_attr(url)
-            raw_title = utils._truncate_report_title(str(p.get("title") or "Без названия"))
+            raw_title = utils._truncate_report_title(str(p.get("title") or "\u0411\u0435\u0437 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u044f"))
             safe_title = utils._escape_html_text(raw_title)
-            icon = "🆕" if p.get("status") == "Новый" else "♻️"
+            icon = "\U0001f195" if p.get("status") == "\u041d\u043e\u0432\u044b\u0439" else "\u267b\ufe0f"
             cnt = f" (x{p['_count']})" if p["_count"] > 1 else ""
             cur = utils._format_price(p.get("current_price"))
 
             if is_new_report:
-                price_text = f"{cur} ₽"
+                price_text = f"{cur} \u20bd"
                 prev_price = p.get("previous_price")
                 if prev_price and p.get("current_price") is not None and prev_price > p["current_price"]:
                     prev_f = utils._format_price(prev_price)
-                    price_text += f" <s>{prev_f} ₽</s>"
+                    price_text += f" <s>{prev_f} \u20bd</s>"
                 item_blocks.append(
-                    f'• <a href="{safe_url}">{safe_title}{cnt}</a>\n'
-                    f"  💰 {price_text} {icon}"
+                    f'\u2022 <a href="{safe_url}">{safe_title}{cnt}</a>\n'
+                    f"  \U0001f4b0 {price_text} {icon}"
                 )
             elif is_sold_report:
-                price_text = f"{cur} ₽"
+                price_text = f"{cur} \u20bd"
                 prev_price = p.get("previous_price")
                 if prev_price and p.get("current_price") is not None and prev_price > p["current_price"]:
                     prev_f = utils._format_price(prev_price)
-                    price_text += f" <s>{prev_f} ₽</s>"
+                    price_text += f" <s>{prev_f} \u20bd</s>"
                 sold_at = str(p.get("sold_at") or "")[:10]
-                sold_text = f"\n  📅 {utils._escape_html_text(sold_at)}" if sold_at else ""
+                sold_text = f"\n  \U0001f4c5 {utils._escape_html_text(sold_at)}" if sold_at else ""
                 item_blocks.append(
-                    f'🛒 <b><a href="{safe_url}">{safe_title}{cnt}</a></b>\n'
-                    f"💰 {price_text} {icon}{sold_text}"
+                    f'\U0001f6d2 <b><a href="{safe_url}">{safe_title}{cnt}</a></b>\n'
+                    f"\U0001f4b0 {price_text} {icon}{sold_text}"
                 )
             else:
                 prev_f = utils._format_price(p.get("previous_price"))
@@ -599,16 +652,16 @@ class ReportWizard:
                     disc_txt = "0%"
                 item_blocks.append(
                     f'{icon} <b><a href="{safe_url}">{safe_title}{cnt}</a></b>\n'
-                    f"💰 {cur} ₽ <s>{prev_f} ₽</s> — -{disc_txt}"
+                    f"\U0001f4b0 {cur} \u20bd <s>{prev_f} \u20bd</s> \u2014 -{disc_txt}"
                 )
 
         if not await self._send_report_batches(chat_id, item_blocks):
-            pass  # log warning if needed
+            pass
 
         final_result = await self._bot.send_message(
             chat_id,
-            "✅ Отчет сформирован.",
-            reply_markup={"inline_keyboard": [[{"text": "🏠 Главная", "callback_data": "menu_back"}]]},
+            "\u2705 \u041e\u0442\u0447\u0435\u0442 \u0441\u0444\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d.",
+            reply_markup={"inline_keyboard": [[{"text": "\U0001f3e0 \u0413\u043b\u0430\u0432\u043d\u0430\u044f", "callback_data": "menu_back"}]]},
         )
         if final_result == "fail":
-            pass  # log warning
+            pass
