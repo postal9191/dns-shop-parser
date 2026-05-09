@@ -154,6 +154,19 @@ def test_scheduler_failed_event_is_retained_for_retry(db_memory):
     assert event["last_error"] == "fail"
 
 
+def test_scheduler_ignores_unknown_event_types_without_failing_them(db_memory):
+    event_key = db_memory.ensure_scheduled_event("night_city_parse", "2026-05-06", subject_id="moscow")
+    notifier = MagicMock()
+    scheduler = DailyScheduler(db_memory, notifier)
+
+    _run(scheduler.process_pending_events())
+
+    event = db_memory.get_scheduled_event(event_key)
+    assert event["status"] == "pending"
+    assert event["attempts"] == 0
+    assert event["last_error"] is None
+
+
 def test_daily_report_data_uses_explicit_utc_bounds(db_memory):
     products = [
         Product(id="p1", uuid="u1", title="inside", price=100, price_old=120, url="", category_id="cat", category_name="Cat", status="Новый", city_slug="moscow"),

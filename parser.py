@@ -260,7 +260,7 @@ class DNSMonitorBrowserless:
         Детали товаров загружаются каждый цикл, чтобы проверять изменения цен.
         """
         # Проверяем это первый запуск (БД пуста)
-        total_before = self.db.get_product_count()
+        total_before = self.db.get_product_count(city_slug=self.city_slug)
         is_first_run = total_before == 0
 
         logger.info(
@@ -333,7 +333,7 @@ class DNSMonitorBrowserless:
                     )
 
             # Итоги цикла
-            total_in_db = self.db.get_product_count()
+            total_in_db = self.db.get_product_count(city_slug=self.city_slug)
             delta = total_in_db - total_before
 
             logger.info(

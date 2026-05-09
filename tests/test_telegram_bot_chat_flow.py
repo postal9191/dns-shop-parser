@@ -148,7 +148,14 @@ async def test_handle_update_start_for_new_user_saves_settings_and_shows_menu():
 
     bot._add_subscriber.assert_awaited_once()
     db.upsert_user_settings.assert_called_once_with("123")
-    assert bot.send_message.await_count == 2
+    assert bot.send_message.await_count == 3
+    assert bot.send_message.await_args_list[0].args[:2] == (
+        "555",
+        "✅ Подписка включена! Вы будете получать уведомления о новых товарах!",
+    )
+    assert bot.send_message.await_args_list[1].args[0] == "999"
+    assert "Новый пользователь" in bot.send_message.await_args_list[1].args[1]
+    assert bot.send_message.await_args_list[2].args[:2] == ("555", "Выберите действие:")
 
 
 @pytest.mark.asyncio

@@ -603,13 +603,21 @@ class DBManager:
             conn.commit()
             return cursor.rowcount
 
-    def get_product_count(self, include_sold: bool = False) -> int:
-        """Возвращает количество активных товаров в БД, либо всех с include_sold=True."""
+    def get_product_count(self, include_sold: bool = False, city_slug: str | None = None) -> int:
+        """Возвращает количество товаров в БД, опционально с фильтром по городу."""
         with sqlite3.connect(self.db_path) as conn:
-            if include_sold:
-                cursor = conn.execute("SELECT COUNT(*) FROM products")
-            else:
-                cursor = conn.execute("SELECT COUNT(*) FROM products WHERE is_sold = 0")
+            where_clauses: list[str] = []
+            params: list[str] = []
+            if not include_sold:
+                where_clauses.append("is_sold = 0")
+            if city_slug is not None:
+                where_clauses.append("city_slug = ?")
+                params.append(city_slug)
+
+            sql = "SELECT COUNT(*) FROM products"
+            if where_clauses:
+                sql += " WHERE " + " AND ".join(where_clauses)
+            cursor = conn.execute(sql, params)
             return cursor.fetchone()[0]
 
     def get_products_by_category(

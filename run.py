@@ -83,51 +83,46 @@ async def _run_subprocess(script: str, log_name: str, args: list[str] | None = N
 
 
 _MSK = ZoneInfo("Europe/Moscow")
-NIGHT_START_HOUR = 22
-NIGHT_END_HOUR = 5
-NIGHT_END_MINUTE = 30
+NIGHT_START_HOUR = 0
+NIGHT_START_MINUTE = 0
+NIGHT_END_HOUR = 7
+NIGHT_END_MINUTE = 0
 DAY_CITY_SLUG = "krasnodar"
 NIGHT_CITY_SLUGS = [slug for slug in CITIES.values() if slug != DAY_CITY_SLUG]
-ESTIMATED_CITY_PARSE_SECONDS = int(os.getenv("CITY_PARSE_BUDGET_SECONDS", "1800"))
 NIGHT_CITY_EVENT = "night_city_parse"
 NIGHT_LOOP_POLL_SECONDS = 60
 
 
 def is_night_time() -> bool:
-    """Проверяет если сейчас ночное время (22:00-6:00 МСК)."""
+    """Проверяет если сейчас ночное время (00:00-07:00 МСК)."""
     now = datetime.now(_MSK)
-    return now.hour >= NIGHT_START_HOUR or (
-        now.hour < NIGHT_END_HOUR
-        or (now.hour == NIGHT_END_HOUR and now.minute < NIGHT_END_MINUTE)
-    )
+    return (now.hour, now.minute) >= (NIGHT_START_HOUR, NIGHT_START_MINUTE) and (
+        now.hour,
+        now.minute,
+    ) < (NIGHT_END_HOUR, NIGHT_END_MINUTE)
 
 
 def night_window_end(now: datetime | None = None) -> datetime:
     now = (now or datetime.now(_MSK)).astimezone(_MSK)
-    end = now.replace(hour=NIGHT_END_HOUR, minute=NIGHT_END_MINUTE, second=0, microsecond=0)
-    if now.hour >= NIGHT_START_HOUR:
-        end += timedelta(days=1)
-    return end
+    return now.replace(hour=NIGHT_END_HOUR, minute=NIGHT_END_MINUTE, second=0, microsecond=0)
 
 
 def night_schedule_date(now: datetime | None = None) -> datetime.date:
     now = (now or datetime.now(_MSK)).astimezone(_MSK)
-    if now.hour < NIGHT_END_HOUR or (now.hour == NIGHT_END_HOUR and now.minute < NIGHT_END_MINUTE):
-        return (now - timedelta(days=1)).date()
     return now.date()
 
 
 def night_window_bounds_for_date(schedule_date) -> tuple[datetime, datetime]:
     start = datetime.combine(schedule_date, datetime.min.time(), tzinfo=_MSK).replace(
-        hour=NIGHT_START_HOUR, minute=0, second=0, microsecond=0
+        hour=NIGHT_START_HOUR, minute=NIGHT_START_MINUTE, second=0, microsecond=0
     )
-    end = start + timedelta(hours=7, minutes=30)
+    end = start + timedelta(hours=7)
     return start, end
 
 
-def can_start_city_parse(now: datetime | None = None, estimated_seconds: int = ESTIMATED_CITY_PARSE_SECONDS) -> bool:
+def can_start_city_parse(now: datetime | None = None) -> bool:
     now = (now or datetime.now(_MSK)).astimezone(_MSK)
-    return (night_window_end(now) - now).total_seconds() >= estimated_seconds
+    return now < night_window_end(now)
 
 
 def calculate_next_sync_sleep(interval_sec: int) -> int:
@@ -166,7 +161,6 @@ def ensure_night_city_schedule(db: DBManager, now: datetime | None = None) -> li
     start, end = night_window_bounds_for_date(schedule_date)
     slots = max(1, int((end - start).total_seconds()) // max(1, len(NIGHT_CITY_SLUGS)))
     city_slugs = list(NIGHT_CITY_SLUGS)
-    random.shuffle(city_slugs)
     for index, city_slug in enumerate(city_slugs):
         slot_start = start + timedelta(seconds=index * slots)
         slot_end = min(end, slot_start + timedelta(seconds=slots))
@@ -201,13 +195,14 @@ def skip_missed_night_city_events(db: DBManager, now: datetime | None = None) ->
     now = now or datetime.now(timezone.utc)
     now_msk = now.astimezone(_MSK)
     skipped: list[str] = []
-    for event in ensure_night_city_schedule(db, now_msk):
+    if now_msk < night_window_end(now_msk):
+        return skipped
+    date_msk = night_schedule_date(now_msk).isoformat()
+    for event in db.get_scheduled_events(NIGHT_CITY_EVENT, date_msk):
         if event["status"] != "pending" or not event.get("run_at_utc"):
             continue
-        run_at = datetime.fromisoformat(event["run_at_utc"])
-        if run_at < now:
-            db.mark_scheduled_event_skipped(event["event_key"], "missed during downtime")
-            skipped.append(str(event["subject_id"]))
+        db.mark_scheduled_event_skipped(event["event_key"], "missed during downtime")
+        skipped.append(str(event["subject_id"]))
     return skipped
 
 
@@ -249,12 +244,11 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
 
         parser_success = True
         handled_night_iteration = False
+        skipped = skip_missed_night_city_events(db)
+        if skipped:
+            logger.info("[RUN] Night events skipped after downtime: %s", ", ".join(skipped))
 
         if is_night_time():
-            skipped = skip_missed_night_city_events(db)
-            if skipped:
-                logger.info("[RUN] Night events skipped after downtime: %s", ", ".join(skipped))
-
             due_event = get_due_night_city_event(db)
             if due_event is None:
                 now_local = datetime.now(_MSK)

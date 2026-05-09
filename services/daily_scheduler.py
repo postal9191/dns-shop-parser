@@ -72,7 +72,7 @@ class DailyScheduler:
                 elif event["event_type"] == FREE_DAILY_REPORT:
                     await self._process_daily_report(event)
                 else:
-                    self.db.mark_scheduled_event_failed(event["event_key"], "unknown event type")
+                    continue
             except Exception as exc:
                 logger.error("[SCHEDULER] event %s failed: %s", event.get("event_key"), exc)
                 self.db.mark_scheduled_event_failed(event["event_key"], str(exc))

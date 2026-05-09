@@ -67,7 +67,7 @@ class RecordingDB:
         self.soft_marked_products.append((category_id, list(uuids), city_slug))
         return 0
 
-    def get_product_count(self):
+    def get_product_count(self, include_sold=False, city_slug=None):
         return self.product_count
 
     def get_all_category_states(self, city_slug):
@@ -185,3 +185,18 @@ async def test_process_category_reactivates_sold_product_through_upsert():
     assert fake_db.upserted_products == [product]
     assert fake_db.soft_marked_products == [("cat-1", ["uuid-1"], "moscow")]
     assert fake_db.updated_state == [("cat-1", "Категория", 1, "moscow", ["uuid-1"])]
+
+
+@pytest.mark.asyncio
+async def test_parse_all_uses_city_scoped_counts_for_admin_summary():
+    fake_db = RecordingDB()
+    fake_db.product_count = 5
+    monitor = _monitor(FakeParser(categories=[Category(id="cat-1", label="Категория", count=0)]), fake_db)
+    monitor._process_category = AsyncMock(return_value=(0, 0))
+    monitor.tg.send_admin_parse_finish = AsyncMock()
+
+    await monitor.parse_all()
+    first_call = monitor.tg.send_admin_parse_finish.await_args.kwargs
+
+    assert first_call["total_db"] == 5
+    assert first_call["delta"] == 0
