@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import pytest
+
 import run
 
 
@@ -44,6 +46,54 @@ def test_after_2000_day_sync_sleep_goes_to_midnight():
     )
 
     assert sleep_seconds == 14220
+
+
+@pytest.mark.asyncio
+async def test_restart_inside_day_window_waits_for_env_timer_before_krasnodar(monkeypatch, db_memory):
+    msk = ZoneInfo("Europe/Moscow")
+    sleep_calls = []
+    parser_calls = []
+
+    class State:
+        is_running = True
+        iteration_count = 0
+
+    class Controller:
+        state = State()
+
+        def __init__(self):
+            self._should_stop = False
+
+        def should_stop(self):
+            return self._should_stop
+
+        def get_pending_interval(self):
+            return None
+
+    controller = Controller()
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 5, 7, 10, 3, tzinfo=msk)
+            return value if tz is None else value.astimezone(tz)
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        controller._should_stop = True
+
+    async def fake_run_parser(city_slug=None):
+        parser_calls.append(city_slug)
+        return True
+
+    monkeypatch.setattr(run, "datetime", FixedDateTime)
+    monkeypatch.setattr(run.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(run, "run_parser", fake_run_parser)
+
+    await run.main_cycle(controller, db_memory)
+
+    assert sleep_calls == [3420]
+    assert parser_calls == []
 
 
 def test_night_schedule_date_uses_current_day_after_midnight():

@@ -303,6 +303,7 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
     consecutive_errors = 0
     max_consecutive_errors = 5
     wait_time = config.parse_interval
+    startup_day_sync_wait_done = False
 
     while not parser_controller.should_stop():
         if not parser_controller.state.is_running:
@@ -359,8 +360,24 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
                 parser_success = await run_parser(city_slug)
             handled_night_iteration = True
         elif is_day_city_time():
+            if not startup_day_sync_wait_done:
+                startup_day_sync_wait_done = True
+                now_local = datetime.now(_MSK)
+                sleep_seconds = calculate_day_sync_sleep(wait_time, now_local)
+                logger.info(
+                    "[RUN] Startup inside day window, waiting %d sec until scheduled %s parse.",
+                    sleep_seconds,
+                    DAY_CITY_SLUG,
+                )
+                try:
+                    await asyncio.sleep(sleep_seconds)
+                except KeyboardInterrupt:
+                    logger.info("[RUN] Stopped by user (Ctrl+C)")
+                    break
+                continue
             parser_success = await run_parser(DAY_CITY_SLUG)
         else:
+            startup_day_sync_wait_done = True
             now_local = datetime.now(_MSK)
             sleep_seconds = calculate_sleep_until_next_active_window(now_local)
             logger.info("[RUN] Outside parse windows, sleeping %d sec.", sleep_seconds)
