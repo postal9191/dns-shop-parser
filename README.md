@@ -8,8 +8,8 @@
 - Региональные cookie хранятся в `data/cities.py`.
 - `parser.py` поддерживает `--city-slug`.
 - `run.py` запускает:
-  - дневной парсинг для `krasnodar`,
-  - ночные запуски по другим городам в окне 22:00–05:30 МСК,
+  - дневной парсинг для `krasnodar` с 07:00 до 20:00 МСК,
+  - ночные запуски по другим городам в окне 00:00–06:00 МСК,
   - `DailyScheduler` для daily-ивентов free-плана.
 - В БД добавлены `plan_type`, `report_limits`, `scheduled_events`.
 - Дайджесты для `pro/super` фильтруются в `TelegramNotifier.send_digest(..., plan_types=...)`.

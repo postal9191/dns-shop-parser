@@ -95,7 +95,7 @@ Optional:
 ## Important Behaviors
 
 - **Qrator cookies**: Reused across cycles via persistent Chromium profile. On Windows/macOS: `~/.dns-parser-chromium/`. On Linux: temporary profile per run.
-- **Night mode**: Parser skips 22:00–6:00 MSK
+- **Schedule**: Krasnodar parses 07:00–20:00 MSK; other cities parse once in 00:00–06:00 MSK
 - **Cron sync**: Sleeps to align with hour boundaries (interval 3600 → :00, :60; 1800 → :00, :30)
 - **Circuit breaker**: After 5 consecutive errors → exponential backoff (up to 60 min), alert to admin
 - **parser.py exits 0**: Intentionally — temporary DNS/Qrator/Node/network failures shouldn't stop the service. Don't change without architectural decision.

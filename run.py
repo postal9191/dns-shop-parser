@@ -85,17 +85,21 @@ async def _run_subprocess(script: str, log_name: str, args: list[str] | None = N
 _MSK = ZoneInfo("Europe/Moscow")
 NIGHT_START_HOUR = 0
 NIGHT_START_MINUTE = 0
-NIGHT_END_HOUR = 7
+NIGHT_END_HOUR = 6
 NIGHT_END_MINUTE = 0
+DAY_START_HOUR = 7
+DAY_START_MINUTE = 0
+DAY_LAST_RUN_HOUR = 20
+DAY_LAST_RUN_MINUTE = 0
 DAY_CITY_SLUG = "krasnodar"
 NIGHT_CITY_SLUGS = [slug for slug in CITIES.values() if slug != DAY_CITY_SLUG]
 NIGHT_CITY_EVENT = "night_city_parse"
 NIGHT_LOOP_POLL_SECONDS = 60
 
 
-def is_night_time() -> bool:
-    """Проверяет если сейчас ночное время (00:00-07:00 МСК)."""
-    now = datetime.now(_MSK)
+def is_night_time(now: datetime | None = None) -> bool:
+    """Проверяет если сейчас ночное время (00:00-06:00 МСК)."""
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
     return (now.hour, now.minute) >= (NIGHT_START_HOUR, NIGHT_START_MINUTE) and (
         now.hour,
         now.minute,
@@ -116,7 +120,7 @@ def night_window_bounds_for_date(schedule_date) -> tuple[datetime, datetime]:
     start = datetime.combine(schedule_date, datetime.min.time(), tzinfo=_MSK).replace(
         hour=NIGHT_START_HOUR, minute=NIGHT_START_MINUTE, second=0, microsecond=0
     )
-    end = start + timedelta(hours=7)
+    end = start.replace(hour=NIGHT_END_HOUR, minute=NIGHT_END_MINUTE)
     return start, end
 
 
@@ -125,14 +129,62 @@ def can_start_city_parse(now: datetime | None = None) -> bool:
     return now < night_window_end(now)
 
 
-def calculate_next_sync_sleep(interval_sec: int) -> int:
+def day_window_start(now: datetime | None = None) -> datetime:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    return now.replace(
+        hour=DAY_START_HOUR,
+        minute=DAY_START_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+
+
+def day_last_run_time(now: datetime | None = None) -> datetime:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    return now.replace(
+        hour=DAY_LAST_RUN_HOUR,
+        minute=DAY_LAST_RUN_MINUTE,
+        second=59,
+        microsecond=999999,
+    )
+
+
+def is_day_city_time(now: datetime | None = None) -> bool:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    return day_window_start(now) <= now <= day_last_run_time(now)
+
+
+def next_active_window_start(now: datetime | None = None) -> datetime:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    _, today_night_end = night_window_bounds_for_date(now.date())
+    today_day_start = day_window_start(now)
+
+    if now < today_night_end:
+        return now
+    if now < today_day_start:
+        return today_day_start
+    if now <= day_last_run_time(now):
+        return now
+
+    tomorrow = now.date() + timedelta(days=1)
+    tomorrow_night_start, _ = night_window_bounds_for_date(tomorrow)
+    return tomorrow_night_start
+
+
+def calculate_sleep_until_next_active_window(now: datetime | None = None) -> int:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    next_start = next_active_window_start(now)
+    return max(1, int((next_start - now).total_seconds()))
+
+
+def calculate_next_sync_sleep(interval_sec: int, now: datetime | None = None) -> int:
     """Рассчитывает сколько спать до следующего синхронного времени (как крон).
 
     Если интервал 3600 (час), то запускать в 0, 60, 120 минут
     Если интервал 1800 (30 мин), то запускать в 0, 30 минут часа
     Если интервал 900 (15 мин), то запускать в 0, 15, 30, 45 минут часа
     """
-    now = datetime.now(_MSK)
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
     now_seconds = now.hour * 3600 + now.minute * 60 + now.second
 
     # Следующее синхронное время
@@ -143,11 +195,35 @@ def calculate_next_sync_sleep(interval_sec: int) -> int:
     return interval_sec - remainder
 
 
+def calculate_day_sync_sleep(interval_sec: int, now: datetime | None = None) -> int:
+    now = (now or datetime.now(_MSK)).astimezone(_MSK)
+    sync_sleep = calculate_next_sync_sleep(interval_sec, now)
+    next_sync = now + timedelta(seconds=sync_sleep)
+    if is_day_city_time(next_sync):
+        return sync_sleep
+    next_start = next_active_window_start(next_sync)
+    return max(1, int((next_start - now).total_seconds()))
+
+
 async def run_parser(city_slug: str | None = None) -> bool:
     """Запускает parser в отдельном процессе асинхронно."""
     args = ["--city-slug", city_slug] if city_slug else None
     label = f"Парсинг товаров ({city_slug})" if city_slug else "Парсинг товаров"
     return await _run_subprocess("parser.py", label, args=args)
+
+
+def skip_invalid_night_city_events(db: DBManager, events: list[dict]) -> list[str]:
+    skipped: list[str] = []
+    for event in events:
+        if event["status"] != "pending" or not event.get("run_at_utc"):
+            continue
+        run_at = datetime.fromisoformat(event["run_at_utc"]).astimezone(_MSK)
+        start, end = night_window_bounds_for_date(run_at.date())
+        if start <= run_at < end:
+            continue
+        db.mark_scheduled_event_skipped(event["event_key"], "outside night window")
+        skipped.append(str(event["subject_id"]))
+    return skipped
 
 
 def ensure_night_city_schedule(db: DBManager, now: datetime | None = None) -> list[dict]:
@@ -156,6 +232,9 @@ def ensure_night_city_schedule(db: DBManager, now: datetime | None = None) -> li
     date_msk = schedule_date.isoformat()
     existing = db.get_scheduled_events(NIGHT_CITY_EVENT, date_msk)
     if existing:
+        skipped = skip_invalid_night_city_events(db, existing)
+        if skipped:
+            return db.get_scheduled_events(NIGHT_CITY_EVENT, date_msk)
         return existing
 
     start, end = night_window_bounds_for_date(schedule_date)
@@ -279,8 +358,18 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
                 db.mark_scheduled_event_done(due_event["event_key"])
                 parser_success = await run_parser(city_slug)
             handled_night_iteration = True
-        else:
+        elif is_day_city_time():
             parser_success = await run_parser(DAY_CITY_SLUG)
+        else:
+            now_local = datetime.now(_MSK)
+            sleep_seconds = calculate_sleep_until_next_active_window(now_local)
+            logger.info("[RUN] Outside parse windows, sleeping %d sec.", sleep_seconds)
+            try:
+                await asyncio.sleep(sleep_seconds)
+            except KeyboardInterrupt:
+                logger.info("[RUN] Stopped by user (Ctrl+C)")
+                break
+            continue
 
         if parser_success:
             consecutive_errors = 0
@@ -308,7 +397,7 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
             wait_time = new_interval
             logger.info("[RUN] ⏱️  Новый интервал: %d сек", wait_time)
 
-        # Проверяем ночное время (22:00-6:00)
+        # Проверяем ночное время (00:00-06:00)
         # Night window sleep until next scheduled city or end of window
         if is_night_time() and handled_night_iteration:
             now = datetime.now(_MSK)
@@ -332,7 +421,7 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
             continue
 
         # Синхронизируем запуски с крон (как будто настроен крон с интервалом)
-        sync_sleep = calculate_next_sync_sleep(wait_time)
+        sync_sleep = calculate_day_sync_sleep(wait_time)
         logger.info("[RUN] Синхронный запуск через %d сек (интервал %d сек)...", sync_sleep, wait_time)
         try:
             await asyncio.sleep(sync_sleep)

@@ -4,19 +4,46 @@ from zoneinfo import ZoneInfo
 import run
 
 
-def test_can_start_city_parse_allows_start_until_0700_deadline():
+def test_can_start_city_parse_allows_start_until_0600_deadline():
     msk = ZoneInfo("Europe/Moscow")
 
-    assert run.can_start_city_parse(datetime(2026, 5, 7, 6, 59, tzinfo=msk)) is True
-    assert run.can_start_city_parse(datetime(2026, 5, 7, 7, 0, tzinfo=msk)) is False
+    assert run.can_start_city_parse(datetime(2026, 5, 7, 5, 59, tzinfo=msk)) is True
+    assert run.can_start_city_parse(datetime(2026, 5, 7, 6, 0, tzinfo=msk)) is False
 
 
-def test_night_window_end_is_0700_same_day():
+def test_night_window_end_is_0600_same_day():
     msk = ZoneInfo("Europe/Moscow")
 
     end = run.night_window_end(datetime(2026, 5, 7, 1, 5, tzinfo=msk))
 
-    assert end == datetime(2026, 5, 7, 7, 0, tzinfo=msk)
+    assert end == datetime(2026, 5, 7, 6, 0, tzinfo=msk)
+
+
+def test_day_city_time_allows_krasnodar_0700_to_2000():
+    msk = ZoneInfo("Europe/Moscow")
+
+    assert run.is_day_city_time(datetime(2026, 5, 7, 7, 0, tzinfo=msk)) is True
+    assert run.is_day_city_time(datetime(2026, 5, 7, 19, 59, tzinfo=msk)) is True
+    assert run.is_day_city_time(datetime(2026, 5, 7, 20, 0, tzinfo=msk)) is True
+
+
+def test_day_city_time_rejects_outside_krasnodar_window():
+    msk = ZoneInfo("Europe/Moscow")
+
+    assert run.is_day_city_time(datetime(2026, 5, 7, 6, 59, tzinfo=msk)) is False
+    assert run.is_day_city_time(datetime(2026, 5, 7, 20, 1, tzinfo=msk)) is False
+    assert run.is_day_city_time(datetime(2026, 5, 7, 23, 0, tzinfo=msk)) is False
+
+
+def test_after_2000_day_sync_sleep_goes_to_midnight():
+    msk = ZoneInfo("Europe/Moscow")
+
+    sleep_seconds = run.calculate_day_sync_sleep(
+        3600,
+        datetime(2026, 5, 7, 20, 3, tzinfo=msk),
+    )
+
+    assert sleep_seconds == 14220
 
 
 def test_night_schedule_date_uses_current_day_after_midnight():
@@ -33,7 +60,7 @@ def test_ensure_night_city_schedule_is_idempotent(db_memory, monkeypatch):
     monkeypatch.setattr(run.random, "randrange", lambda span: 0)
 
     first = run.ensure_night_city_schedule(db_memory, datetime(2026, 5, 7, 0, 1, tzinfo=msk))
-    second = run.ensure_night_city_schedule(db_memory, datetime(2026, 5, 7, 6, 50, tzinfo=msk))
+    second = run.ensure_night_city_schedule(db_memory, datetime(2026, 5, 7, 5, 50, tzinfo=msk))
 
     assert len(first) == 2
     assert len(second) == 2
@@ -41,10 +68,10 @@ def test_ensure_night_city_schedule_is_idempotent(db_memory, monkeypatch):
     assert [event["subject_id"] for event in first] == ["moscow", "spb"]
     assert all(event["user_id"] is None for event in first)
     assert first[0]["run_at_utc"] == "2026-05-06T21:00:00+00:00"
-    assert first[1]["run_at_utc"] == "2026-05-07T00:30:00+00:00"
+    assert first[1]["run_at_utc"] == "2026-05-07T00:00:00+00:00"
 
 
-def test_restart_before_0700_does_not_skip_due_night_events(db_memory, monkeypatch):
+def test_restart_before_0600_does_not_skip_due_night_events(db_memory, monkeypatch):
     msk = ZoneInfo("Europe/Moscow")
     monkeypatch.setattr(run, "NIGHT_CITY_SLUGS", ["moscow", "spb"])
     values = iter([0, 3600])
@@ -60,20 +87,36 @@ def test_restart_before_0700_does_not_skip_due_night_events(db_memory, monkeypat
     assert due_event["subject_id"] == "moscow"
 
 
-def test_restart_after_0700_skips_pending_night_events(db_memory, monkeypatch):
+def test_restart_after_0600_skips_pending_night_events(db_memory, monkeypatch):
     msk = ZoneInfo("Europe/Moscow")
     monkeypatch.setattr(run, "NIGHT_CITY_SLUGS", ["moscow", "spb"])
     values = iter([0, 3600])
     monkeypatch.setattr(run.random, "randrange", lambda span: next(values))
 
     run.ensure_night_city_schedule(db_memory, datetime(2026, 5, 7, 0, 0, tzinfo=msk))
-    restart_now = datetime(2026, 5, 7, 7, 5, tzinfo=msk).astimezone(timezone.utc)
+    restart_now = datetime(2026, 5, 7, 6, 5, tzinfo=msk).astimezone(timezone.utc)
 
     skipped = run.skip_missed_night_city_events(db_memory, restart_now)
     due_event = run.get_due_night_city_event(db_memory, restart_now)
 
     assert skipped == ["moscow", "spb"]
     assert due_event is None
+
+
+def test_existing_night_event_outside_new_window_is_skipped(db_memory):
+    msk = ZoneInfo("Europe/Moscow")
+    run_at = datetime(2026, 5, 7, 6, 30, tzinfo=msk).astimezone(timezone.utc)
+    event_key = db_memory.ensure_scheduled_event(
+        run.NIGHT_CITY_EVENT,
+        "2026-05-07",
+        subject_id="moscow",
+        run_at_utc=run_at.isoformat(),
+    )
+
+    events = run.ensure_night_city_schedule(db_memory, datetime(2026, 5, 7, 0, 1, tzinfo=msk))
+
+    assert events[0]["event_key"] == event_key
+    assert events[0]["status"] == "skipped"
 
 
 def test_done_city_is_not_selected_again_same_night(db_memory, monkeypatch):
