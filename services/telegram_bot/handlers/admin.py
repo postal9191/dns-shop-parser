@@ -7,6 +7,7 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 from config import config
+from data.cities import SLUG_TO_CITY
 from .. import keyboards as kb
 
 if TYPE_CHECKING:
@@ -45,6 +46,7 @@ class AdminHandler:
             "admin_interval": self._on_admin_interval,
             "admin_logs":     self._on_admin_logs,
             "admin_status":   self._on_admin_status,
+            "admin_force_parse": self._on_admin_force_parse,
         }
 
         for prefix, handler in branches.items():
@@ -52,6 +54,9 @@ class AdminHandler:
                 await handler(callback_id, user_id, chat_id, message_id)
                 return
 
+        if data.startswith("admin_force_city:"):
+            await self._on_admin_force_city(callback_id, user_id, chat_id, message_id, data)
+            return
         if data.startswith("admin_rights_page:"):
             await self._on_admin_rights_page(callback_id, user_id, chat_id, message_id, data)
             return
@@ -190,6 +195,47 @@ class AdminHandler:
         await self._bot.send_message(chat_id, f"<b>📊 Статус парсера:</b>\n\n{status}")
 
     # ── Interval input ────────────────────────────────────────────────────────
+
+    async def _on_admin_force_parse(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        await self._bot._answer_callback(callback_id, "")
+        text = "🏙 <b>Принудительный парсинг</b>\n\nВыберите город:"
+        if message_id:
+            await self._bot.edit_message_text(
+                chat_id, message_id, text,
+                reply_markup=kb._build_admin_force_city_keyboard(),
+            )
+        else:
+            await self._bot.send_message(
+                chat_id, text,
+                reply_markup=kb._build_admin_force_city_keyboard(),
+            )
+
+    async def _on_admin_force_city(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
+    ) -> None:
+        if not self._bot.parser_controller:
+            await self._bot._answer_callback(callback_id, "Ошибка: контроллер не готов", alert=True)
+            return
+        try:
+            city_slug = data.split(":", 1)[1]
+        except IndexError:
+            await self._bot._answer_callback(callback_id, "Неизвестный город", alert=True)
+            return
+
+        result = await self._bot.parser_controller.enqueue_city_parse(city_slug)
+        city_name = SLUG_TO_CITY.get(city_slug, city_slug)
+        if result.status == "queued":
+            await self._bot._answer_callback(callback_id, f"Добавлено в очередь: {city_name}")
+            return
+        if result.status == "duplicate":
+            await self._bot._answer_callback(callback_id, f"Уже в очереди или выполняется: {city_name}", alert=True)
+            return
+        if result.status == "runner_missing":
+            await self._bot._answer_callback(callback_id, "Runner парсера не настроен", alert=True)
+            return
+        await self._bot._answer_callback(callback_id, "Неизвестный город", alert=True)
 
     def _rights_state(self, admin_id: str) -> tuple[list[dict], dict[str, str], int]:
         us = self._bot._user_state

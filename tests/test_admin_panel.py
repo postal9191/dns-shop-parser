@@ -2,6 +2,7 @@
 Тесты для админ-панели и callback обработчиков.
 """
 
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime
@@ -132,6 +133,75 @@ class TestParserController:
 
         result = await controller.set_interval(-100)
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_enqueue_city_parse_adds_supported_city(self):
+        calls = []
+
+        async def runner(city_slug=None):
+            calls.append(city_slug)
+            return True
+
+        controller = ParserController(runner)
+
+        result = await controller.enqueue_city_parse("moscow")
+        await controller._manual_queue_task
+
+        assert result.status == "queued"
+        assert calls == ["moscow"]
+
+    @pytest.mark.asyncio
+    async def test_enqueue_city_parse_rejects_unknown_city(self):
+        async def runner(city_slug=None):
+            return True
+
+        controller = ParserController(runner)
+
+        result = await controller.enqueue_city_parse("novosibirsk")
+
+        assert result.status == "invalid_city"
+
+    @pytest.mark.asyncio
+    async def test_enqueue_city_parse_does_not_duplicate_pending_city(self):
+        release = asyncio.Event()
+
+        async def runner(city_slug=None):
+            await release.wait()
+            return True
+
+        controller = ParserController(runner)
+
+        first = await controller.enqueue_city_parse("moscow")
+        second = await controller.enqueue_city_parse("moscow")
+        release.set()
+        await controller._manual_queue_task
+
+        assert first.status == "queued"
+        assert second.status == "duplicate"
+
+    @pytest.mark.asyncio
+    async def test_run_parse_uses_shared_lock(self):
+        active = 0
+        max_active = 0
+        release = asyncio.Event()
+
+        async def runner(city_slug=None):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await release.wait()
+            active -= 1
+            return True
+
+        controller = ParserController(runner)
+        first = asyncio.create_task(controller.run_parse("moscow"))
+        second = asyncio.create_task(controller.run_parse("spb"))
+        await asyncio.sleep(0)
+        release.set()
+
+        assert await first is True
+        assert await second is True
+        assert max_active == 1
 
     def test_should_stop(self):
         """Проверяет проверку остановки."""

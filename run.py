@@ -357,7 +357,7 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
                 parser_success = False
             else:
                 db.mark_scheduled_event_done(due_event["event_key"])
-                parser_success = await run_parser(city_slug)
+                parser_success = await parser_controller.run_parse(city_slug)
             handled_night_iteration = True
         elif is_day_city_time():
             if not startup_day_sync_wait_done:
@@ -375,7 +375,7 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
                     logger.info("[RUN] Stopped by user (Ctrl+C)")
                     break
                 continue
-            parser_success = await run_parser(DAY_CITY_SLUG)
+            parser_success = await parser_controller.run_parse(DAY_CITY_SLUG)
         else:
             startup_day_sync_wait_done = True
             now_local = datetime.now(_MSK)
@@ -451,7 +451,7 @@ async def main() -> None:
     """Запускает основной цикл и ТГ бота параллельно."""
 
     # Инициализируем контроллер парсера и БД
-    parser_controller = ParserController()
+    parser_controller = ParserController(run_parser)
     db = DBManager(config.db_path)
     telegram_bot = init_telegram_bot(db, parser_controller)
     notifier = TelegramNotifier(bot=telegram_bot, db=db)

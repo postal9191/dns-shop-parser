@@ -6,6 +6,7 @@
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -433,6 +434,49 @@ def test_admin_menu_includes_user_rights_button():
     keyboard = _kb._build_admin_menu_keyboard()
     flat = [button for row in keyboard["inline_keyboard"] for button in row]
     assert any(button["callback_data"] == "admin_rights" for button in flat)
+
+
+def test_admin_menu_includes_force_city_parse_button():
+    from services.telegram_bot import keyboards as _kb
+
+    keyboard = _kb._build_admin_menu_keyboard()
+    flat = [button for row in keyboard["inline_keyboard"] for button in row]
+    assert any(button["callback_data"] == "admin_force_parse" for button in flat)
+
+
+def test_admin_force_city_keyboard_uses_supported_cities():
+    from data.cities import CITIES
+    from services.telegram_bot import keyboards as _kb
+
+    keyboard = _kb._build_admin_force_city_keyboard()
+    callbacks = {
+        button["callback_data"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    }
+
+    for slug in CITIES.values():
+        assert f"admin_force_city:{slug}" in callbacks
+
+
+@pytest.mark.asyncio
+async def test_admin_force_city_callback_enqueues_selected_city():
+    parser_controller = MagicMock()
+    parser_controller.enqueue_city_parse = AsyncMock(
+        return_value=SimpleNamespace(status="queued")
+    )
+    bot = _make_bot(parser_controller=parser_controller, admin_id="999")
+    bot._answer_callback = AsyncMock()
+
+    await bot._handle_callback_query({
+        "id": "q1",
+        "from": {"id": 999},
+        "message": {"chat": {"id": 111}, "message_id": 5},
+        "data": "admin_force_city:moscow",
+    })
+
+    parser_controller.enqueue_city_parse.assert_awaited_once_with("moscow")
+    bot._answer_callback.assert_awaited()
 
 
 def test_admin_rights_keyboard_marks_draft_change():

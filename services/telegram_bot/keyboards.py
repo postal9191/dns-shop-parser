@@ -109,6 +109,55 @@ def _build_settings_submenu_keyboard() -> dict:
     }
 
 
+def _build_admin_force_city_keyboard() -> dict:
+    """Inline keyboard for manual admin city parsing."""
+    cities = list(CITIES.items())
+    rows = []
+    for i in range(0, len(cities), 2):
+        rows.append([
+            {
+                "text": name,
+                "callback_data": f"admin_force_city:{slug}",
+            }
+            for name, slug in cities[i:i + 2]
+        ])
+    rows.append([{"text": "← Назад в админ-панель", "callback_data": "admin_back"}])
+    return {"inline_keyboard": rows}
+
+
+def _build_admin_menu_keyboard() -> dict:
+    """Main admin parser menu."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "▶️ Запустить", "callback_data": "admin_start"},
+                {"text": "⏹ Остановить", "callback_data": "admin_stop"},
+            ],
+            [
+                {"text": "🔄 Перезапустить", "callback_data": "admin_restart"},
+                {"text": "⏱ Интервал", "callback_data": "admin_interval"},
+            ],
+            [
+                {"text": "📄 Логи", "callback_data": "admin_logs"},
+            ],
+            [
+                {"text": "🏙 Принудительный парсинг", "callback_data": "admin_force_parse"},
+            ],
+            [
+                {"text": "📊 Статус", "callback_data": "admin_status"},
+                {"text": "🔔 Уведомления", "callback_data": "admin_notify"},
+            ],
+            [
+                {"text": "Права пользователей", "callback_data": "admin_rights"},
+            ],
+            [
+                {"text": "⬅️ Назад в главное меню", "callback_data": "menu_back"},
+            ],
+        ]
+    }
+    
+
+
 def _build_settings_keyboard(s: dict) -> dict:
     """Inline-клавиатура /settings на основе текущих настроек."""
     on_off = lambda v: "✅" if v else "❌"
@@ -383,31 +432,3 @@ def _build_admin_rights_plan_keyboard(
     rows.append([{"text": "← Назад в админ-панель", "callback_data": "admin_back"}])
     return {"inline_keyboard": rows}
 
-
-def _build_admin_menu_keyboard() -> dict:
-    """Главное меню админ-панели (используется и в /admin, и в admin_back)."""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "▶️ Запустить",  "callback_data": "admin_start"},
-                {"text": "⏹ Остановить", "callback_data": "admin_stop"},
-            ],
-            [
-                {"text": "🔄 Перезапустить", "callback_data": "admin_restart"},
-                {"text": "⏱ Интервал",      "callback_data": "admin_interval"},
-            ],
-            [
-                {"text": "📄 Логи",         "callback_data": "admin_logs"},
-            ],
-            [
-                {"text": "📊 Статус",       "callback_data": "admin_status"},
-                {"text": "🔔 Уведомления",   "callback_data": "admin_notify"},
-            ],
-            [
-                {"text": "Права пользователей", "callback_data": "admin_rights"},
-            ],
-            [
-                {"text": "⬅️ Назад в главное меню", "callback_data": "menu_back"},
-            ],
-        ]
-    }

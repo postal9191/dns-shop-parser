@@ -181,3 +181,53 @@ def test_done_city_is_not_selected_again_same_night(db_memory, monkeypatch):
     due_event = run.get_due_night_city_event(db_memory, datetime(2026, 5, 7, 0, 30, tzinfo=timezone.utc))
 
     assert due_event is None
+
+
+@pytest.mark.asyncio
+async def test_main_cycle_runs_scheduled_parse_through_controller(db_memory, monkeypatch):
+    msk = ZoneInfo("Europe/Moscow")
+    monkeypatch.setattr(run, "NIGHT_CITY_SLUGS", ["moscow", "spb"])
+    monkeypatch.setattr(run.random, "randrange", lambda span: 0)
+    parser_calls = []
+
+    class State:
+        is_running = True
+        iteration_count = 0
+
+    class Controller:
+        state = State()
+
+        def __init__(self):
+            self._should_stop = False
+
+        def should_stop(self):
+            return self._should_stop
+
+        def get_pending_interval(self):
+            return None
+
+        async def run_parse(self, city_slug=None):
+            parser_calls.append(city_slug)
+            return True
+
+    controller = Controller()
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 5, 7, 0, 30, tzinfo=msk)
+            return value if tz is None else value.astimezone(tz)
+
+    async def fake_sleep(seconds):
+        controller._should_stop = True
+
+    async def forbidden_run_parser(city_slug=None):
+        raise AssertionError("main_cycle must use parser_controller.run_parse")
+
+    monkeypatch.setattr(run, "datetime", FixedDateTime)
+    monkeypatch.setattr(run.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(run, "run_parser", forbidden_run_parser)
+
+    await run.main_cycle(controller, db_memory)
+
+    assert parser_calls == ["moscow"]
