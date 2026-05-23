@@ -30,6 +30,8 @@ class TelegramBot:
     def __init__(self, db_manager=None, parser_controller=None) -> None:
         self.token = config.telegram_token
         self.api_url = f"https://api.telegram.org/bot{self.token}"
+        self.admin_token = config.admin_telegram_token or self.token
+        self.admin_api_url = f"https://api.telegram.org/bot{self.admin_token}"
         self.db = db_manager
         self.parser_controller = parser_controller
         self.enabled = bool(self.token)
@@ -240,6 +242,59 @@ class TelegramBot:
                     logger.error("[TG BOT] Ошибка при отправке сообщения: %s", exc)
         return "fail"
 
+    async def send_admin_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> str:
+        """Отправляет админ-сообщение через админ-токен (fallback на основной токен). Возвращает: 'ok' | 'blocked' | 'fail'."""
+        if not self.enabled:
+            return "fail"
+
+        # Если админ-токен не задан, используем обычный send_message
+        if self.admin_token == self.token:
+            return await self.send_message(chat_id, text, reply_markup)
+
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+
+        for attempt in range(3):
+            try:
+                async with self._get_session().post(
+                    f"{self.admin_api_url}/sendMessage",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    status = resp.status
+                    data = await resp.json()
+
+                    if status == 200 and data.get("ok"):
+                        return "ok"
+                    if status == 429:
+                        retry_after = data.get("parameters", {}).get("retry_after", 5)
+                        logger.warning("[TG BOT ADMIN] Rate limit, жду %d сек (попытка %d/3)", retry_after, attempt + 1)
+                        await asyncio.sleep(retry_after + 1)
+                        continue
+                    if status == 403:
+                        logger.info("[TG BOT ADMIN] Пользователь %s заблокировал админ-бота (403): %s",
+                                    chat_id, data.get("description"))
+                        return "blocked"
+                    desc = data.get("description", "")
+                    if status == 400 and ("chat not found" in desc.lower() or "user is deactivated" in desc.lower()):
+                        logger.info("[TG BOT ADMIN] Чат %s недоступен (%s): %s", chat_id, status, desc)
+                        return "blocked"
+                    logger.warning("[TG BOT ADMIN] Ответ %d при отправке в %s (попытка %d/3): %s",
+                                   status, chat_id, attempt + 1, desc)
+                    if status >= 500:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    return "fail"
+            except Exception as exc:
+                if attempt < 2:
+                    wait = 2 ** attempt
+                    logger.warning("[TG BOT ADMIN] Ошибка отправки, retry через %d сек: %s", wait, exc)
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("[TG BOT ADMIN] Ошибка при отправке админ-сообщения: %s", exc)
+        return "fail"
+
     async def broadcast_message(self, text: str) -> int:
         """Рассылает сообщение всем подписчикам. Возвращает кол-во успешных."""
         if not self.enabled:
@@ -395,7 +450,7 @@ class TelegramBot:
                             f"TG ID: <code>{user_id}</code>\n"
                             f"Язык: {lang}"
                         )
-                        await self.send_message(self.admin_id, admin_text)
+                        await self.send_admin_message(self.admin_id, admin_text)
                 await self.send_message(
                     chat_id, "Выберите действие:",
                     reply_markup=self._build_main_menu_keyboard(user_id, self.admin_id),

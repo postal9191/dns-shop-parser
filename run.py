@@ -290,7 +290,7 @@ async def telegram_bot_polling(telegram_bot) -> None:
     await telegram_bot.polling_loop()
 
 
-async def main_cycle(parser_controller: ParserController, db: DBManager, telegram_bot=None) -> None:
+async def main_cycle(parser_controller: ParserController, db: DBManager, telegram_bot=None, notifier=None) -> None:
     """Главный цикл: парсинг товаров с поддержкой управления админом."""
     logger.info("="*70)
     logger.info("[RUN] Запущен автоматический парсер DNS Shop")
@@ -397,11 +397,10 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
 
             if consecutive_errors >= max_consecutive_errors:
                 logger.critical("[RUN] 🔴 Достигнуто максимальное число ошибок подряд (%d). Требуется вмешательство!", consecutive_errors)
-                if telegram_bot and telegram_bot.admin_id:
-                    await telegram_bot.send_message(
-                        telegram_bot.admin_id,
-                        f"🔴 Парсер: {consecutive_errors} ошибок подряд — требуется вмешательство!\n"
-                        f"Парсер приостановлен.",
+                if notifier:
+                    await notifier.send_admin_alert(
+                        f"🔴 Парсер: {consecutive_errors} ошибок подряд — требуется вмешательство!\nПарсер приостановлен.",
+                        msg_type="error"
                     )
                 # Экспоненциальный backoff: 2^(N-5) минут, максимум 60 минут
                 backoff = min(60 * (2 ** (consecutive_errors - max_consecutive_errors)), 3600)
@@ -466,7 +465,7 @@ async def main() -> None:
     # 2. ТГ бот (polling - обработка команд)
 
     tasks = [
-        asyncio.create_task(main_cycle(parser_controller, db, telegram_bot)),
+        asyncio.create_task(main_cycle(parser_controller, db, telegram_bot, notifier)),
         asyncio.create_task(telegram_bot_polling(telegram_bot)),
         asyncio.create_task(daily_scheduler.run_forever()),
     ]

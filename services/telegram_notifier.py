@@ -372,7 +372,7 @@ class TelegramNotifier:
         if msg_type == "parse_finish" and not admin_settings.get("notify_parse_finish", True):
             return
 
-        await self.bot.send_message(self.bot.admin_id, text)
+        await self.bot.send_admin_message(self.bot.admin_id, text)
 
     def _get_admin_settings(self) -> dict:
         """Возвращает настройки админа из БД, кеширует результат."""

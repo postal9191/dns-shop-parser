@@ -38,6 +38,9 @@ class Config:
     proxy_user: str = ""
     proxy_password: str = ""
 
+    # Админ-бот (опционально)
+    admin_telegram_token: str = ""
+
     @classmethod
     def from_env(cls) -> "Config":
         token = os.getenv("TELEGRAM_TOKEN", "").strip()
@@ -51,6 +54,7 @@ class Config:
             telegram_token=token,
             telegram_chat_id=chat_id,
             telegram_chat_admin=admin_id,
+            admin_telegram_token=os.getenv("TELEGRAM_ADMIN_TOKEN", "").strip(),
             api_base_url=os.getenv("API_BASE_URL", "https://www.dns-shop.ru").rstrip("/"),
             db_path=os.getenv("DB_PATH", "dns_monitor.db"),
             parse_interval=int(os.getenv("PARSE_INTERVAL") or "3600"),  # 1 час
