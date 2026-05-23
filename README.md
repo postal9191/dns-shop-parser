@@ -1,132 +1,178 @@
 # DNS Shop Parser
 
-Асинхронный мониторинг уцененных товаров DNS с Telegram-ботом, персональными настройками и планами подписки.
+🎯 **Персональный помощник для охоты за скидками в DNS Shop**
 
-## Что изменилось (актуально на 2026-05-08)
+Telegram-бот, который мониторит цены и присылает уведомления только о том, что действительно интересно. Никакого спама — только умная персонализация под ваши потребности.
 
-- Город больше не задается через `.env` (`CITY_COOKIE_*` удалены).
-- Региональные cookie хранятся в `data/cities.py`.
-- `parser.py` поддерживает `--city-slug`.
-- `run.py` запускает:
-  - дневной парсинг для `krasnodar` с 07:00 до 20:00 МСК,
-  - ночные запуски по другим городам в окне 00:00–06:00 МСК,
-  - `DailyScheduler` для daily-ивентов free-плана.
-- В БД добавлены `plan_type`, `report_limits`, `scheduled_events`.
-- Дайджесты для `pro/super` фильтруются в `TelegramNotifier.send_digest(..., plan_types=...)`.
+## ✨ Особенности
 
-## Требования
+### 🎯 Умная персонализация
+- **Выбор города**: Краснодар парсится каждый час в рабочее время (07:00-20:00 МСК), остальные города — реже
+- **Интересные категории**: выбираете только то, что нужно — от смартфонов до бытовой техники  
+- **Порог скидки**: настраиваете минимальный процент (например, уведомлять только о скидках от 20%)
+- **Тип уведомлений**: новые товары, снижение цен, или и то, и другое
 
-- Python 3.10+
-- Node.js 18+
-- npm
+### 🛡️ Надежность
+- **Автовосстановление**: после сбоев система сама перезапускается
+- **Circuit Breaker**: при множественных ошибках включается защитный режим с экспоненциальной задержкой
+- **Мониторинг**: администратор получает уведомления о критических проблемах
 
-## Быстрый старт
+### 🔧 Техническая элегантность
+- **Гибридная архитектура**: Node.js + Playwright только для обхода Qrator WAF, основные запросы через Python + aiohttp
+- **Минимальные ресурсы**: cookies переиспользуются между циклами парсинга
+- **Стабильный обход защиты**: работает с современной системой Qrator WAF
+
+### Установка
 
 ```bash
+# Установка зависимостей
 npm install
 npx playwright install chromium
 pip install -r requirements.txt
+
+# Настройка конфигурации
 cp .env.example .env
+# Отредактируйте .env файл, добавив TELEGRAM_TOKEN и TELEGRAM_CHAT_ADMIN
+
+# Запуск
 python run.py
 ```
 
-## Конфигурация (`.env`)
+## 📱 Как использовать
 
-Обязательные:
+1. **Найдите бота в Telegram**: @dns_shop_parser_bot
+2. **Запустите командой** `/start`
+3. **Настройте под себя**:
+   - Выберите город
+   - Укажите интересные категории
+   - Установите минимальный процент скидки
+   - Включите нужные типы уведомлений
 
-- `TELEGRAM_TOKEN` — токен бота
-- `TELEGRAM_CHAT_ADMIN` — Telegram user id администратора
+Настройка занимает 2-3 минуты, а экономия времени и денег начинается сразу.
 
-Основные:
+## 📊 Примеры уведомлений
 
-- `API_BASE_URL` (по умолчанию `https://www.dns-shop.ru`)
-- `DB_PATH` (по умолчанию `dns_monitor.db`)
-- `PARSE_INTERVAL` (по умолчанию `3600`)
-- `PARSE_CONCURRENCY` (по умолчанию `5`)
-- `MAX_RETRIES` (по умолчанию `4`)
-- `RETRY_DELAY` (по умолчанию `5.0`)
-- `LOG_LEVEL` (`DEBUG|INFO|WARNING|ERROR`)
+```
+🆕 Смартфоны • +3
 
-Qrator/Node timeouts:
+• iPhone 15 Pro 256GB 🆕
+  💰 89 990 ₽ 99 990 ₽
 
-- `QRATOR_INIT_TIMEOUT` (Linux default `360`, прочие `330`)
-- `QRATOR_NODE_TIMEOUT` (default `300`)
-- `QRATOR_PROXY_CHECK_TIMEOUT` (default `20`)
+• Samsung Galaxy S24 Ultra ♻️
+  💰 79 990 ₽
 
-User-Agent:
+🔽 Снижение цен (2)
 
-- `USE_PLATFORM_UA=true|false` (default `false`)
-
-Proxy:
-
-- `PROXY_HOST`
-- `PROXY_PORT`
-- `PROXY_USER`
-- `PROXY_PASSWORD`
-
-## Запуск
-
-Один проход:
-
-```bash
-python parser.py --city-slug krasnodar
+• MacBook Air M2 13"
+  🔽 94 990 ₽ 109 990 ₽ (−13%)
 ```
 
-Основной сервис:
+## ⚙️ Конфигурация (.env)
 
+### Обязательные параметры
+- `TELEGRAM_TOKEN` — токен бота от @BotFather
+- `TELEGRAM_CHAT_ADMIN` — ваш Telegram user ID для админ-панели
+
+### Основные настройки
+- `API_BASE_URL` — базовый URL DNS Shop (по умолчанию `https://www.dns-shop.ru`)
+- `DB_PATH` — путь к базе данных (по умолчанию `dns_monitor.db`)
+- `PARSE_INTERVAL` — интервал парсинга в секундах (по умолчанию `3600`)
+- `PARSE_CONCURRENCY` — количество параллельных запросов (по умолчанию `5`)
+- `LOG_LEVEL` — уровень логирования (`DEBUG|INFO|WARNING|ERROR`)
+
+### Прокси (опционально)
+- `PROXY_HOST` — хост прокси-сервера
+- `PROXY_PORT` — порт прокси-сервера  
+- `PROXY_USER` — логин для прокси
+- `PROXY_PASSWORD` — пароль для прокси
+
+## 🏙️ Поддерживаемые города
+
+- **Краснодар** — парсинг каждый час в рабочее время (07:00-20:00 МСК)
+- **Москва** — парсинг в ночное время (00:00-06:00 МСК)
+- **Санкт-Петербург** — парсинг в ночное время (00:00-06:00 МСК)
+
+Источник конфигурации: `data/cities.py`
+
+## 🔧 Команды разработчика
+
+### Разработка
 ```bash
-python run.py
+python run.py                    # Основной режим (парсинг + Telegram бот)
+python parser.py --city-slug krasnodar  # Однократный парсинг
+python bot_only.py              # Только Telegram polling (без парсинга)
+node solve_qrator.js            # Тест обхода Qrator WAF
 ```
 
-## Поддерживаемые города
-
-Сейчас в коде:
-
-- `moscow`
-- `spb`
-- `krasnodar`
-
-Источник: `data/cities.py`.
-
-## Планы и отчеты
-
-- `free`: дневной отчет через `DailyScheduler`, ограничения по категориям (`report_limits`).
-- `pro`, `super`: получают основной парсерный дайджест (новинки + падения цен).
-
-## База данных
-
-Ключевые таблицы:
-
-- `products`
-- `price_history`
-- `category_state`
-- `telegram_subscribers`
-- `user_settings` (`plan_type`, настройки уведомлений)
-- `user_categories`
-- `report_limits`
-- `scheduled_events`
-
-Миграции выполняются автоматически при старте `DBManager`.
-
-## Тесты
-
+### Тестирование
 ```bash
 pip install -r tests/requirements-test.txt
 pytest -q
 ```
 
-## Важно
+## 🏗️ Архитектура
 
-- Не коммитьте `.env`.
-- При изменении логики городов обновляйте `data/cities.py` и документацию одновременно.
-## 2026-05-08: Category City Isolation
+```
+run.py (asyncio event loop)
+├── main_cycle()           ← парсинг в subprocess каждые N секунд
+│   └── parser.py          ← subprocess (timeout 10 мин)
+│       ├── qrator_resolver.py → solve_qrator.js (Playwright)
+│       ├── session_manager.py → aiohttp сессия с куками
+│       ├── simple_dns_parser.py → HTTP → категории → UUID → детали
+│       ├── db_manager.py → SQLite (upsert, история цен)
+│       └── telegram_notifier.py → персональный дайджест
+└── telegram_bot_polling() ← Telegram polling (параллельно)
+```
 
-- `user_categories` now stores categories by `(user_id, city_slug, category_id)`.
-- Category settings, report filters, and digest filtering use user's current `city_slug`.
-- Category IDs can overlap between cities safely; categories are isolated per city.
-- Empty category selection still means "all categories", but only inside current city.
+### Ключевой поток выполнения:
+1. `run.py` запускает `parser.py` как subprocess каждый цикл
+2. `parser.py` вызывает `session_manager._init_session()` → запускает `solve_qrator.js`
+3. `solve_qrator.js` открывает headless Chromium, посещает DNS, извлекает cookies → stdout
+4. `SimpleDNSParser` получает категории → UUID через HTML regex → детали товаров через POST
+5. `DBManager.upsert_products()` сохраняет изменения, возвращает дельты цен
+6. `TelegramNotifier.send_digest()` отправляет персональные уведомления по настройкам подписчиков
 
-## 2026-05-08: Test Logging Isolation
+## 💾 База данных
 
-- Pytest no longer writes noisy admin callback/start-stop series into `logs/app.log`.
-- Test run logging for `dns_monitor` is isolated in tests (`WARNING` level, file handler detached).
+Ключевые таблицы SQLite (`dns_monitor.db`):
+- `products` — товары с `uuid`, `status` (Новый/Б/У), `is_sold`, `city_slug`
+- `price_history` — история цен при изменении
+- `category_state` — `(category_id, city_slug)` composite PK, `uuid_hash` для детекции изменений
+- `telegram_subscribers` — подписчики с soft delete (`is_active`)
+- `user_settings` — персональные настройки (город, порог скидки, фильтр категорий)
+- `user_categories` — выбранные категории (пусто = все категории)
+
+Миграции выполняются автоматически при старте `DBManager`.
+
+## 🔒 Важные особенности
+
+- **Qrator cookies**: Переиспользуются между циклами через постоянный профиль Chromium
+- **Расписание**: Краснодар парсится 07:00–20:00 МСК; другие города — один раз в 00:00–06:00 МСК
+- **Cron sync**: Засыпает для выравнивания с границами часов
+- **Circuit breaker**: После 5 ошибок подряд → экспоненциальная задержка (до 60 мин), уведомление админу
+- **parser.py exits 0**: Намеренно — временные сбои DNS/Qrator/Node/сети не должны останавливать сервис
+
+## 🤝 Обратная связь и развитие
+
+Проект активно развивается и открыт для предложений:
+
+- **GitHub**: [Ссылка на репозиторий]
+- **Telegram**: Обратная связь через бота
+
+### Планы развития
+- Добавление новых городов (при наличии заинтересованных пользователей)
+- Улучшение алгоритмов фильтрации
+- Интеграция с другими магазинами (по запросам)
+- Веб-интерфейс для настроек (если будет востребован)
+
+## ⚠️ Важно
+
+- Не коммитьте `.env` файл
+- При изменении логики городов обновляйте `data/cities.py` и документацию одновременно
+- Проект создан для личного использования и образовательных целей
+
+---
+
+**DNS Shop Parser** — это не просто парсер цен, а персональный помощник, который экономит ваше время и деньги. 
+
+*Время чтения: ~5 минут*
