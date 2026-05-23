@@ -98,7 +98,8 @@ class DailyScheduler:
             return
 
         # Получаем категории пользователя
-        user_categories = self.db.get_user_categories(user_id)
+        city_slug = settings.get("city_slug", "moscow")
+        user_categories = self.db.get_user_categories(user_id, city_slug)
         category_ids = [cat["category_id"] for cat in user_categories] if user_categories else None
 
         # Получаем текущие актуальные данные вместо данных за конкретный день

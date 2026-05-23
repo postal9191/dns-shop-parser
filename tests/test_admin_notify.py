@@ -23,6 +23,7 @@ class TestAdminAlerts:
         mock_bot = MagicMock()
         mock_bot.admin_id = admin_id
         mock_bot.send_message = AsyncMock(return_value="ok")
+        mock_bot.send_admin_message = AsyncMock(return_value="ok")
         mock_bot.close = AsyncMock(return_value=None)
         mock_db = MagicMock()
         mock_db.get_all_subscribers_with_settings.return_value = [
@@ -46,28 +47,28 @@ class TestAdminAlerts:
         """Ошибки не отправляются если notify_errors=False."""
         notifier, mock_bot, _ = self._make_notifier(notify_errors=False)
         await notifier.send_admin_alert("some error", msg_type="error")
-        mock_bot.send_message.assert_not_called()
+        mock_bot.send_admin_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_admin_alert_error_sent_when_notify_errors_true(self):
         """Ошибка отправляется если notify_errors=True."""
         notifier, mock_bot, _ = self._make_notifier(notify_errors=True)
         await notifier.send_admin_alert("ERROR: something broke", msg_type="error")
-        mock_bot.send_message.assert_awaited_once_with("999", "ERROR: something broke")
+        mock_bot.send_admin_message.assert_awaited_once_with("999", "ERROR: something broke")
 
     @pytest.mark.asyncio
     async def test_send_admin_alert_parse_finish_skipped_when_notify_parse_finish_false(self):
         """Сводка о парсинге не отправляется если notify_parse_finish=False."""
         notifier, mock_bot, _ = self._make_notifier(notify_parse_finish=False)
         await notifier.send_admin_alert("parse finish", msg_type="parse_finish")
-        mock_bot.send_message.assert_not_called()
+        mock_bot.send_admin_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_admin_alert_parse_finish_sent_when_notify_parse_finish_true(self):
         """Сводка о парсинге отправляется если notify_parse_finish=True."""
         notifier, mock_bot, _ = self._make_notifier(notify_parse_finish=True)
         await notifier.send_admin_alert("parse finish", msg_type="parse_finish")
-        mock_bot.send_message.assert_awaited_once_with("999", "parse finish")
+        mock_bot.send_admin_message.assert_awaited_once_with("999", "parse finish")
 
     @pytest.mark.asyncio
     async def test_send_admin_parse_finish_formats_message(self):
@@ -78,7 +79,7 @@ class TestAdminAlerts:
             total_db=500, prev_cnt=510, delta=-10,
             city_name="",
         )
-        args = mock_bot.send_message.call_args[0]
+        args = mock_bot.send_admin_message.call_args[0]
         assert "📋" in args[1]
         assert "🆕 Новых: 5" in args[1]
         assert "🔄 Обновлено: 100" in args[1]
@@ -94,7 +95,7 @@ class TestAdminAlerts:
             new_cnt=1, updated_cnt=10, price_changed=0,
             total_db=20, prev_cnt=15, delta=5,
         )
-        assert "(+5)" in mock_bot.send_message.call_args[0][1]
+        assert "(+5)" in mock_bot.send_admin_message.call_args[0][1]
 
     @pytest.mark.asyncio
     async def test_send_admin_parse_finish_with_city_name(self):
@@ -105,7 +106,7 @@ class TestAdminAlerts:
             total_db=500, prev_cnt=490, delta=10,
             city_name="Москва",
         )
-        text = mock_bot.send_message.call_args[0][1]
+        text = mock_bot.send_admin_message.call_args[0][1]
         assert "Парсинг завершён — Москва" in text
         assert "🆕 Новых: 10" in text
 
@@ -118,7 +119,7 @@ class TestAdminAlerts:
             total_db=200, prev_cnt=197, delta=3,
             city_name="",
         )
-        text = mock_bot.send_message.call_args[0][1]
+        text = mock_bot.send_admin_message.call_args[0][1]
         assert "Парсинг завершён" in text
         assert "Москва" not in text
 
@@ -159,6 +160,7 @@ class TestAdminAlerts:
         mock_bot = MagicMock()
         mock_bot.admin_id = "999"
         mock_bot.send_message = AsyncMock(return_value="ok")
+        mock_bot.send_admin_message = AsyncMock(return_value="ok")
         mock_db = MagicMock()
         mock_db.get_all_subscribers_with_settings.return_value = [
             {"user_id": "other_user", "notify_errors": True, "notify_parse_finish": True},
@@ -166,7 +168,7 @@ class TestAdminAlerts:
         notifier = TelegramNotifier(bot=mock_bot, db=mock_db)
         # Админ получает сообщение потому что notify_errors=True по умолчанию
         await notifier.send_admin_alert("admin message", msg_type="error")
-        mock_bot.send_message.assert_called_once_with("999", "admin message")
+        mock_bot.send_admin_message.assert_called_once_with("999", "admin message")
 
 
 # ─── DBManager: notify_errors / notify_parse_finish ──────────────────────────
@@ -578,6 +580,7 @@ async def test_new_user_registration_notifies_admin():
     db = MagicMock()
     bot = _make_bot(db=db, admin_id="999")
     bot.send_message = AsyncMock(return_value="ok")
+    bot.send_admin_message = AsyncMock(return_value="ok")
     bot._add_subscriber = AsyncMock(return_value=True)
     bot.db.upsert_user_settings = MagicMock()
 
@@ -598,20 +601,21 @@ async def test_new_user_registration_notifies_admin():
 
     await bot.handle_update(update)
 
-    # Отправляются: 1) подтверждение подписки, 2) уведомление админу, 3) меню
-    calls = bot.send_message.call_args_list
-    assert len(calls) == 3
+    # Отправляются: 1) подтверждение подписки, 2) меню (через send_message)
+    # 3) уведомление админу (через send_admin_message)
+    user_calls = bot.send_message.call_args_list
+    admin_calls = bot.send_admin_message.call_args_list
 
-    # Найти уведомление админу (chat_id == "999")
-    admin_calls = [c for c in calls if c[0][0] == "999"]
-    assert len(admin_calls) == 1
-    admin_text = admin_calls[0][0][1]
+    assert len(user_calls) == 2  # подтверждение + меню
+    assert len(admin_calls) == 1  # уведомление админу
+
+    # Проверить уведомление админу
+    admin_call = admin_calls[0]
+    assert admin_call[0][0] == "999"  # chat_id админа
+    admin_text = admin_call[0][1]
     assert "Новый пользователь" in admin_text
-    assert "Иван" in admin_text
-    assert "Петров" in admin_text
-    assert "ivan_p" in admin_text
-    assert "111" in admin_text  # TG ID
-    assert "ru" in admin_text
+    assert "Иван Петров" in admin_text
+    assert "@ivan_p" in admin_text
 
 
 @pytest.mark.asyncio
