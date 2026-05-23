@@ -97,12 +97,15 @@ class DailyScheduler:
             self.db.mark_scheduled_event_done(event["event_key"])
             return
 
-        start_utc, end_utc = report_bounds_utc(event["date_msk"])
-        new_products, price_changes = self.db.get_daily_report_data(
-            start_utc,
-            end_utc,
+        # Получаем категории пользователя
+        user_categories = self.db.get_user_categories(user_id)
+        category_ids = [cat["category_id"] for cat in user_categories] if user_categories else None
+
+        # Получаем текущие актуальные данные вместо данных за конкретный день
+        new_products, price_changes = self.db.get_current_digest_data(
             settings["city_slug"],
             min_drop_pct=settings.get("min_price_drop_pct", 0),
+            category_ids=category_ids,
         )
 
         if not settings.get("notify_new", True):

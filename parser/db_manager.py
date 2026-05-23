@@ -1304,10 +1304,37 @@ class DBManager:
         report_type: str,
         date_msk: str,
     ) -> bool:
-        """Consumes one free report quota for a user/category/report-type/day."""
+        """Consumes one free report quota for a user/category/report-type/day. Returns True if limit not exceeded (< 3)."""
         now = self._now_msk()
         with sqlite3.connect(self.db_path) as conn:
-            try:
+            # Сначала проверяем текущее использование
+            cursor = conn.execute(
+                """
+                SELECT used_count FROM report_limits
+                WHERE user_id = ? AND category_id = ? AND report_type = ? AND date_msk = ?
+                """,
+                (user_id, category_id, report_type, date_msk),
+            )
+            row = cursor.fetchone()
+            current_usage = int(row[0]) if row else 0
+
+            # Если уже использованы все 3 попытки, возвращаем False
+            if current_usage >= 3:
+                return False
+
+            # Иначе увеличиваем счетчик
+            if row:
+                # Обновляем существующую запись
+                conn.execute(
+                    """
+                    UPDATE report_limits
+                    SET used_count = used_count + 1, updated_at = ?
+                    WHERE user_id = ? AND category_id = ? AND report_type = ? AND date_msk = ?
+                    """,
+                    (now, user_id, category_id, report_type, date_msk),
+                )
+            else:
+                # Создаем новую запись
                 conn.execute(
                     """
                     INSERT INTO report_limits
@@ -1316,10 +1343,9 @@ class DBManager:
                     """,
                     (user_id, category_id, report_type, date_msk, now, now),
                 )
-                conn.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
+
+            conn.commit()
+            return True
 
     def get_report_limit_usage(self, user_id: str, category_id: str, report_type: str, date_msk: str) -> int:
         with sqlite3.connect(self.db_path) as conn:
@@ -1567,6 +1593,77 @@ class DBManager:
                 "new_price": row[3],
                 "old_price": row[4],
                 "price_old": row[4],
+                "status": row[5],
+                "city_slug": row[6],
+            }
+            for row in drop_rows
+        ]
+        return new_products, price_changes
+
+    def get_current_digest_data(
+        self,
+        city_slug: str,
+        min_drop_pct: int = 0,
+        category_ids: list[str] | None = None,
+        limit: int = 100,
+    ) -> tuple[list[dict], list[dict]]:
+        """Returns current fresh data for digest: new products and price drops without date restrictions."""
+        with sqlite3.connect(self.db_path) as conn:
+            # Базовые условия для фильтрации
+            base_conditions = "city_slug = ? AND is_sold = 0"
+            base_params = [city_slug]
+
+            # Добавляем фильтр по категориям если указан
+            category_filter = ""
+            if category_ids:
+                placeholders = ",".join("?" * len(category_ids))
+                category_filter = f" AND category_id IN ({placeholders})"
+                base_params.extend(category_ids)
+
+            # Получаем новые товары (за последние 7 дней для актуальности)
+            new_query = """
+                SELECT category_id, category_name, title, current_price, previous_price, url, status, city_slug
+                FROM products
+                WHERE """ + base_conditions + category_filter + """
+                  AND created_at >= datetime('now', '-7 days')
+                ORDER BY created_at DESC
+                LIMIT ?
+                """
+            new_rows = conn.execute(new_query, base_params + [limit]).fetchall()
+
+            # Получаем товары со скидками (все актуальные)
+            drop_query = """
+                SELECT category_id, title, url, current_price, previous_price, status, city_slug
+                FROM products
+                WHERE """ + base_conditions + category_filter + """
+                  AND previous_price > 0
+                  AND current_price < previous_price
+                  AND ROUND(100.0 * (previous_price - current_price) / previous_price, 1) >= ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """
+            drop_rows = conn.execute(drop_query, base_params + [min_drop_pct, limit]).fetchall()
+
+        new_products = [
+            {
+                "category_id": row[0],
+                "category": row[1],
+                "title": row[2],
+                "price": row[3],
+                "price_old": row[4],
+                "url": row[5],
+                "status": row[6],
+                "city_slug": row[7],
+            }
+            for row in new_rows
+        ]
+        price_changes = [
+            {
+                "category_id": row[0],
+                "title": row[1],
+                "url": row[2],
+                "new_price": row[3],
+                "old_price": row[4],
                 "status": row[5],
                 "city_slug": row[6],
             }

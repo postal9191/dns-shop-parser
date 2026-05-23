@@ -883,7 +883,7 @@ class TestReportCallbacks:
         bot = self._bot()
         mock_db = MagicMock()
         mock_db.get_user_settings.return_value = {"city_slug": "moscow", "plan_type": "free"}
-        mock_db.get_report_limit_usage.return_value = 1
+        mock_db.get_report_limit_usage.return_value = 3  # Изменено с 1 на 3
         mock_db.get_report_products.return_value = []
         bot.db = mock_db
         state = {"new": True, "bu": False, "discount": 10, "cats": ["cat-1"], "period": "1d"}
@@ -898,7 +898,7 @@ class TestReportCallbacks:
         bot = self._bot()
         mock_db = MagicMock()
         mock_db.get_user_settings.return_value = {"city_slug": "moscow", "plan_type": "free"}
-        mock_db.get_report_limit_usage.side_effect = lambda user_id, cat_id, report_type, day: 1 if cat_id == "cat-1" else 0
+        mock_db.get_report_limit_usage.side_effect = lambda user_id, cat_id, report_type, day: 3 if cat_id == "cat-1" else 0  # Изменено с 1 на 3
         mock_db.consume_free_report_limit.return_value = True
         mock_db.get_report_products.return_value = [{
             "title": "Allowed item",
@@ -931,7 +931,7 @@ class TestReportCallbacks:
             {"id": "cat-2", "name": "Two"},
             {"id": "cat-3", "name": "Three"},
         ]
-        mock_db.get_report_limit_usage.side_effect = lambda user_id, cat_id, report_type, day: 1 if cat_id == "cat-1" else 0
+        mock_db.get_report_limit_usage.side_effect = lambda user_id, cat_id, report_type, day: 3 if cat_id == "cat-1" else 0  # Изменено с 1 на 3
         mock_db.consume_free_report_limit.return_value = True
         mock_db.get_report_products.return_value = [{
             "title": "Allowed item",

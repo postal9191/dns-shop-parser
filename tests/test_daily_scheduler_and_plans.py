@@ -38,14 +38,34 @@ def test_get_all_subscribers_includes_plan_type(db_memory):
     assert rows[0]["city_slug"] == "kazan"
 
 
-def test_free_report_limit_is_one_per_category_per_msk_day(db_memory):
+def test_free_report_limit_is_three_per_category_per_msk_day(db_memory):
+    # Первые 3 вызова должны быть успешными
     assert db_memory.consume_free_report_limit("u1", "cat-1", "new_products", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-1", "new_products", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-1", "new_products", "2026-05-07") is True
+    # 4-й вызов должен быть заблокирован
     assert db_memory.consume_free_report_limit("u1", "cat-1", "new_products", "2026-05-07") is False
+
+    # Разные типы отчетов работают независимо
     assert db_memory.consume_free_report_limit("u1", "cat-1", "discounts", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-1", "discounts", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-1", "discounts", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-1", "discounts", "2026-05-07") is False
+
+    # Разные категории работают независимо
     assert db_memory.consume_free_report_limit("u1", "cat-2", "new_products", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-2", "new_products", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-2", "new_products", "2026-05-07") is True
+    assert db_memory.consume_free_report_limit("u1", "cat-2", "new_products", "2026-05-07") is False
+
+    # Разные дни работают независимо
     assert db_memory.consume_free_report_limit("u1", "cat-1", "new_products", "2026-05-08") is True
-    assert db_memory.get_report_limit_usage("u1", "cat-1", "new_products", "2026-05-07") == 1
-    assert db_memory.get_report_limit_usage("u1", "cat-1", "discounts", "2026-05-07") == 1
+
+    # Проверяем счетчики использования
+    assert db_memory.get_report_limit_usage("u1", "cat-1", "new_products", "2026-05-07") == 3
+    assert db_memory.get_report_limit_usage("u1", "cat-1", "discounts", "2026-05-07") == 3
+    assert db_memory.get_report_limit_usage("u1", "cat-2", "new_products", "2026-05-07") == 3
+    assert db_memory.get_report_limit_usage("u1", "cat-1", "new_products", "2026-05-08") == 1
 
 
 def test_immediate_digest_can_target_only_paid_plans():
