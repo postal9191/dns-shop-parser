@@ -339,7 +339,8 @@ class SessionManager:
         # иначе solve_qrator будет переиспользовать мёртвую сессию.
         if force_qrator and _retry_count == 0:
             logger.info("[SESSION] force_qrator=True → чищу Chromium profile")
-            cleanup_chromium_profile()
+            if not cleanup_chromium_profile():
+                logger.warning("[SESSION] Profile cleanup failed, continuing anyway")
 
         # 1. Решаем Qrator challenge (браузер получает все куки: qrator_jsid2, qrator_jsr, qrator_ssid2, PHPSESSID, _csrf и т.д.)
         qrator_success = await self._resolve_qrator()
@@ -432,18 +433,23 @@ class SessionManager:
         if self._session is None or self._session.closed:
             if not self._initialized:
                 await self._init_session()
-            
+
             connector = aiohttp.TCPConnector(ssl=True, limit=5)
-            # ВАЖНО: DummyCookieJar — aiohttp НЕ должен управлять куками за нас.
-            # Куки отправляем вручную через Cookie header.
-            self._session = aiohttp.ClientSession(
-                connector=connector,
-                headers=self._build_headers(),
-                cookie_jar=aiohttp.DummyCookieJar(),
-            )
-            logger.debug(
-                "[SESSION] HTTP-сессия создана, куки: %d", len(self._cookies)
-            )
+            try:
+                # ВАЖНО: DummyCookieJar — aiohttp НЕ должен управлять куками за нас.
+                # Куки отправляем вручную через Cookie header.
+                self._session = aiohttp.ClientSession(
+                    connector=connector,
+                    headers=self._build_headers(),
+                    cookie_jar=aiohttp.DummyCookieJar(),
+                )
+                logger.debug(
+                    "[SESSION] HTTP-сессия создана, куки: %d", len(self._cookies)
+                )
+            except Exception:
+                # Если создание сессии не удалось, закрываем connector
+                await connector.close()
+                raise
         return self._session
 
     async def _get_csrf_token(self) -> str | None:
@@ -573,3 +579,4 @@ class SessionManager:
         if self._session and not self._session.closed:
             await self._session.close()
             logger.debug("[SESSION] HTTP-сессия закрыта")
+        self._session = None

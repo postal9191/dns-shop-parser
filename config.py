@@ -3,6 +3,7 @@ import platform
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
+from utils.logger import logger
 
 load_dotenv(override=True)
 
@@ -72,8 +73,29 @@ class Config:
             proxy_password=os.getenv("PROXY_PASSWORD", "").strip(),
         )
 
+    def __post_init__(self):
+        """Валидация критических полей после инициализации"""
+        # Валидация токена Telegram
+        if self.telegram_token and len(self.telegram_token) < 10:
+            raise ValueError("Invalid telegram token format")
+
+        # Валидация админского токена
+        if self.admin_telegram_token and len(self.admin_telegram_token) < 10:
+            raise ValueError("Invalid admin telegram token format")
+
+        # Логирование настройки прокси без раскрытия пароля
+        if self.proxy_password:
+            logger.debug("Proxy configured with authentication")
+
     def proxy_enabled(self) -> bool:
         return bool(self.proxy_host and self.proxy_port > 0)
+
+    def safe_repr(self) -> str:
+        """Безопасное представление конфига для логирования"""
+        return (f"Config(api_base_url={self.api_base_url}, "
+                f"proxy_enabled={self.proxy_enabled()}, "
+                f"parse_interval={self.parse_interval}, "
+                f"log_level={self.log_level})")
 
 
 config = Config.from_env()

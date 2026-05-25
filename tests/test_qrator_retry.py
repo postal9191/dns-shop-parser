@@ -30,8 +30,9 @@ class TestCleanupChromiumProfile:
             assert profile_path.exists()
 
             with patch('pathlib.Path.home', return_value=Path(temp_dir)):
-                cleanup_chromium_profile()
+                result = cleanup_chromium_profile()
 
+            assert result is True
             assert not profile_path.exists()
 
     def test_cleanup_handles_nonexistent_profile(self):
@@ -43,8 +44,9 @@ class TestCleanupChromiumProfile:
 
             with patch('pathlib.Path.home', return_value=Path(temp_dir)):
                 # Не должна выбросить исключение
-                cleanup_chromium_profile()
+                result = cleanup_chromium_profile()
 
+            assert result is True
             assert not profile_path.exists()
 
     def test_cleanup_handles_permission_error(self):
@@ -56,7 +58,9 @@ class TestCleanupChromiumProfile:
             with patch('pathlib.Path.home', return_value=Path(temp_dir)):
                 with patch('shutil.rmtree', side_effect=PermissionError("Access denied")):
                     # Не должна выбросить исключение
-                    cleanup_chromium_profile()
+                    result = cleanup_chromium_profile()
+
+            assert result is False
 
 
 class TestResolveQratorWithRetry:

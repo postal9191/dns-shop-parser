@@ -198,8 +198,9 @@ class TelegramBot:
 
     # ── Message sending ───────────────────────────────────────────────────────
 
-    async def send_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> str:
-        """Отправляет сообщение. Возвращает: 'ok' | 'blocked' | 'fail'."""
+    async def _send_message_internal(self, chat_id: str, text: str, reply_markup: Optional[dict] = None,
+                                   use_admin_token: bool = False) -> str:
+        """Внутренняя функция отправки сообщений с общей логикой retry и обработки ошибок."""
         if not self.enabled:
             return "fail"
 
@@ -207,28 +208,43 @@ class TelegramBot:
         if reply_markup:
             payload["reply_markup"] = reply_markup
 
+        log_prefix = "[TG BOT ADMIN]" if use_admin_token else "[TG BOT]"
+
         for attempt in range(3):
             try:
-                status, data = await self._telegram_request(
-                    "sendMessage", json=payload, timeout=15
-                )
+                if use_admin_token:
+                    # Прямой запрос через aiohttp для админ-токена
+                    async with self._get_session().post(
+                        f"{self.admin_api_url}/sendMessage",
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp:
+                        status = resp.status
+                        data = await resp.json()
+                else:
+                    # Использование _telegram_request для основного токена
+                    status, data = await self._telegram_request(
+                        "sendMessage", json=payload, timeout=15
+                    )
+
                 if status == 200 and data.get("ok"):
                     return "ok"
                 if status == 429:
                     retry_after = data.get("parameters", {}).get("retry_after", 5)
-                    logger.warning("[TG BOT] Rate limit, жду %d сек (попытка %d/3)", retry_after, attempt + 1)
+                    logger.warning("%s Rate limit, жду %d сек (попытка %d/3)", log_prefix, retry_after, attempt + 1)
                     await asyncio.sleep(retry_after + 1)
                     continue
                 if status == 403:
-                    logger.info("[TG BOT] Пользователь %s заблокировал бота (403): %s",
-                                chat_id, data.get("description"))
+                    bot_type = "админ-бота" if use_admin_token else "бота"
+                    logger.info("%s Пользователь %s заблокировал %s (403): %s",
+                                log_prefix, chat_id, bot_type, data.get("description"))
                     return "blocked"
                 desc = data.get("description", "")
                 if status == 400 and ("chat not found" in desc.lower() or "user is deactivated" in desc.lower()):
-                    logger.info("[TG BOT] Чат %s недоступен (%s): %s", chat_id, status, desc)
+                    logger.info("%s Чат %s недоступен (%s): %s", log_prefix, chat_id, status, desc)
                     return "blocked"
-                logger.warning("[TG BOT] Ответ %d при отправке в %s (попытка %d/3): %s",
-                               status, chat_id, attempt + 1, desc)
+                logger.warning("%s Ответ %d при отправке в %s (попытка %d/3): %s",
+                               log_prefix, status, chat_id, attempt + 1, desc)
                 if status >= 500:
                     await asyncio.sleep(2 ** attempt)
                     continue
@@ -236,64 +252,24 @@ class TelegramBot:
             except Exception as exc:
                 if attempt < 2:
                     wait = 2 ** attempt
-                    logger.warning("[TG BOT] Ошибка отправки, retry через %d сек: %s", wait, exc)
+                    logger.warning("%s Ошибка отправки, retry через %d сек: %s", log_prefix, wait, exc)
                     await asyncio.sleep(wait)
                 else:
-                    logger.error("[TG BOT] Ошибка при отправке сообщения: %s", exc)
+                    error_type = "админ-сообщения" if use_admin_token else "сообщения"
+                    logger.error("%s Ошибка при отправке %s: %s", log_prefix, error_type, exc)
         return "fail"
+
+    async def send_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> str:
+        """Отправляет сообщение. Возвращает: 'ok' | 'blocked' | 'fail'."""
+        return await self._send_message_internal(chat_id, text, reply_markup, use_admin_token=False)
 
     async def send_admin_message(self, chat_id: str, text: str, reply_markup: Optional[dict] = None) -> str:
         """Отправляет админ-сообщение через админ-токен (fallback на основной токен). Возвращает: 'ok' | 'blocked' | 'fail'."""
-        if not self.enabled:
-            return "fail"
-
         # Если админ-токен не задан, используем обычный send_message
         if self.admin_token == self.token:
             return await self.send_message(chat_id, text, reply_markup)
 
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-
-        for attempt in range(3):
-            try:
-                async with self._get_session().post(
-                    f"{self.admin_api_url}/sendMessage",
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
-                    status = resp.status
-                    data = await resp.json()
-
-                    if status == 200 and data.get("ok"):
-                        return "ok"
-                    if status == 429:
-                        retry_after = data.get("parameters", {}).get("retry_after", 5)
-                        logger.warning("[TG BOT ADMIN] Rate limit, жду %d сек (попытка %d/3)", retry_after, attempt + 1)
-                        await asyncio.sleep(retry_after + 1)
-                        continue
-                    if status == 403:
-                        logger.info("[TG BOT ADMIN] Пользователь %s заблокировал админ-бота (403): %s",
-                                    chat_id, data.get("description"))
-                        return "blocked"
-                    desc = data.get("description", "")
-                    if status == 400 and ("chat not found" in desc.lower() or "user is deactivated" in desc.lower()):
-                        logger.info("[TG BOT ADMIN] Чат %s недоступен (%s): %s", chat_id, status, desc)
-                        return "blocked"
-                    logger.warning("[TG BOT ADMIN] Ответ %d при отправке в %s (попытка %d/3): %s",
-                                   status, chat_id, attempt + 1, desc)
-                    if status >= 500:
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    return "fail"
-            except Exception as exc:
-                if attempt < 2:
-                    wait = 2 ** attempt
-                    logger.warning("[TG BOT ADMIN] Ошибка отправки, retry через %d сек: %s", wait, exc)
-                    await asyncio.sleep(wait)
-                else:
-                    logger.error("[TG BOT ADMIN] Ошибка при отправке админ-сообщения: %s", exc)
-        return "fail"
+        return await self._send_message_internal(chat_id, text, reply_markup, use_admin_token=True)
 
     async def broadcast_message(self, text: str) -> int:
         """Рассылает сообщение всем подписчикам. Возвращает кол-во успешных."""
@@ -327,7 +303,8 @@ class TelegramBot:
                         break
             else:
                 # Fallback если БД недоступна — итерируемся по in-memory set
-                users = list(self.subscribed_users)
+                async with self._user_state.subscriber_lock:
+                    users = list(self.subscribed_users)
                 if not users:
                     return 0
                 logger.info("[TG BOT] Отправляем сообщение %d подписчикам (in-memory)...", len(users))
@@ -405,6 +382,10 @@ class TelegramBot:
         if not user_id or not text or not chat_id:
             return
 
+        # Валидация пользовательского ввода
+        if not await self._validate_user_input(text, chat_id):
+            return
+
         try:
             # Ожидание ввода интервала
             if user_id in self._user_state.waiting_for_interval:
@@ -428,7 +409,10 @@ class TelegramBot:
 
             # /start
             if text == "/start":
-                if user_id in self.subscribed_users:
+                async with self._user_state.subscriber_lock:
+                    is_subscribed = user_id in self.subscribed_users
+
+                if is_subscribed:
                     await self.send_message(chat_id, "Вы уже подписаны на уведомления о новых товарах!")
                 else:
                     await self._add_subscriber(user_id, user_info=message.get("from", {}))
@@ -459,7 +443,10 @@ class TelegramBot:
 
             # /stop
             if text == "/stop":
-                if user_id in self.subscribed_users:
+                async with self._user_state.subscriber_lock:
+                    is_subscribed = user_id in self.subscribed_users
+
+                if is_subscribed:
                     await self._remove_subscriber(user_id)
                     await self.send_message(chat_id, "✅ Подписка отключена. Вы больше не будете получать уведомления.")
                 else:
@@ -468,7 +455,10 @@ class TelegramBot:
 
             # Команды настроек — только подписчикам
             if text in ("/settings", "/city", "/categories", "/status"):
-                if user_id not in self.subscribed_users:
+                async with self._user_state.subscriber_lock:
+                    is_subscribed = user_id in self.subscribed_users
+
+                if not is_subscribed:
                     await self.send_message(
                         chat_id,
                         "❌ Команда доступна только подписчикам. Нажмите /start для подписки"
@@ -478,7 +468,10 @@ class TelegramBot:
                 return
 
             # Неизвестная команда — меню для подписчиков
-            if user_id in self.subscribed_users:
+            async with self._user_state.subscriber_lock:
+                is_subscribed = user_id in self.subscribed_users
+
+            if is_subscribed:
                 await self.send_message(
                     chat_id,
                     "Выберите действие:",
@@ -491,6 +484,40 @@ class TelegramBot:
 
         except Exception as exc:
             logger.error("[TG BOT] Ошибка при обработке обновления: %s", exc, exc_info=True)
+
+    async def _validate_user_input(self, text: str, chat_id: str) -> bool:
+        """Валидирует пользовательский ввод перед обработкой."""
+        # Проверка длины сообщения
+        if len(text) > 4096:  # Telegram limit
+            await self.send_message(
+                chat_id,
+                "❌ Сообщение слишком длинное. Максимальная длина: 4096 символов."
+            )
+            return False
+
+        # Проверка на пустое сообщение после trim
+        if not text.strip():
+            return False
+
+        # Проверка на подозрительные символы (защита от инъекций)
+        suspicious_chars = ['<script', 'javascript:', 'data:', 'vbscript:', 'onload=', 'onerror=']
+        text_lower = text.lower()
+        if any(char in text_lower for char in suspicious_chars):
+            await self.send_message(
+                chat_id,
+                "❌ Сообщение содержит недопустимые символы."
+            )
+            return False
+
+        # Проверка на слишком много повторяющихся символов (защита от спама)
+        if len(set(text)) < len(text) / 10 and len(text) > 50:  # Если уникальных символов меньше 10%
+            await self.send_message(
+                chat_id,
+                "❌ Сообщение выглядит как спам."
+            )
+            return False
+
+        return True
 
     def _build_main_menu_keyboard(self, user_id: str, admin_id: str | None = None) -> dict:
         return kb._build_main_menu_keyboard(user_id, admin_id or self.admin_id)
@@ -514,7 +541,10 @@ class TelegramBot:
                 "set_notif:", "set_err:", "set_pf:", "menu_", "report_"
             )
             if any(data.startswith(p) for p in _user_prefixes):
-                if user_id not in self.subscribed_users:
+                async with self._user_state.subscriber_lock:
+                    is_subscribed = user_id in self.subscribed_users
+
+                if not is_subscribed:
                     await self._answer_callback(callback_id, "❌ Сначала подпишитесь через /start", alert=True)
                     return
                 await self._settings.handle_callback(callback_id, user_id, chat_id, message_id, data)
