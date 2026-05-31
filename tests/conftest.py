@@ -1,10 +1,27 @@
 import sqlite3
+import sys
+import types
 import tempfile
 from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
 
 import pytest
+
+# --- Prevent platform.system() hang in WSL environment ---
+# config.py calls platform.system().lower() on module load which hangs.
+# Force inject mock ALWAYS regardless of existing modules.
+_plat = types.ModuleType("platform")
+def _ps(): return "Linux"
+def _pi(): return "CPython"
+_plat.system = _ps
+_plat.python_implementation = _pi
+_plat.machine = "x86_64"
+_plat.release = "5.15.0"
+_plat.version = ""
+_plat.architecture = staticmethod(lambda: ("64bit", ""))
+_plat.processor = "x86_64"
+sys.modules["platform"] = _plat
 
 from parser.db_manager import DBManager
 from parser.models import Product
