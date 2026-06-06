@@ -14,17 +14,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from config import config
-from data.cities import CITIES
-from parser.db_manager import DBManager
-from services.admin_panel import ParserController
-from services.daily_scheduler import DailyScheduler
-from services.telegram_bot import init_telegram_bot
-from services.telegram_notifier import TelegramNotifier
-from utils.logger import logger
+from dns_shop_parser.config import config
+from dns_shop_parser.data.cities import CITIES
+from dns_shop_parser.parser.db_manager import DBManager
+from dns_shop_parser.services.admin_panel import ParserController
+from dns_shop_parser.services.daily_scheduler import DailyScheduler
+from dns_shop_parser.services.telegram_bot import init_telegram_bot
+from dns_shop_parser.services.telegram_notifier import TelegramNotifier
+from dns_shop_parser.utils.logger import logger
 
 # Определяем директорию проекта
-PROJECT_DIR = Path(__file__).parent.absolute()
+PROJECT_DIR = Path(__file__).resolve().parents[3]
 
 
 def acquire_single_instance_lock():
@@ -58,7 +58,7 @@ async def _run_subprocess(script: str, log_name: str, args: list[str] | None = N
     """Запускает Python-скрипт в отдельном процессе асинхронно."""
     logger.info("[RUN] Запускаю: %s", log_name)
     loop = asyncio.get_running_loop()
-    command = [sys.executable, str(PROJECT_DIR / script)] + ([] if args is None else args)
+    command = [sys.executable, '-m', 'dns_shop_parser.entrypoints.parser'] + ([] if args is None else args)
     try:
         result = await loop.run_in_executor(
             None,

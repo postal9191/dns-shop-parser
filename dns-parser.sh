@@ -1033,9 +1033,10 @@ show_menu() {
     echo "  2 - Остановить приложение"
     echo "  3 - Перезапустить приложение"
     echo "  4 - Обновить из Git и перезапустить"
-    echo "  5 - Показать логи (tail -f)"
-    echo "  6 - Проверить статус"
-    echo "  7 - Управление systemd сервисом"
+    echo "  5 - Откатиться на commit/tag/branch и перезапустить"
+    echo "  6 - Показать логи (tail -f)"
+    echo "  7 - Проверить статус"
+    echo "  8 - Управление systemd сервисом"
     echo "  0 - Выход"
     echo ""
     echo -n "Ваш выбор: "
@@ -1150,6 +1151,116 @@ update_and_restart() {
     fi
 }
 
+rollback_and_restart() {
+    local target_ref="${1:-}"
+
+    print_header "Откат к Git commit/ref и перезапуск"
+
+    if ! command -v git > /dev/null 2>&1; then
+        print_error "Git не установлен"
+        return 1
+    fi
+
+    cd "$PROJECT_DIR"
+
+    if [ ! -d "$PROJECT_DIR/.git" ]; then
+        print_error "Директория проекта не является Git-репозиторием"
+        return 1
+    fi
+
+    print_info "Текущий ref: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+    if [ -z "$target_ref" ]; then
+        print_info "Получаю последние коммиты..."
+        git fetch --all --tags --prune || {
+            print_error "git fetch завершился с ошибкой"
+            return 1
+        }
+
+        local commits_raw
+        commits_raw="$(git log --oneline -n 5 2>/dev/null)"
+        if [ -z "$commits_raw" ]; then
+            print_error "Не удалось получить список последних коммитов"
+            return 1
+        fi
+
+        echo ""
+        print_info "Последние 5 коммитов:"
+        mapfile -t commit_lines < <(printf '%s\n' "$commits_raw")
+        local index=1
+        local line
+        for line in "${commit_lines[@]}"; do
+            echo "  $index - $line"
+            index=$((index + 1))
+        done
+        echo "  0 - Ввести commit/tag/branch вручную"
+        echo ""
+        echo -n "Ваш выбор: "
+
+        local selection
+        read -r selection
+
+        if [ "$selection" = "0" ]; then
+            echo -n "Git ref: "
+            read -r target_ref
+        elif [[ "$selection" =~ ^[1-5]$ ]] && [ "$selection" -le "${#commit_lines[@]}" ]; then
+            target_ref="$(printf '%s' "${commit_lines[$((selection - 1))]}" | awk '{print $1}')"
+        else
+            print_error "Неверный выбор"
+            return 1
+        fi
+    else
+        print_info "Получаю обновления из Git для проверки ref..."
+        git fetch --all --tags --prune || {
+            print_error "git fetch завершился с ошибкой"
+            return 1
+        }
+    fi
+
+    if [ -z "$target_ref" ]; then
+        print_error "Git ref не указан"
+        return 1
+    fi
+
+    if ! git rev-parse --verify --quiet "$target_ref^{commit}" > /dev/null; then
+        print_error "Git ref не найден: $target_ref"
+        print_info "Подсказка: используй commit hash, tag, branch или origin/branch"
+        return 1
+    fi
+
+    local current_ref
+    current_ref="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    local target_commit
+    target_commit="$(git rev-parse --short "$target_ref^{commit}" 2>/dev/null || echo unknown)"
+
+    print_warning "Будет выполнен checkout на $target_ref ($target_commit)"
+    print_warning "Если ref не является локальной веткой, репозиторий перейдёт в detached HEAD"
+    echo -n "Продолжить? [y/N]: "
+
+    local confirm
+    read -r confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Откат отменён"
+        return 0
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$target_ref"; then
+        git checkout "$target_ref" || {
+            print_error "Не удалось переключиться на ветку/ref: $target_ref"
+            return 1
+        }
+    else
+        git checkout --detach "$target_ref" || {
+            print_error "Не удалось выполнить checkout ref: $target_ref"
+            return 1
+        }
+    fi
+
+    print_success "Код переключён: $current_ref -> $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    print_info "Перезапускаю парсер на выбранном commit/ref..."
+    restart_service
+}
+
 main_loop() {
     while true; do
         show_menu
@@ -1169,12 +1280,15 @@ main_loop() {
                 update_and_restart
                 ;;
             5)
-                show_logs
+                rollback_and_restart
                 ;;
             6)
-                show_status
+                show_logs
                 ;;
             7)
+                show_status
+                ;;
+            8)
                 show_systemd_menu
                 ;;
             0)
@@ -1182,7 +1296,7 @@ main_loop() {
                 exit 0
                 ;;
             *)
-                print_error "Неверный выбор. Пожалуйста, выберите 0-7"
+                print_error "Неверный выбор. Пожалуйста, выберите 0-8"
                 ;;
         esac
     done
@@ -1211,6 +1325,14 @@ if [ $# -gt 0 ]; then
             ;;
         restart)
             restart_service
+            exit $?
+            ;;
+        update)
+            update_and_restart
+            exit $?
+            ;;
+        rollback)
+            rollback_and_restart "$2"
             exit $?
             ;;
         logs)
@@ -1242,6 +1364,8 @@ if [ $# -gt 0 ]; then
             echo "  start           - Запустить приложение"
             echo "  stop            - Остановить приложение"
             echo "  restart         - Перезапустить приложение"
+            echo "  update          - Обновить из Git и перезапустить"
+            echo "  rollback <ref>  - Откатиться на commit/tag/branch и перезапустить"
             echo "  logs            - Показать логи"
             echo "  status          - Показать статус"
             echo "  enable-systemd  - Добавить в systemd"

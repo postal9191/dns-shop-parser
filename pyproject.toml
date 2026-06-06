@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dns-shop-parser"
+version = "1.1.0"
+description = "DNS Shop parser with Qrator WAF bypass and Telegram notifications"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Postal" }]
+dependencies = [
+  "aiohttp==3.9.1",
+  "tenacity==8.2.3",
+  "python-dotenv==1.0.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dns_shop_parser*"]

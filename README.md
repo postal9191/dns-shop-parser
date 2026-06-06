@@ -2,116 +2,143 @@
 
 Автоматический мониторинг скидок в DNS Shop с персонализированными уведомлениями через Telegram-бот.
 
+## Что изменено в структуре
+
+Проект переведён на более стандартную Python-структуру:
+
+- основной пакет расположен в `src/dns_shop_parser`
+- добавлен `pyproject.toml`
+- сохранена обратная совместимость через корневые entrypoint-файлы
+- добавлен shim-пакет `dns_shop_parser/` для работы `python -m dns_shop_parser` из корня проекта
+
 ## Возможности
 
-- **Персонализация**: выбор города, категорий товаров, минимального порога скидки
-- **Умные уведомления**: только о новых товарах или снижении цен по вашим критериям
-- **Надежность**: автовосстановление после сбоев, circuit breaker при множественных ошибках
-- **Эффективность**: гибридная архитектура Node.js + Python для обхода защиты и парсинга
+- персонализация по городу, категориям и порогу скидки
+- уведомления только по релевантным новым товарам и снижению цен
+- автовосстановление после ошибок и circuit breaker
+- гибридная архитектура Node.js + Python для обхода Qrator и парсинга
 
-## Установка
+## Быстрый старт
 
 ```bash
-# Зависимости
 npm install
 npx playwright install chromium
 pip install -r requirements.txt
-
-# Конфигурация
 cp .env.example .env
-# Отредактируйте .env: добавьте TELEGRAM_TOKEN и TELEGRAM_CHAT_ADMIN
-
-# Запуск
 python run.py
 ```
 
-## Использование
+Альтернативный запуск:
 
-1. Найдите бота: `@dns_shop_parser_bot`
-2. Запустите: `/start`
-3. Настройте: город, категории, порог скидки, типы уведомлений
+```bash
+python -m dns_shop_parser
+```
+
+## Структура проекта
+
+```text
+.
+├── dns_shop_parser/           # shim-пакет для запуска из корня
+├── src/
+│   └── dns_shop_parser/
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── config.py
+│       ├── data/
+│       ├── parser/
+│       ├── services/
+│       ├── utils/
+│       └── entrypoints/
+├── run.py                     # legacy entrypoint
+├── parser.py                  # legacy entrypoint
+├── bot_only.py                # legacy entrypoint
+└── config.py                  # legacy compatibility import
+```
+
+## Совместимость
+
+Старые точки входа и импорты сохранены:
+
+- `python run.py`
+- `python parser.py --city-slug krasnodar`
+- `python bot_only.py`
+- `from config import config`
+- `from parser.db_manager import DBManager`
+
+Это сделано специально, чтобы рефакторинг не ломал существующие скрипты и тесты.
 
 ## Конфигурация
 
-### Обязательные параметры (.env)
+### Обязательные параметры `.env`
+
 ```env
 TELEGRAM_TOKEN=your_bot_token
 TELEGRAM_CHAT_ADMIN=your_telegram_user_id
 ```
 
 ### Дополнительные настройки
+
 ```env
 API_BASE_URL=https://www.dns-shop.ru
 DB_PATH=dns_monitor.db
 PARSE_INTERVAL=3600
 PARSE_CONCURRENCY=5
 LOG_LEVEL=INFO
-
-# Прокси (опционально)
-PROXY_HOST=proxy.example.com
-PROXY_PORT=8080
-PROXY_USER=username
-PROXY_PASSWORD=password
+PROXY_HOST=
+PROXY_PORT=0
+PROXY_USER=
+PROXY_PASSWORD=
 ```
-
-## Поддерживаемые города
-
-- **Краснодар**: парсинг каждый час (07:00-20:00 МСК)
-- **Москва**: парсинг ночью (00:00-06:00 МСК)  
-- **Санкт-Петербург**: парсинг ночью (00:00-06:00 МСК)
 
 ## Команды разработчика
 
 ```bash
-# Основные режимы
-python run.py                           # Полный режим (парсинг + бот)
-python parser.py --city-slug krasnodar  # Однократный парсинг
-python bot_only.py                      # Только Telegram бот
-node solve_qrator.js                    # Тест обхода Qrator WAF
+python run.py
+python parser.py --city-slug krasnodar
+python bot_only.py
+python -m dns_shop_parser
+node solve_qrator.js
 
-# Тестирование
 pip install -r tests/requirements-test.txt
 pytest -q
 ```
 
 ## Архитектура
 
-```
-run.py (asyncio event loop)
-├── main_cycle()           ← парсинг в subprocess каждые N секунд
-│   └── parser.py          ← subprocess (timeout 10 мин)
-│       ├── qrator_resolver.py → solve_qrator.js (Playwright)
-│       ├── session_manager.py → aiohttp сессия с куками
-│       ├── simple_dns_parser.py → HTTP → категории → UUID → детали
-│       ├── db_manager.py → SQLite (upsert, история цен)
-│       └── telegram_notifier.py → персональный дайджест
-└── telegram_bot_polling() ← Telegram polling (параллельно)
+```text
+run.py / dns_shop_parser.entrypoints.run
+└── main_cycle()
+    └── parser.py / dns_shop_parser.entrypoints.parser
+        ├── parser/qrator_resolver.py -> solve_qrator.js
+        ├── parser/session_manager.py
+        ├── parser/simple_dns_parser.py
+        ├── parser/db_manager.py
+        └── services/telegram_notifier.py
 ```
 
-### Поток выполнения
-1. `run.py` запускает `parser.py` как subprocess каждый цикл
-2. `parser.py` вызывает `session_manager._init_session()` → запускает `solve_qrator.js`
-3. `solve_qrator.js` открывает headless Chromium, извлекает cookies → stdout
-4. `SimpleDNSParser` получает категории → UUID → детали товаров через POST
-5. `DBManager.upsert_products()` сохраняет изменения, возвращает дельты цен
-6. `TelegramNotifier.send_digest()` отправляет персональные уведомления
+## Поддерживаемые города
+
+- Краснодар: парсинг каждый час с 07:00 до 20:00 МСК
+- Москва: ночной парсинг с 00:00 до 06:00 МСК
+- Санкт-Петербург: ночной парсинг с 00:00 до 06:00 МСК
 
 ## База данных
 
 SQLite (`dns_monitor.db`):
-- `products` — товары с uuid, статусом, городом
-- `price_history` — история изменений цен
-- `category_state` — состояние категорий для детекции изменений
-- `telegram_subscribers` — подписчики с настройками
-- `user_settings` — персональные настройки пользователей
-- `user_categories` — выбранные категории товаров
+
+- `products`
+- `price_history`
+- `category_state`
+- `telegram_subscribers`
+- `user_settings`
+- `user_categories`
 
 ## Особенности
 
-- **Qrator cookies**: переиспользуются между циклами через постоянный профиль Chromium
-- **Расписание**: Краснодар парсится в рабочее время, другие города — ночью
-- **Circuit breaker**: экспоненциальная задержка после серии ошибок
-- **Graceful degradation**: `parser.py` всегда завершается с кодом 0
+- `parser.py` намеренно завершается с кодом `0`
+- Qrator cookies переиспользуются между циклами
+- расписание разделено на дневной и ночной режимы
+- пакет импортируется и через `src` layout, и через запуск из корня проекта
 
 ## Лицензия
 

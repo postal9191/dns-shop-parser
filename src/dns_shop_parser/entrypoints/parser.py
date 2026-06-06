@@ -9,19 +9,19 @@ import sys
 from pathlib import Path
 
 # Добавляем директорию проекта в sys.path для импорта модулей
-PROJECT_DIR = Path(__file__).parent.absolute()
+PROJECT_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_DIR))
 os.chdir(str(PROJECT_DIR))
 
-from config import config
-from data.cities import DEFAULT_CITY_SLUG, SLUG_TO_CITY
-from parser.db_manager import DBManager
-from parser.qrator_resolver import check_node_health, qrator_preflight
-from parser.session_manager import SessionManager
-from parser.simple_dns_parser import SimpleDNSParser
-from services.telegram_bot import init_telegram_bot
-from services.telegram_notifier import TelegramNotifier
-from utils.logger import logger
+from dns_shop_parser.config import config
+from dns_shop_parser.data.cities import DEFAULT_CITY_SLUG, SLUG_TO_CITY
+from dns_shop_parser.parser.db_manager import DBManager
+from dns_shop_parser.parser.qrator_resolver import check_node_health, qrator_preflight
+from dns_shop_parser.parser.session_manager import SessionManager
+from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
+from dns_shop_parser.services.telegram_bot import init_telegram_bot
+from dns_shop_parser.services.telegram_notifier import TelegramNotifier
+from dns_shop_parser.utils.logger import logger
 
 
 class DNSMonitorBrowserless:

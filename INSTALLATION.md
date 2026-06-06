@@ -29,19 +29,24 @@ TELEGRAM_CHAT_ADMIN=...
 python run.py
 ```
 
+или через пакет:
+
+```bash
+python -m dns_shop_parser
+```
+
 ## Проверка
 
 ```bash
 python parser.py --city-slug krasnodar
+pytest -q
 ```
 
 ## Примечания
 
+- Исходный код теперь расположен в `src/dns_shop_parser`.
+- Корневые `run.py`, `parser.py`, `bot_only.py`, `config.py` сохранены для совместимости.
 - `CITY_COOKIE_PATH` и `CITY_COOKIE_CURRENT` больше не используются в `.env`.
 - Набор поддерживаемых городов задается в `data/cities.py`.
 - Если используете proxy, заполните `PROXY_*` переменные.
-## 2026-05-08 Notes
-
-- Category selections are stored per city: `(user_id, city_slug, category_id)`.
-- If a user switches city, category filters are read/written for that city only.
-- Test runs isolate `dns_monitor` logging and should not pollute production `logs/app.log`.
+- Test runs изолируют `dns_monitor` logging и не должны загрязнять production `logs/app.log`.
