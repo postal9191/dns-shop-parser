@@ -1126,11 +1126,47 @@ show_cron_menu() {
     done
 }
 
+backup_db() {
+    local db_path
+    db_path="$(grep -v '^#' "$PROJECT_DIR/.env" 2>/dev/null | grep '^DB_PATH=' | head -1 | cut -d '=' -f2 | tr -d '"' | tr -d "'" | xargs)"
+
+    if [ -z "$db_path" ]; then
+        db_path="dns_monitor.db"
+    fi
+
+    local db_file="$PROJECT_DIR/$db_path"
+
+    if [ ! -f "$db_file" ]; then
+        print_warning "База не найдена: $db_file, бекап пропущен"
+        return 0
+    fi
+
+    mkdir -p "$PROJECT_DIR/backups"
+
+    local timestamp
+    timestamp="$(date +%Y%m%d_%H%M%S)"
+    local backup_file="$PROJECT_DIR/backups/${db_path%.db}_${timestamp}.db"
+
+    if cp "$db_file" "$backup_file"; then
+        print_success "Бекап базы создан: backups/$(basename "$backup_file")"
+    else
+        print_error "Не удалось создать бекап базы"
+        return 1
+    fi
+
+    return 0
+}
+
 update_and_restart() {
     print_header "Обновление из Git и перезапуск"
 
     if ! command -v git > /dev/null 2>&1; then
         print_error "Git не установлен"
+        return 1
+    fi
+
+    if ! backup_db; then
+        print_error "Бекап базы не удался, прерываю обновление"
         return 1
     fi
 
@@ -1178,6 +1214,11 @@ rollback_and_restart() {
             return 1
         }
 
+        if ! backup_db; then
+            print_error "Бекап базы не удался, прерываю откат"
+            return 1
+        fi
+
         local commits_raw
         commits_raw="$(git log --oneline -n 5 2>/dev/null)"
         if [ -z "$commits_raw" ]; then
@@ -1216,6 +1257,11 @@ rollback_and_restart() {
             print_error "git fetch завершился с ошибкой"
             return 1
         }
+
+        if ! backup_db; then
+            print_error "Бекап базы не удался, прерываю откат"
+            return 1
+        fi
     fi
 
     if [ -z "$target_ref" ]; then
