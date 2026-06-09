@@ -359,7 +359,7 @@ class DNSMonitorBrowserless:
 
 
 async def main() -> None:
-    """Точка входа - запуск один раз (безбраузерный режим, цикл управляется из run.py)."""
+    """Точка входа - запуск один раз (безбраузерный режим, цикл управляется package runner)."""
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--city-slug", default=None)
     args = arg_parser.parse_args()

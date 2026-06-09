@@ -171,7 +171,7 @@ class ParserController:
         return True
 
     def should_stop(self) -> bool:
-        """Проверяет, нужно ли остановить парсер (для использования в run.py)."""
+        """Проверяет, нужно ли остановить парсер (для использования в package runner)."""
         return self._stop_event.is_set()
 
     def get_pending_interval(self) -> Optional[int]:

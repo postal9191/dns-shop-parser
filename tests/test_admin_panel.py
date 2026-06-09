@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime
 
-from services.admin_panel import ParserController, ParserState
+from dns_shop_parser.services.admin_panel import ParserController, ParserState
 
 
 class TestParserController:
@@ -249,7 +249,7 @@ class TestCallbackHandling:
     @pytest.mark.asyncio
     async def test_callback_with_valid_admin_id(self):
         """Проверяет обработку callback с корректным admin_id."""
-        from services.telegram_bot import TelegramBot
+        from dns_shop_parser.services.telegram_bot import TelegramBot
 
         bot = TelegramBot(parser_controller=ParserController())
         bot.admin_id = "123456"
@@ -272,7 +272,7 @@ class TestCallbackHandling:
     @pytest.mark.asyncio
     async def test_callback_with_wrong_admin_id(self):
         """Проверяет обработку callback с неправильным admin_id."""
-        from services.telegram_bot import TelegramBot
+        from dns_shop_parser.services.telegram_bot import TelegramBot
 
         bot = TelegramBot(parser_controller=ParserController())
         bot.admin_id = "999999"  # Другой admin_id
@@ -296,7 +296,7 @@ class TestCallbackHandling:
     @pytest.mark.asyncio
     async def test_callback_without_parser_controller(self):
         """Проверяет обработку callback без parser_controller."""
-        from services.telegram_bot import TelegramBot
+        from dns_shop_parser.services.telegram_bot import TelegramBot
 
         bot = TelegramBot(parser_controller=None)
         bot.admin_id = "123456"

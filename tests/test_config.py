@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from config import Config
+from dns_shop_parser.config import Config
 
 
 def test_config_defaults(monkeypatch):

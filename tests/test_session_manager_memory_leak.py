@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 import aiohttp
 
-from parser.session_manager import SessionManager
+from dns_shop_parser.parser.session_manager import SessionManager
 
 
 class TestSessionManagerMemoryLeak:

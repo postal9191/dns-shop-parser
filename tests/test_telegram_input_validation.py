@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from services.telegram_bot.core import TelegramBot
+from dns_shop_parser.services.telegram_bot.core import TelegramBot
 
 
 class TestTelegramInputValidation:

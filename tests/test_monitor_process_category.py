@@ -1,15 +1,11 @@
-import importlib.util
-from pathlib import Path
+import importlib
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 
 def _load_monitor_class():
-    module_path = Path(__file__).resolve().parents[1] / "parser.py"
-    spec = importlib.util.spec_from_file_location("dns_monitor_entrypoint", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module("dns_shop_parser.entrypoints.parser")
     return module.DNSMonitorBrowserless
 
 

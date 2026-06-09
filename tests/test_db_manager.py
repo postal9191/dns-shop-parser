@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from parser.db_manager import DBManager
-from parser.models import Product
+from dns_shop_parser.parser.db_manager import DBManager
+from dns_shop_parser.parser.models import Product
 
 
 class TestDBManagerInit:

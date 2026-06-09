@@ -4,14 +4,14 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
-from parser.models import Product
-from services.daily_scheduler import (
+from dns_shop_parser.parser.models import Product
+from dns_shop_parser.services.daily_scheduler import (
     FREE_DAILY_REPORT,
     FREE_LIMIT_MAINTENANCE,
     DailyScheduler,
     report_bounds_utc,
 )
-from services.telegram_notifier import TelegramNotifier
+from dns_shop_parser.services.telegram_notifier import TelegramNotifier
 
 
 def _run(coro):

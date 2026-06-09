@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config import config
-from services.telegram_bot.handlers.admin import AdminHandler
+from dns_shop_parser.config import config
+from dns_shop_parser.services.telegram_bot.handlers.admin import AdminHandler
 
 
 @pytest.mark.asyncio

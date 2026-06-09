@@ -1,7 +1,7 @@
 import pytest
 
-from data.cities import CITIES, CITY_COOKIES, DEFAULT_CITY_SLUG, get_city_cookies
-from parser.session_manager import SessionManager
+from dns_shop_parser.data.cities import CITIES, CITY_COOKIES, DEFAULT_CITY_SLUG, get_city_cookies
+from dns_shop_parser.parser.session_manager import SessionManager
 
 
 def test_only_three_supported_cities_are_enabled():

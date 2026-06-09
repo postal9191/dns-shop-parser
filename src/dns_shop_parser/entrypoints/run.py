@@ -28,7 +28,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[3]
 
 
 def acquire_single_instance_lock():
-    """Не даёт запустить два постоянных run.py для одного проекта."""
+    """Не даёт запустить два постоянных package runner для одного проекта."""
     try:
         import fcntl
     except ImportError:
@@ -43,7 +43,7 @@ def acquire_single_instance_lock():
     except BlockingIOError:
         lock_file.seek(0)
         owner = lock_file.read().strip()
-        logger.error("[RUN] Уже запущен другой run.py для этого проекта%s", f": {owner}" if owner else "")
+        logger.error("[RUN] Уже запущен другой package runner для этого проекта%s", f": {owner}" if owner else "")
         lock_file.close()
         return None
 
@@ -54,11 +54,11 @@ def acquire_single_instance_lock():
     return lock_file
 
 
-async def _run_subprocess(script: str, log_name: str, args: list[str] | None = None) -> bool:
-    """Запускает Python-скрипт в отдельном процессе асинхронно."""
+async def _run_module(module: str, log_name: str, args: list[str] | None = None) -> bool:
+    """Запускает Python-модуль в отдельном процессе асинхронно."""
     logger.info("[RUN] Запускаю: %s", log_name)
     loop = asyncio.get_running_loop()
-    command = [sys.executable, '-m', 'dns_shop_parser.entrypoints.parser'] + ([] if args is None else args)
+    command = [sys.executable, "-m", module] + ([] if args is None else args)
     try:
         result = await loop.run_in_executor(
             None,
@@ -72,13 +72,13 @@ async def _run_subprocess(script: str, log_name: str, args: list[str] | None = N
         if result.returncode == 0:
             logger.info("[RUN] ✓ %s завершено успешно", log_name)
             return True
-        logger.error("[RUN] ✗ %s завершен с кодом %d", script, result.returncode)
+        logger.error("[RUN] ✗ %s завершен с кодом %d", module, result.returncode)
         return False
     except asyncio.TimeoutError:
-        logger.error("[RUN] ✗ %s превышен timeout (10 минут)", script)
+        logger.error("[RUN] ✗ %s превышен timeout (10 минут)", module)
         return False
     except Exception as e:
-        logger.error("[RUN] ✗ Ошибка при выполнении %s: %s", script, e)
+        logger.error("[RUN] ✗ Ошибка при выполнении %s: %s", module, e)
         return False
 
 
@@ -201,7 +201,7 @@ async def run_parser(city_slug: str | None = None) -> bool:
     """Запускает parser в отдельном процессе асинхронно."""
     args = ["--city-slug", city_slug] if city_slug else None
     label = f"Парсинг товаров ({city_slug})" if city_slug else "Парсинг товаров"
-    return await _run_subprocess("parser.py", label, args=args)
+    return await _run_module("dns_shop_parser.entrypoints.parser", label, args=args)
 
 
 def skip_invalid_night_city_events(db: DBManager, events: list[dict]) -> list[str]:

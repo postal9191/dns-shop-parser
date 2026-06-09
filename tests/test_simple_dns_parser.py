@@ -9,7 +9,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
-from parser.simple_dns_parser import (
+from dns_shop_parser.parser.simple_dns_parser import (
     _random_container_id,
     _is_qrator_challenge,
     _PRODUCT_UUID_RE,
@@ -78,7 +78,7 @@ class TestParseState:
 
     def _make_parser(self):
         sm = Mock()
-        parser_cls = __import__("parser.simple_dns_parser", fromlist=["SimpleDNSParser"])
+        parser_cls = __import__("dns_shop_parser.parser.simple_dns_parser", fromlist=["SimpleDNSParser"])
         return parser_cls.SimpleDNSParser(sm, city_slug="moscow")
 
     def test_parses_valid_state(self):
@@ -175,7 +175,7 @@ class TestCategoryParsingJson:
 
     @pytest.mark.asyncio
     async def test_parses_left_blocks_categories(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
         sm._cookies = {}
@@ -207,7 +207,7 @@ class TestCategoryParsingFallback:
 
     @pytest.mark.asyncio
     async def test_fallback_uuid_parsing(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
         sm._cookies = {}
@@ -235,7 +235,7 @@ class TestFetchProductUuids:
 
     @pytest.mark.asyncio
     async def test_empty_when_exception(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
         sm._cookies = {}
@@ -252,7 +252,7 @@ class TestFetchProductsDetails:
 
     @pytest.mark.asyncio
     async def test_empty_list_returns_empty(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
         sm._cookies = {}
@@ -262,7 +262,7 @@ class TestFetchProductsDetails:
 
     @pytest.mark.asyncio
     async def test_skips_failed_batches(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
         sm._cookies = {}
@@ -280,7 +280,7 @@ class TestFetchProducts:
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_uuids(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
         sm._cookies = {}
@@ -297,7 +297,7 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_close_is_noop(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
         parser = SimpleDNSParser(sm, city_slug="test")
@@ -309,8 +309,8 @@ class TestCheckStatus:
     """Тесты для _check_status."""
 
     def test_cookies_expired_401(self):
-        from parser.simple_dns_parser import SimpleDNSParser
-        from parser.exceptions import CookiesExpiredError
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.exceptions import CookiesExpiredError
 
         sm = Mock()
         parser = SimpleDNSParser(sm, city_slug="test")
@@ -319,8 +319,8 @@ class TestCheckStatus:
             parser._check_status(resp, "http://test.com")
 
     def test_cookies_expired_403(self):
-        from parser.simple_dns_parser import SimpleDNSParser
-        from parser.exceptions import CookiesExpiredError
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.exceptions import CookiesExpiredError
 
         sm = Mock()
         parser = SimpleDNSParser(sm, city_slug="test")
@@ -329,7 +329,7 @@ class TestCheckStatus:
             parser._check_status(resp, "http://test.com")
 
     def test_rate_limit_429(self):
-        from parser.simple_dns_parser import SimpleDNSParser
+        from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
         import aiohttp
 
         sm = Mock()

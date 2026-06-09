@@ -1,6 +1,6 @@
 import pytest
 
-from parser.models import Category, Product
+from dns_shop_parser.parser.models import Category, Product
 
 
 def test_product_creation_with_required_fields():

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from parser.simple_dns_parser import (
+from dns_shop_parser.parser.simple_dns_parser import (
     SimpleDNSParser,
     _PRODUCT_UUID_RE,
     _UUID_RE,

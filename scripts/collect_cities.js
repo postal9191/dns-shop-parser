@@ -4,7 +4,7 @@
  * Собирает city_path/current_path куки и кол-во уценённых товаров
  * для всех столиц областей РФ через Playwright.
  *
- * Запуск: node collect_cities.js
+ * Запуск: node scripts/collect_cities.js
  */
 
 const { chromium } = require('playwright-extra');
@@ -307,8 +307,8 @@ async function main() {
     console.log(JSON.stringify(results, null, 2));
 
     // Сохраняем в файл
-    fs.writeFileSync('cities_data.json', JSON.stringify(results, null, 2));
-    console.error('\nСохранено в cities_data.json');
+    fs.writeFileSync('data/cities_data.json', JSON.stringify(results, null, 2));
+    console.error('\nСохранено в data/cities_data.json');
 
     await page.close();
     await context.close();

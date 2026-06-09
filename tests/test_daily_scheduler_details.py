@@ -7,7 +7,7 @@ import pytest
 from datetime import datetime, time, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
-from services.daily_scheduler import (
+from dns_shop_parser.services.daily_scheduler import (
     DailyScheduler,
     report_bounds_utc,
     FREE_DAILY_REPORT,

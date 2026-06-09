@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch, MagicMock
 import aiohttp
 
-from parser.session_manager import SessionManager, HTTPLogger
+from dns_shop_parser.parser.session_manager import SessionManager, HTTPLogger
 
 
 class TestSessionManagerInit:
@@ -23,7 +23,7 @@ class TestSessionManagerInit:
         assert isinstance(sm._city_cookies, dict)
 
     def test_proxy_config_stored(self):
-        with patch("parser.session_manager.config") as mock_cfg:
+        with patch("dns_shop_parser.parser.session_manager.config") as mock_cfg:
             mock_cfg.proxy_enabled.return_value = True
             mock_cfg.proxy_host = "proxy.example.com"
             mock_cfg.proxy_port = 8080
@@ -35,7 +35,7 @@ class TestSessionManagerInit:
             assert sm._proxy_pool is not None
 
     def test_no_proxy_when_disabled(self):
-        with patch("parser.session_manager.config") as mock_cfg:
+        with patch("dns_shop_parser.parser.session_manager.config") as mock_cfg:
             mock_cfg.proxy_enabled.return_value = False
             sm = SessionManager()
             assert sm._proxy_pool is None
@@ -153,21 +153,21 @@ class TestResolveQrator:
     @pytest.mark.asyncio
     async def test_resolve_success(self):
         sm = SessionManager()
-        with patch("parser.session_manager.resolve_qrator_cookies", new_callable=AsyncMock, return_value={"qrator_jsid2": "abc"}):
+        with patch("dns_shop_parser.parser.session_manager.resolve_qrator_cookies", new_callable=AsyncMock, return_value={"qrator_jsid2": "abc"}):
             result = await sm._resolve_qrator()
             assert result is True
 
     @pytest.mark.asyncio
     async def test_resolve_missing_jsid2(self):
         sm = SessionManager()
-        with patch("parser.session_manager.resolve_qrator_cookies", new_callable=AsyncMock, return_value={}):
+        with patch("dns_shop_parser.parser.session_manager.resolve_qrator_cookies", new_callable=AsyncMock, return_value={}):
             result = await sm._resolve_qrator()
             assert result is False
 
     @pytest.mark.asyncio
     async def test_resolve_returns_none(self):
         sm = SessionManager()
-        with patch("parser.session_manager.resolve_qrator_cookies", new_callable=AsyncMock, return_value=None):
+        with patch("dns_shop_parser.parser.session_manager.resolve_qrator_cookies", new_callable=AsyncMock, return_value=None):
             result = await sm._resolve_qrator()
             assert result is False
 
@@ -186,7 +186,7 @@ class TestCityCookiesInInitSession:
 
     @pytest.mark.asyncio
     async def test_city_cookies_applied_after_qrator(self):
-        from data.cities import get_city_cookies
+        from dns_shop_parser.data.cities import get_city_cookies
         expected = get_city_cookies("moscow")
         sm = SessionManager(city_slug="moscow")
         with patch.object(sm, '_resolve_qrator', return_value=True):
@@ -235,7 +235,7 @@ class TestInitSessionForceQrator:
     async def test_force_qrator_clears_profile(self):
         sm = SessionManager()
         mock_cleanup = Mock(return_value=True)
-        with patch("parser.session_manager.cleanup_chromium_profile", mock_cleanup):
+        with patch("dns_shop_parser.parser.session_manager.cleanup_chromium_profile", mock_cleanup):
             with patch.object(sm, '_resolve_qrator', return_value=True):
                 result = await sm._init_session(force_qrator=True)
                 assert result is True

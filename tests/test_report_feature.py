@@ -9,9 +9,9 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
-from parser.db_manager import DBManager
-from parser.models import Product
-from services.telegram_bot import TelegramBot
+from dns_shop_parser.parser.db_manager import DBManager
+from dns_shop_parser.parser.models import Product
+from dns_shop_parser.services.telegram_bot import TelegramBot
 
 
 # ─── Фикстуры ────────────────────────────────────────────────────────────────
@@ -77,7 +77,7 @@ def _make_bot(db=None) -> TelegramBot:
     bot.parser_controller = None
 
     # State containers
-    from services.telegram_bot.state import UserState, ReportMachine
+    from dns_shop_parser.services.telegram_bot.state import UserState, ReportMachine
     bot._user_state = UserState()
     bot._report_state = bot._user_state.report_state
     bot._report_cat_page = bot._user_state.report_cat_page
@@ -94,9 +94,9 @@ def _make_bot(db=None) -> TelegramBot:
     bot._new_report_state = _rm.new_state
 
     # Handlers (with aliases that can't be @property)
-    from services.telegram_bot.handlers.reports import ReportWizard
-    from services.telegram_bot.handlers.settings import SettingsHandler
-    from services.telegram_bot.handlers.admin import AdminHandler
+    from dns_shop_parser.services.telegram_bot.handlers.reports import ReportWizard
+    from dns_shop_parser.services.telegram_bot.handlers.settings import SettingsHandler
+    from dns_shop_parser.services.telegram_bot.handlers.admin import AdminHandler
     bot._report_wizard = ReportWizard(bot)
     bot._settings = SettingsHandler(bot, bot._report_wizard)
     bot._admin = AdminHandler(bot)
@@ -107,7 +107,7 @@ def _make_bot(db=None) -> TelegramBot:
     bot._send_report = bot._report_wizard._send_report
 
     # Keyboard builders — wrap to match old single-arg signatures
-    from services.telegram_bot import keyboards as _kb
+    from dns_shop_parser.services.telegram_bot import keyboards as _kb
     def _wrap_report_cats(user_id):
         if bot.db is None:
             return {"inline_keyboard": []}
@@ -1253,7 +1253,7 @@ class TestSettingsCatSearch:
         return bot
 
     def _run_settings_cb(self, bot, data):
-        from services.telegram_bot import TelegramBot
+        from dns_shop_parser.services.telegram_bot import TelegramBot
         return self._run(bot._handle_user_settings_callback("cb", "user1", "chat1", 42, data))
 
     def test_keyboard_has_search_button(self):

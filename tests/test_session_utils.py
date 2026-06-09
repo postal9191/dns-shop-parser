@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from parser.session_manager import (
+from dns_shop_parser.parser.session_manager import (
     SessionManager,
     ProxyPool,
     _get_base_headers,

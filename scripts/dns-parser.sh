@@ -1,0 +1,1401 @@
+#!/bin/bash
+
+################################################################################
+# DNS Parser Linux Service Manager
+# Автоматическое управление DNS парсером с проверкой зависимостей и systemd
+################################################################################
+
+set -e
+
+# Цвета для вывода
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Переменные
+SERVICE_NAME="dns-parser"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_CMD="python3"
+LOG_FILE="$PROJECT_DIR/logs/app.log"
+PID_FILE="/tmp/${SERVICE_NAME}.pid"
+VENV_DIR="$PROJECT_DIR/venv"
+DEPS_CHECK_FILE="$PROJECT_DIR/.deps-checked"
+DEPS_CHECK_INTERVAL=86400  # 24 часа в секундах
+
+################################################################################
+# Функции вывода
+################################################################################
+
+print_header() {
+    echo -e "\n${BLUE}=====================================${NC}"
+    echo -e "${BLUE}$1${NC}"
+    echo -e "${BLUE}=====================================${NC}\n"
+}
+
+print_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ $1${NC}"
+}
+
+get_project_pids() {
+    local script_name="$1"
+    pgrep -f "$script_name" 2>/dev/null | grep -F "$PROJECT_DIR" || true
+}
+
+is_systemd_active() {
+    [ -f "$SERVICE_FILE" ] && sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null
+}
+
+get_systemd_main_pid() {
+    if [ -f "$SERVICE_FILE" ]; then
+        sudo systemctl show "$SERVICE_NAME" -p MainPID --value 2>/dev/null || true
+    fi
+}
+
+stop_project_processes() {
+    local exclude_pid="${1:-}"
+    local pids
+    pids="$(get_project_pids "dns_shop_parser run")"
+    if [ -n "$exclude_pid" ]; then
+        pids="$(echo "$pids" | grep -vx "$exclude_pid" || true)"
+    fi
+
+    if [ -n "$pids" ]; then
+        print_info "Остановка локального dns_shop_parser run: $(echo "$pids" | tr '\n' ' ')"
+        kill $pids 2>/dev/null || true
+        sleep 2
+
+        pids="$(get_project_pids "dns_shop_parser run")"
+        if [ -n "$exclude_pid" ]; then
+            pids="$(echo "$pids" | grep -vx "$exclude_pid" || true)"
+        fi
+        if [ -n "$pids" ]; then
+            print_warning "dns_shop_parser run не завершился, отправляю SIGKILL: $(echo "$pids" | tr '\n' ' ')"
+            kill -9 $pids 2>/dev/null || true
+        fi
+    fi
+
+    pids="$(get_project_pids "dns_shop_parser.entrypoints.parser")"
+    if [ -n "$pids" ]; then
+        print_info "Остановка дочернего dns_shop_parser.entrypoints.parser: $(echo "$pids" | tr '\n' ' ')"
+        kill $pids 2>/dev/null || true
+        sleep 1
+
+        pids="$(get_project_pids "dns_shop_parser.entrypoints.parser")"
+        if [ -n "$pids" ]; then
+            kill -9 $pids 2>/dev/null || true
+        fi
+    fi
+
+    rm -f "$PID_FILE"
+}
+
+################################################################################
+# Проверка и установка зависимостей
+################################################################################
+
+check_nodejs() {
+    print_info "Проверка Node.js и npm..."
+
+    if ! command -v node &> /dev/null; then
+        print_warning "Node.js не найден, установка..."
+
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS=$ID
+        fi
+
+        case $OS in
+            ubuntu|debian)
+                sudo apt-get update -qq
+                sudo apt-get install -y nodejs npm
+                ;;
+            fedora)
+                sudo dnf install -y nodejs npm
+                ;;
+            centos|rhel)
+                sudo yum install -y nodejs npm
+                ;;
+            *)
+                print_error "Неподдерживаемый дистрибутив: $OS"
+                return 1
+                ;;
+        esac
+    fi
+
+    if command -v node &> /dev/null && command -v npm &> /dev/null; then
+        NODE_VERSION=$(node --version)
+        NPM_VERSION=$(npm --version)
+        print_success "Node.js $NODE_VERSION и npm $NPM_VERSION установлены"
+        return 0
+    else
+        print_error "Не удалось установить Node.js/npm"
+        return 1
+    fi
+}
+
+resolve_venv_python() {
+    local venv_python="$VENV_DIR/bin/python3"
+    if [ ! -f "$venv_python" ]; then
+        venv_python="$VENV_DIR/bin/python"
+    fi
+    echo "$venv_python"
+}
+
+validate_npm_dependencies() {
+    if [ ! -f "$PROJECT_DIR/package.json" ]; then
+        return 0
+    fi
+
+    cd "$PROJECT_DIR"
+
+    if [ ! -d "$PROJECT_DIR/node_modules" ]; then
+        return 1
+    fi
+
+    if ! npm ls --depth=0 --silent > /dev/null 2>&1; then
+        return 1
+    fi
+
+    node -e "require.resolve('playwright'); require.resolve('playwright-extra');" > /dev/null 2>&1
+}
+
+validate_playwright_browser() {
+    if [ ! -f "$PROJECT_DIR/package.json" ]; then
+        return 0
+    fi
+
+    cd "$PROJECT_DIR"
+    node -e "const fs = require('fs'); const { chromium } = require('playwright-extra'); const browserPath = chromium.executablePath(); if (!browserPath || !fs.existsSync(browserPath)) process.exit(1);" > /dev/null 2>&1
+}
+
+validate_python_dependencies() {
+    local venv_python
+    venv_python="$(resolve_venv_python)"
+
+    if [ ! -f "$venv_python" ]; then
+        return 1
+    fi
+
+    "$venv_python" -c "import aiohttp, tenacity, dotenv" > /dev/null 2>&1
+}
+
+dependencies_changed_since_last_check() {
+    if [ ! -f "$DEPS_CHECK_FILE" ]; then
+        return 0
+    fi
+
+    for dependency_file in "$PROJECT_DIR/package.json" "$PROJECT_DIR/package-lock.json" "$PROJECT_DIR/requirements.txt"; do
+        if [ -f "$dependency_file" ] && [ "$dependency_file" -nt "$DEPS_CHECK_FILE" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+dependencies_healthy() {
+    command -v node > /dev/null 2>&1 || return 1
+    command -v npm > /dev/null 2>&1 || return 1
+    command -v "$PYTHON_CMD" > /dev/null 2>&1 || return 1
+    validate_npm_dependencies || return 1
+    validate_playwright_browser || return 1
+    validate_python_dependencies || return 1
+    return 0
+}
+
+check_playwright() {
+    print_info "Проверка Playwright браузера..."
+
+    cd "$PROJECT_DIR"
+
+    local FORCE_REFRESH=0
+    if dependencies_changed_since_last_check; then
+        FORCE_REFRESH=1
+    fi
+
+    local NEED_NPM_INSTALL=0
+    if [ $FORCE_REFRESH -eq 0 ] && validate_npm_dependencies; then
+        print_success "Node.js зависимости уже установлены"
+    else
+        NEED_NPM_INSTALL=1
+        print_warning "Node.js зависимости отсутствуют или повреждены, выполняю npm install..."
+    fi
+
+    if [ $NEED_NPM_INSTALL -eq 1 ]; then
+        npm install --quiet 2>&1 | grep -v "npm warn\|npm notice" || true
+    fi
+
+    print_info "Пересборка native модулей..."
+    npm rebuild 2>&1 | grep -v "npm warn\|npm notice\|gyp info" || true
+
+    if [ $FORCE_REFRESH -eq 0 ] && validate_playwright_browser && [ $NEED_NPM_INSTALL -eq 0 ]; then
+        print_success "Playwright Chromium уже установлен"
+        return 0
+    fi
+
+    print_info "Установка/проверка Playwright Chromium..."
+    npx playwright install chromium --with-deps 2>&1 | tail -5
+
+    if [ $? -eq 0 ]; then
+        print_success "Playwright браузер установлен"
+        return 0
+    else
+        print_error "Не удалось установить Playwright браузер"
+        return 1
+    fi
+}
+
+
+check_python() {
+    print_info "Проверка Python 3..."
+
+    if ! command -v python3 &> /dev/null; then
+        print_error "Python 3 не установлен"
+        print_info "Установка Python 3..."
+
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS=$ID
+        fi
+
+        case $OS in
+            ubuntu|debian)
+                sudo apt-get update -qq
+                sudo apt-get install -y python3 python3-pip python3-venv
+                ;;
+            fedora)
+                sudo dnf install -y python3 python3-pip python3-venv
+                ;;
+            centos|rhel)
+                sudo yum install -y python3 python3-pip python3-venv
+                ;;
+            arch)
+                sudo pacman -S --noconfirm python python-pip
+                ;;
+        esac
+    else
+        # Python установлен, но может не быть python3-venv
+        # Просто пробуем установить его для Debian/Ubuntu (не повредит если уже установлен)
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            if [[ "$ID" == "ubuntu" ]] || [[ "$ID" == "debian" ]]; then
+                print_info "Проверка python3-venv..."
+                # Получаем точную версию Python (например 3.10)
+                local PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | grep -oP '\d+\.\d+')
+                # Просто устанавливаем для конкретной версии
+                sudo apt-get update -qq 2>/dev/null || true
+                sudo apt-get install -y "python${PYTHON_VERSION}-venv" 2>/dev/null || sudo apt-get install -y python3-venv 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    PYTHON_VERSION=$($PYTHON_CMD --version 2>&1 | awk '{print $2}')
+    print_success "Python $PYTHON_VERSION установлен"
+}
+
+check_pip_dependencies() {
+    print_info "Проверка Python зависимостей..."
+
+    local FORCE_REFRESH=0
+    if dependencies_changed_since_last_check; then
+        FORCE_REFRESH=1
+    fi
+
+    # Создаём venv если его нет
+    if [ ! -d "$VENV_DIR" ]; then
+        print_info "Создание виртуального окружения..."
+
+        # Используем --upgrade-deps чтобы pip был установлен автоматически
+        $PYTHON_CMD -m venv "$VENV_DIR" --upgrade-deps 2>&1 | grep -v "WARNING\|created" || true
+
+        # Проверяем что venv создался
+        if [ ! -f "$VENV_DIR/bin/python" ] && [ ! -f "$VENV_DIR/bin/python3" ]; then
+            print_error "Не удалось создать виртуальное окружение"
+            return 1
+        fi
+
+        print_success "Виртуальное окружение создано"
+    fi
+
+    # Находим python в venv
+    local VENV_PYTHON
+    VENV_PYTHON="$(resolve_venv_python)"
+
+    if [ ! -f "$VENV_PYTHON" ]; then
+        print_error "Python в venv не найден"
+        return 1
+    fi
+
+    # Проверяем что pip работает, если нет - устанавливаем его
+    if ! "$VENV_PYTHON" -m pip --version &> /dev/null; then
+        print_warning "pip не найден в venv, устанавливаю..."
+        "$VENV_PYTHON" -m ensurepip --upgrade 2>&1 | grep -v "WARNING" || true
+    fi
+
+    if [ $FORCE_REFRESH -eq 0 ] && validate_python_dependencies; then
+        print_success "Python зависимости уже установлены"
+        return 0
+    fi
+
+    # Обновляем pip используя venv python напрямую (скрываем verbose вывод)
+    print_info "Обновление pip..."
+    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel --quiet 2>&1 | grep -v "WARNING\|Collecting\|Downloading\|Installing\|Preparing" || true
+
+    # Устанавливаем зависимости
+    if [ -f "$PROJECT_DIR/requirements.txt" ]; then
+        print_info "Установка зависимостей из requirements.txt..."
+        "$VENV_PYTHON" -m pip install -r "$PROJECT_DIR/requirements.txt" --quiet 2>&1 | grep -v "WARNING\|Collecting\|Downloading\|Installing\|Preparing" || true
+        print_success "Зависимости установлены"
+    else
+        print_warning "requirements.txt не найден"
+    fi
+}
+
+check_all_dependencies() {
+    if dependencies_healthy && ! dependencies_changed_since_last_check; then
+        print_info "Зависимости на месте, дополнительная установка не требуется"
+        touch "$DEPS_CHECK_FILE"
+        return 0
+    fi
+
+    if [ -f "$DEPS_CHECK_FILE" ]; then
+        local last_check=$(stat -c %Y "$DEPS_CHECK_FILE" 2>/dev/null || echo 0)
+        local current_time=$(date +%s)
+        local time_diff=$((current_time - last_check))
+
+        if [ $time_diff -lt $DEPS_CHECK_INTERVAL ]; then
+            print_warning "Найдены изменения или повреждение зависимостей, выполняю внеплановую перепроверку"
+        fi
+    fi
+
+    print_header "Проверка всех зависимостей"
+
+    check_nodejs || return 1
+    check_python || return 1
+    check_playwright || return 1
+    check_pip_dependencies || return 1
+
+    # Сохраняем время последней проверки
+    touch "$DEPS_CHECK_FILE"
+
+    print_success "Все зависимости проверены и установлены!"
+}
+
+run_service_foreground() {
+    print_header "Запуск сервиса DNS Parser"
+
+    check_all_dependencies || return 1
+
+    print_info "Создание папки для логов..."
+    mkdir -p "$PROJECT_DIR/logs"
+
+    local VENV_PYTHON
+    VENV_PYTHON="$(resolve_venv_python)"
+
+    if [ ! -f "$VENV_PYTHON" ]; then
+        print_error "Python в venv не найден"
+        return 1
+    fi
+
+    print_info "Запуск dns_shop_parser run в foreground через systemd bootstrap..."
+    PYTHONPATH="$PROJECT_DIR/src" exec "$VENV_PYTHON" -m dns_shop_parser run
+}
+
+################################################################################
+# Управление сервисом
+################################################################################
+
+start_service() {
+    print_header "Запуск приложения (постоянный режим)"
+
+    if is_systemd_active; then
+        print_warning "systemd сервис уже запущен. Используй: sudo systemctl status $SERVICE_NAME"
+        return 0
+    fi
+
+    local existing_pids
+    existing_pids="$(get_project_pids "dns_shop_parser run")"
+    if [ -n "$existing_pids" ]; then
+        print_warning "dns_shop_parser run уже запущен: $(echo "$existing_pids" | tr '\n' ' ')"
+        print_info "Останови его перед повторным запуском: ./scripts/dns-parser.sh stop"
+        return 0
+    fi
+
+    if [ ! -d "$VENV_DIR" ] || [ ! -d "$PROJECT_DIR/node_modules" ]; then
+        print_warning "Окружение не найдено, запускаю проверку зависимостей..."
+        check_all_dependencies || return 1
+    fi
+
+    # Создаём папку для логов
+    print_info "Создание папки для логов..."
+    mkdir -p "$PROJECT_DIR/logs"
+
+    # Находим python в venv
+    local VENV_PYTHON
+    VENV_PYTHON="$(resolve_venv_python)"
+
+    if [ ! -f "$VENV_PYTHON" ]; then
+        print_error "Python в venv не найден"
+        return 1
+    fi
+
+    print_info "Запуск приложения через dns_shop_parser run (в фоне)..."
+    print_info "Режим: Node.js + Playwright (безбраузерный)"
+
+    # Запускаем dns_shop_parser run в фоне: он держит постоянный цикл и Telegram polling.
+    # dns_shop_parser.entrypoints.parser - одноразовый subprocess из dns_shop_parser run, после одного прохода он завершает работу.
+    PYTHONPATH="$PROJECT_DIR/src" nohup "$VENV_PYTHON" -m dns_shop_parser run >> "$LOG_FILE" 2>&1 &
+    local PID=$!
+
+    sleep 1
+
+    if kill -0 $PID 2>/dev/null; then
+        echo "$PID" > "$PID_FILE"
+        print_success "Парсер запущен в фоне (PID: $PID)"
+        print_info "Логи: tail -f $LOG_FILE"
+    else
+        print_error "Не удалось запустить парсер"
+        if [ -f "$LOG_FILE" ]; then
+            print_info "Ошибка:"
+            tail -5 "$LOG_FILE"
+        fi
+        return 1
+    fi
+}
+
+parse_env_interval() {
+    # Читает PARSE_INTERVAL из .env и преобразует в cron формат
+    local env_file="$PROJECT_DIR/.env"
+    local parse_interval=3600  # по умолчанию 1 час
+
+    if [ -f "$env_file" ]; then
+        # Извлекаем PARSE_INTERVAL из .env
+        parse_interval=$(grep "^PARSE_INTERVAL=" "$env_file" 2>/dev/null | cut -d'=' -f2 | tr -d ' ')
+    fi
+
+    # Преобразуем секунды в cron формат
+    if [ -z "$parse_interval" ]; then
+        parse_interval=3600
+    fi
+
+    case $parse_interval in
+        60)
+            echo "* * * * *"  # каждую минуту
+            ;;
+        300)
+            echo "*/5 * * * *"  # каждые 5 минут
+            ;;
+        600)
+            echo "*/10 * * * *"  # каждые 10 минут
+            ;;
+        900)
+            echo "*/15 * * * *"  # каждые 15 минут
+            ;;
+        1800)
+            echo "*/30 * * * *"  # каждые 30 минут
+            ;;
+        3600)
+            echo "0 * * * *"  # каждый час
+            ;;
+        7200)
+            echo "0 */2 * * *"  # каждые 2 часа
+            ;;
+        86400)
+            echo "0 0 * * *"  # каждый день в 00:00
+            ;;
+        *)
+            # Для любого другого интервала - вычисляем минуты
+            local minutes=$((parse_interval / 60))
+            if [ $minutes -lt 60 ]; then
+                echo "*/$minutes * * * *"
+            else
+                local hours=$((minutes / 60))
+                echo "0 */$hours * * *"
+            fi
+            ;;
+    esac
+}
+
+setup_cron_hourly() {
+    print_error "Cron support has been removed from this script. Use dns_shop_parser run/systemd instead."
+    return 1
+
+    print_header "Установка Cron (из PARSE_INTERVAL в .env)"
+
+    # Читаем интервал из .env
+    local PARSE_INTERVAL=3600
+    if [ -f "$PROJECT_DIR/.env" ]; then
+        PARSE_INTERVAL=$(grep "^PARSE_INTERVAL=" "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2 | tr -d ' ')
+    fi
+
+    if [ -z "$PARSE_INTERVAL" ]; then
+        PARSE_INTERVAL=3600
+        print_warning "PARSE_INTERVAL не найден в .env, используется значение по умолчанию: 3600 сек (1 час)"
+    else
+        print_info "PARSE_INTERVAL из .env: $PARSE_INTERVAL сек"
+    fi
+
+    # Преобразуем в cron формат
+    local CRON_SCHEDULE=$(parse_env_interval)
+    local CRON_CMD="cd $PROJECT_DIR && PYTHONPATH=$PROJECT_DIR/src $VENV_DIR/bin/python3 -m dns_shop_parser parse >> $LOG_FILE 2>&1"
+
+    # Описание расписания для вывода
+    local schedule_desc="каждый час"
+    case "$PARSE_INTERVAL" in
+        60) schedule_desc="каждую минуту" ;;
+        300) schedule_desc="каждые 5 минут" ;;
+        600) schedule_desc="каждые 10 минут" ;;
+        900) schedule_desc="каждые 15 минут" ;;
+        1800) schedule_desc="каждые 30 минут" ;;
+        3600) schedule_desc="каждый час" ;;
+        7200) schedule_desc="каждые 2 часа" ;;
+        86400) schedule_desc="каждый день" ;;
+        *) schedule_desc="каждые $((PARSE_INTERVAL / 60)) минут" ;;
+    esac
+
+    # Проверяем есть ли уже такой cron
+    if crontab -l 2>/dev/null | grep -Fq -- "-m dns_shop_parser parse"; then
+        print_warning "Cron уже установлен для этого проекта"
+        print_info "Текущее расписание:"
+        crontab -l | grep -F -- "-m dns_shop_parser parse" || true
+        print_info ""
+        print_info "Чтобы обновить расписание, удалите старый cron (пункт 4) и установите новый"
+        return 0
+    fi
+
+    # Создаём временный файл для cron
+    local CRON_FILE="/tmp/dns-parser-cron-$$.txt"
+    (crontab -l 2>/dev/null || true; echo "$CRON_SCHEDULE $CRON_CMD") > "$CRON_FILE"
+
+    # Устанавливаем новый cron
+    if crontab "$CRON_FILE" 2>/dev/null; then
+        print_success "Cron установлен"
+        print_info "Расписание: $schedule_desc"
+        print_info "Cron выражение: $CRON_SCHEDULE"
+        print_info "Команда: $CRON_CMD"
+        print_info ""
+        print_info "Проверить cron: crontab -l"
+        print_info "Удалить cron: через пункт меню 4"
+        rm -f "$CRON_FILE"
+        return 0
+    else
+        print_error "Не удалось установить cron"
+        rm -f "$CRON_FILE"
+        return 1
+    fi
+}
+
+remove_cron() {
+    print_error "Cron support has been removed from this script. Remove old entries manually with crontab -e if needed."
+    return 1
+
+    print_header "Удаление Cron"
+
+    if ! crontab -l 2>/dev/null | grep -Fq -- "-m dns_shop_parser parse"; then
+        print_warning "Cron не установлен"
+        return 0
+    fi
+
+    # Создаём новый cron без наших команд
+    local CRON_FILE="/tmp/dns-parser-cron-remove-$$.txt"
+    crontab -l 2>/dev/null | grep -Fv -- "-m dns_shop_parser parse" > "$CRON_FILE" || true
+
+    # Устанавливаем обновленный cron
+    if [ -s "$CRON_FILE" ]; then
+        crontab "$CRON_FILE"
+    else
+        crontab -r 2>/dev/null || true
+    fi
+
+    print_success "Cron удален"
+    rm -f "$CRON_FILE"
+}
+
+show_cron_status() {
+    print_error "Cron support has been removed from this script."
+    return 1
+
+    print_header "Статус Cron"
+
+    if crontab -l 2>/dev/null | grep -Fq -- "-m dns_shop_parser parse"; then
+        print_success "Cron установлен"
+        print_info "Ваше расписание:"
+        crontab -l | grep -F -- "-m dns_shop_parser parse"
+    else
+        print_warning "Cron не установлен"
+    fi
+    echo ""
+}
+
+stop_service() {
+    print_header "Остановка приложения"
+
+    if [ -f "$SERVICE_FILE" ]; then
+        print_info "Остановка systemd сервиса..."
+        sudo systemctl stop "$SERVICE_NAME" || true
+        sleep 1
+
+        if ! sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            print_success "systemd сервис остановлен"
+        else
+            print_warning "Не удалось остановить systemd сервис"
+        fi
+    fi
+
+    stop_project_processes
+
+    if ! is_systemd_active && [ -z "$(get_project_pids "dns_shop_parser run")" ] && [ -z "$(get_project_pids "dns_shop_parser.entrypoints.parser")" ]; then
+        print_success "Приложение остановлено"
+    else
+        print_warning "Остались процессы парсера, проверь: pgrep -af 'dns_shop_parser run|dns_shop_parser.entrypoints.parser'"
+    fi
+}
+
+restart_service() {
+    print_header "Перезапуск приложения"
+
+    if [ -f "$SERVICE_FILE" ]; then
+        print_info "Найден systemd unit, перезапускаю через systemctl..."
+        ensure_systemd_unit_current || return 1
+
+        local systemd_pid
+        systemd_pid="$(get_systemd_main_pid)"
+        if [ "$systemd_pid" = "0" ]; then
+            systemd_pid=""
+        fi
+
+        stop_project_processes "$systemd_pid"
+
+        print_info "Проверка зависимостей перед стартом..."
+        check_all_dependencies || return 1
+
+        print_info "Перезапуск systemd сервиса..."
+        sudo systemctl restart "$SERVICE_NAME"
+        sleep 2
+
+        if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+            print_success "systemd сервис перезапущен"
+        else
+            print_error "Не удалось перезапустить systemd сервис"
+            return 1
+        fi
+        return 0
+    fi
+
+    stop_service
+    start_service
+}
+
+show_logs() {
+    if [ ! -f "$LOG_FILE" ]; then
+        print_warning "Лог файл не найден: $LOG_FILE"
+        return
+    fi
+
+    print_header "Логи приложения (последние 50 строк)"
+    print_info "Нажмите Ctrl+C для выхода\n"
+
+    tail -n 50 -f "$LOG_FILE"
+}
+
+show_status() {
+    print_header "Статус DNS Parser"
+
+    local status_found=0
+
+    # Проверяем PID-файл (локальный запуск через пункт 1)
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 $PID 2>/dev/null; then
+            print_success "Статус: ЗАПУЩЕНО (локально, PID: $PID)"
+            echo -e "  $(ps aux | grep $PID | grep -v grep)"
+            status_found=1
+        else
+            rm -f "$PID_FILE"
+        fi
+    fi
+
+    # Проверяем systemctl (если установлен)
+    if [ -f "$SERVICE_FILE" ]; then
+        if sudo systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            print_success "Статус: ЗАПУЩЕНО (systemctl)"
+            sudo systemctl status "$SERVICE_NAME" --no-pager 2>/dev/null | grep -E "Active|Main PID"
+            status_found=1
+        fi
+    fi
+
+    # Если ничего не найдено
+    if [ $status_found -eq 0 ]; then
+        print_error "Статус: ОСТАНОВЛЕНО"
+    fi
+
+    echo ""
+}
+
+################################################################################
+# Systemd интеграция
+################################################################################
+
+create_systemd_unit() {
+    print_header "Создание systemd unit файла"
+
+    # Находим python в venv
+    local VENV_PYTHON="$VENV_DIR/bin/python3"
+    if [ ! -f "$VENV_PYTHON" ]; then
+        VENV_PYTHON="$VENV_DIR/bin/python"
+    fi
+
+    # Если venv не существует, используем системный python
+    if [ ! -f "$VENV_PYTHON" ]; then
+        VENV_PYTHON="$(which python3)"
+    fi
+
+    UNIT_CONTENT="[Unit]
+Description=DNS Shop Parser Service - безбраузерный парсер (Node.js + Playwright)
+After=network.target
+StartLimitInterval=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=$(whoami)
+WorkingDirectory=$PROJECT_DIR
+Environment=\"PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:$PATH\"
+ExecStart=/bin/bash $PROJECT_DIR/scripts/dns-parser.sh run-service
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dns-parser
+
+[Install]
+WantedBy=multi-user.target
+"
+
+    print_info "Требуется sudo для создания systemd unit"
+    echo "$UNIT_CONTENT" | sudo tee "$SERVICE_FILE" > /dev/null
+
+    if [ $? -eq 0 ]; then
+        print_success "Unit файл создан: $SERVICE_FILE"
+        print_info "Перезагрузка systemd..."
+        sudo systemctl daemon-reload
+        print_success "systemd перезагружен"
+    else
+        print_error "Не удалось создать unit файл"
+        return 1
+    fi
+}
+
+ensure_systemd_unit_current() {
+    if [ ! -f "$SERVICE_FILE" ]; then
+        return 0
+    fi
+
+    if grep -Fq "ExecStart=/bin/bash $PROJECT_DIR/scripts/dns-parser.sh run-service" "$SERVICE_FILE"; then
+        return 0
+    fi
+
+    print_warning "Обнаружен устаревший systemd unit, обновляю его под bootstrap зависимостей..."
+    create_systemd_unit || return 1
+}
+
+enable_systemd() {
+    print_header "Активация в systemd"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        create_systemd_unit || return 1
+    fi
+
+    ensure_systemd_unit_current || return 1
+
+    if [ -n "$(get_project_pids "dns_shop_parser run")" ]; then
+        print_warning "Перед запуском systemd останавливаю локальный экземпляр из пункта 1"
+        stop_project_processes "$(get_systemd_main_pid)"
+    fi
+
+    print_info "Активация сервиса..."
+    sudo systemctl enable "$SERVICE_NAME"
+    print_success "Сервис активирован"
+
+    print_info "Запуск сервиса..."
+    sudo systemctl start "$SERVICE_NAME"
+
+    sleep 2
+
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Сервис запущен"
+        echo ""
+        print_info "Команды для управления сервисом:"
+        echo "  sudo systemctl start $SERVICE_NAME       # Запустить"
+        echo "  sudo systemctl stop $SERVICE_NAME        # Остановить"
+        echo "  sudo systemctl restart $SERVICE_NAME     # Перезапустить"
+        echo "  sudo systemctl status $SERVICE_NAME      # Статус"
+        echo "  journalctl -u $SERVICE_NAME -f          # Логи в реальном времени"
+        echo ""
+    else
+        print_error "Не удалось запустить сервис"
+        sudo systemctl status "$SERVICE_NAME"
+        return 1
+    fi
+}
+
+disable_systemd() {
+    print_header "Удаление из systemd"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        print_warning "Unit файл не найден"
+        return 1
+    fi
+
+    print_info "Остановка сервиса..."
+    sudo systemctl stop "$SERVICE_NAME" || true
+
+    print_info "Удаление из автозагрузки..."
+    sudo systemctl disable "$SERVICE_NAME" || true
+
+    print_info "Удаление unit файла..."
+    sudo rm -f "$SERVICE_FILE"
+
+    print_info "Перезагрузка systemd..."
+    sudo systemctl daemon-reload
+
+    print_success "Сервис удалён из systemd"
+}
+
+################################################################################
+# Systemd подменю
+################################################################################
+
+systemctl_start() {
+    print_header "Запуск сервиса через systemctl"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        print_error "Сервис не установлен в systemd"
+        print_info "Установи сервис: выбери пункт 6 в главном меню"
+        return 1
+    fi
+
+    ensure_systemd_unit_current || return 1
+    check_all_dependencies || return 1
+
+    if [ -n "$(get_project_pids "dns_shop_parser run")" ]; then
+        print_warning "Перед запуском systemd останавливаю локальный экземпляр из пункта 1"
+        stop_project_processes "$(get_systemd_main_pid)"
+    fi
+
+    print_info "Запуск сервиса..."
+    sudo systemctl start "$SERVICE_NAME"
+
+    sleep 2
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Сервис запущен"
+    else
+        print_error "Не удалось запустить сервис"
+        sudo systemctl status "$SERVICE_NAME"
+        return 1
+    fi
+}
+
+systemctl_stop() {
+    print_header "Остановка сервиса через systemctl"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        print_error "Сервис не установлен в systemd"
+        return 1
+    fi
+
+    print_info "Остановка сервиса..."
+    sudo systemctl stop "$SERVICE_NAME"
+
+    sleep 1
+    if ! sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Сервис остановлен"
+    else
+        print_error "Не удалось остановить сервис"
+        return 1
+    fi
+}
+
+systemctl_restart() {
+    print_header "Перезапуск сервиса через systemctl"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        print_error "Сервис не установлен в systemd"
+        return 1
+    fi
+
+    ensure_systemd_unit_current || return 1
+    stop_project_processes "$(get_systemd_main_pid)"
+    check_all_dependencies || return 1
+
+    print_info "Перезапуск сервиса..."
+    sudo systemctl restart "$SERVICE_NAME"
+
+    sleep 2
+    if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+        print_success "Сервис перезапущен"
+    else
+        print_error "Не удалось перезапустить сервис"
+        sudo systemctl status "$SERVICE_NAME"
+        return 1
+    fi
+}
+
+systemctl_status() {
+    print_header "Статус сервиса"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        print_warning "Сервис не установлен в systemd"
+        return 1
+    fi
+
+    sudo systemctl status "$SERVICE_NAME"
+    echo ""
+}
+
+show_systemd_menu() {
+    while true; do
+        echo ""
+        echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+        echo -e "${BLUE}║       Управление systemd сервисом     ║${NC}"
+        echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+        echo ""
+        echo "  1 - sudo systemctl start dns-parser"
+        echo "  2 - sudo systemctl stop dns-parser"
+        echo "  3 - sudo systemctl restart dns-parser"
+        echo "  4 - sudo systemctl status dns-parser"
+        echo "  5 - Установить сервис в systemd"
+        echo "  6 - Удалить сервис из systemd"
+        echo "  0 - Назад в главное меню"
+        echo ""
+        echo -n "Ваш выбор: "
+
+        read -r choice
+
+        case $choice in
+            1)
+                systemctl_start
+                ;;
+            2)
+                systemctl_stop
+                ;;
+            3)
+                systemctl_restart
+                ;;
+            4)
+                systemctl_status
+                ;;
+            5)
+                enable_systemd
+                ;;
+            6)
+                disable_systemd
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Неверный выбор. Пожалуйста, выберите 0-6"
+                ;;
+        esac
+    done
+}
+
+################################################################################
+# Главное меню
+################################################################################
+
+show_menu() {
+    echo ""
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║ DNS Shop Parser - Service Manager    ║${NC}"
+    echo -e "${BLUE}║ Режим: Node.js + Playwright (Linux) ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo "Выберите действие:"
+    echo ""
+    echo "  1 - Запустить приложение"
+    echo "  2 - Остановить приложение"
+    echo "  3 - Перезапустить приложение"
+    echo "  4 - Обновить из Git и перезапустить"
+    echo "  5 - Откатиться на commit/tag/branch и перезапустить"
+    echo "  6 - Показать логи (tail -f)"
+    echo "  7 - Проверить статус"
+    echo "  8 - Управление systemd сервисом"
+    echo "  0 - Выход"
+    echo ""
+    echo -n "Ваш выбор: "
+}
+
+kill_parser() {
+    print_header "Остановка парсера (принудительно)"
+
+    local killed=0
+
+    # Ищем процессы основного сервиса и одноразового парсера
+    if pgrep -f "dns_shop_parser run|dns_shop_parser.entrypoints.parser" > /dev/null; then
+        print_info "Найдены процессы парсера, остановка..."
+        pkill -f "dns_shop_parser run|dns_shop_parser.entrypoints.parser"
+        sleep 1
+
+        if ! pgrep -f "dns_shop_parser run|dns_shop_parser.entrypoints.parser" > /dev/null; then
+            print_success "Парсер остановлен"
+            killed=1
+        else
+            print_warning "Принудительная остановка..."
+            pkill -9 -f "dns_shop_parser run|dns_shop_parser.entrypoints.parser"
+            print_success "Парсер остановлен (kill -9)"
+            killed=1
+        fi
+    else
+        print_warning "Процессов парсера не найдено"
+    fi
+
+    # Очищаем процессы Node.js
+    if pgrep -f "node" > /dev/null; then
+        print_info "Остановка Node.js процессов..."
+        pkill -f "node" || true
+        print_success "Node.js процессы остановлены"
+    fi
+}
+
+show_cron_menu() {
+    print_error "Cron support has been removed from this script."
+    return 1
+
+    while true; do
+        echo ""
+        echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+        echo -e "${BLUE}║       Управление Cron (Linux)         ║${NC}"
+        echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+        echo ""
+        echo "  1 - Запустить приложение (постоянный режим)"
+        echo "  2 - Остановить парсер (принудительно)"
+        echo "  3 - Показать логи (tail -f)"
+        echo "  4 - Установить cron (каждый час)"
+        echo "  5 - Удалить cron"
+        echo "  6 - Проверить статус cron"
+        echo "  0 - Назад в главное меню"
+        echo ""
+        echo -n "Ваш выбор: "
+
+        read -r choice
+
+        case $choice in
+            1)
+                start_service
+                ;;
+            2)
+                kill_parser
+                ;;
+            3)
+                show_logs
+                ;;
+            4)
+                setup_cron_hourly
+                ;;
+            5)
+                remove_cron
+                ;;
+            6)
+                show_cron_status
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Неверный выбор. Пожалуйста, выберите 0-6"
+                ;;
+        esac
+    done
+}
+
+update_and_restart() {
+    print_header "Обновление из Git и перезапуск"
+
+    if ! command -v git > /dev/null 2>&1; then
+        print_error "Git не установлен"
+        return 1
+    fi
+
+    cd "$PROJECT_DIR"
+
+    if [ ! -d "$PROJECT_DIR/.git" ]; then
+        print_error "Директория проекта не является Git-репозиторием"
+        return 1
+    fi
+
+    print_info "Получаю обновления из Git..."
+    if git pull --ff-only; then
+        print_success "Git успешно обновлён"
+        print_info "Перезапускаю парсер с новым кодом..."
+        restart_service
+    else
+        print_error "Git pull завершился с ошибкой. Перезапуск отменён."
+        return 1
+    fi
+}
+
+rollback_and_restart() {
+    local target_ref="${1:-}"
+
+    print_header "Откат к Git commit/ref и перезапуск"
+
+    if ! command -v git > /dev/null 2>&1; then
+        print_error "Git не установлен"
+        return 1
+    fi
+
+    cd "$PROJECT_DIR"
+
+    if [ ! -d "$PROJECT_DIR/.git" ]; then
+        print_error "Директория проекта не является Git-репозиторием"
+        return 1
+    fi
+
+    print_info "Текущий ref: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+    if [ -z "$target_ref" ]; then
+        print_info "Получаю последние коммиты..."
+        git fetch --all --tags --prune || {
+            print_error "git fetch завершился с ошибкой"
+            return 1
+        }
+
+        local commits_raw
+        commits_raw="$(git log --oneline -n 5 2>/dev/null)"
+        if [ -z "$commits_raw" ]; then
+            print_error "Не удалось получить список последних коммитов"
+            return 1
+        fi
+
+        echo ""
+        print_info "Последние 5 коммитов:"
+        mapfile -t commit_lines < <(printf '%s\n' "$commits_raw")
+        local index=1
+        local line
+        for line in "${commit_lines[@]}"; do
+            echo "  $index - $line"
+            index=$((index + 1))
+        done
+        echo "  0 - Ввести commit/tag/branch вручную"
+        echo ""
+        echo -n "Ваш выбор: "
+
+        local selection
+        read -r selection
+
+        if [ "$selection" = "0" ]; then
+            echo -n "Git ref: "
+            read -r target_ref
+        elif [[ "$selection" =~ ^[1-5]$ ]] && [ "$selection" -le "${#commit_lines[@]}" ]; then
+            target_ref="$(printf '%s' "${commit_lines[$((selection - 1))]}" | awk '{print $1}')"
+        else
+            print_error "Неверный выбор"
+            return 1
+        fi
+    else
+        print_info "Получаю обновления из Git для проверки ref..."
+        git fetch --all --tags --prune || {
+            print_error "git fetch завершился с ошибкой"
+            return 1
+        }
+    fi
+
+    if [ -z "$target_ref" ]; then
+        print_error "Git ref не указан"
+        return 1
+    fi
+
+    if ! git rev-parse --verify --quiet "$target_ref^{commit}" > /dev/null; then
+        print_error "Git ref не найден: $target_ref"
+        print_info "Подсказка: используй commit hash, tag, branch или origin/branch"
+        return 1
+    fi
+
+    local current_ref
+    current_ref="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    local target_commit
+    target_commit="$(git rev-parse --short "$target_ref^{commit}" 2>/dev/null || echo unknown)"
+
+    print_warning "Будет выполнен checkout на $target_ref ($target_commit)"
+    print_warning "Если ref не является локальной веткой, репозиторий перейдёт в detached HEAD"
+    echo -n "Продолжить? [y/N]: "
+
+    local confirm
+    read -r confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Откат отменён"
+        return 0
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$target_ref"; then
+        git checkout "$target_ref" || {
+            print_error "Не удалось переключиться на ветку/ref: $target_ref"
+            return 1
+        }
+    else
+        git checkout --detach "$target_ref" || {
+            print_error "Не удалось выполнить checkout ref: $target_ref"
+            return 1
+        }
+    fi
+
+    print_success "Код переключён: $current_ref -> $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    print_info "Перезапускаю парсер на выбранном commit/ref..."
+    restart_service
+}
+
+main_loop() {
+    while true; do
+        show_menu
+        read -r choice
+
+        case $choice in
+            1)
+                start_service
+                ;;
+            2)
+                stop_service
+                ;;
+            3)
+                restart_service
+                ;;
+            4)
+                update_and_restart
+                ;;
+            5)
+                rollback_and_restart
+                ;;
+            6)
+                show_logs
+                ;;
+            7)
+                show_status
+                ;;
+            8)
+                show_systemd_menu
+                ;;
+            0)
+                print_info "До свидания!"
+                exit 0
+                ;;
+            *)
+                print_error "Неверный выбор. Пожалуйста, выберите 0-8"
+                ;;
+        esac
+    done
+}
+
+################################################################################
+# Точка входа
+################################################################################
+
+# Проверяем что скрипт запущен из корректного проекта
+if [ ! -d "$PROJECT_DIR/src/dns_shop_parser" ]; then
+    print_error "Скрипт должен быть в проекте, где находится src/dns_shop_parser"
+    exit 1
+fi
+
+# Если передан аргумент, выполняем команду и выходим
+if [ $# -gt 0 ]; then
+    case $1 in
+        start)
+            start_service
+            exit $?
+            ;;
+        stop)
+            stop_service
+            exit $?
+            ;;
+        restart)
+            restart_service
+            exit $?
+            ;;
+        update)
+            update_and_restart
+            exit $?
+            ;;
+        rollback)
+            rollback_and_restart "$2"
+            exit $?
+            ;;
+        logs)
+            show_logs
+            exit $?
+            ;;
+        status)
+            show_status
+            exit $?
+            ;;
+        enable-systemd)
+            enable_systemd
+            exit $?
+            ;;
+        disable-systemd)
+            disable_systemd
+            exit $?
+            ;;
+        run-service)
+            run_service_foreground
+            exit $?
+            ;;
+        help|--help|-h)
+            echo "Использование: $0 [command]"
+            echo ""
+            echo "Команды:"
+            echo "  start           - Запустить приложение"
+            echo "  stop            - Остановить приложение"
+            echo "  restart         - Перезапустить приложение"
+            echo "  update          - Обновить из Git и перезапустить"
+            echo "  rollback <ref>  - Откатиться на commit/tag/branch и перезапустить"
+            echo "  logs            - Показать логи"
+            echo "  status          - Показать статус"
+            echo "  enable-systemd  - Добавить в systemd"
+            echo "  disable-systemd - Удалить из systemd"
+            echo "  run-service     - Внутренняя команда для systemd"
+            echo ""
+            echo "Без аргументов запускает интерактивное меню."
+            exit 0
+            ;;
+        *)
+            print_error "Неизвестная команда: $1"
+            echo ""
+            echo "Использование: $0 [command]"
+
+            echo "Команды:"
+            echo "  start           - Запустить приложение"
+            echo "  stop            - Остановить приложение"
+            echo "  restart         - Перезапустить приложение"
+            echo "  update          - Обновить из Git и перезапустить"
+            echo "  rollback <ref>  - Откатиться на commit/tag/branch и перезапустить"
+            echo "  logs            - Показать логи"
+            echo "  status          - Показать статус"
+            echo "  enable-systemd  - Добавить в systemd"
+            echo "  disable-systemd - Удалить из systemd"
+            echo "  run-service     - Внутренняя команда для systemd"
+            echo ""
+            echo "Без аргументов запускает интерактивное меню."
+            exit 1
+            ;;
+    esac
+fi
+
+# Запускаем интерактивное меню
+main_loop

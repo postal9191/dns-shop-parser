@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from parser.db_manager import DBManager
-from parser.models import Product
+from dns_shop_parser.parser.db_manager import DBManager
+from dns_shop_parser.parser.models import Product
 
 
 def _make_db(tmpdir: str, default_city_slug: str = "") -> DBManager:

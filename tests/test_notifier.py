@@ -1,6 +1,6 @@
 import pytest
 
-from services.telegram_notifier import (
+from dns_shop_parser.services.telegram_notifier import (
     TelegramNotifier,
     _format_product_line,
     group_products,

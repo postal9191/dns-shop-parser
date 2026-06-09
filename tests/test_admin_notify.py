@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from parser.db_manager import DBManager
-from services.telegram_notifier import TelegramNotifier
-from services.telegram_bot import TelegramBot
+from dns_shop_parser.parser.db_manager import DBManager
+from dns_shop_parser.services.telegram_notifier import TelegramNotifier
+from dns_shop_parser.services.telegram_bot import TelegramBot
 
 
 # ─── TelegramNotifier: admin alerts ───────────────────────────────────────────
@@ -231,9 +231,9 @@ def _make_bot(db=None, parser_controller=None, admin_id="999"):
     bot._session = None
     bot.parser_controller = parser_controller
     # backward-compat aliases (same as TelegramBot.__init__ sets)
-    from services.telegram_bot import keyboards as _kb
+    from dns_shop_parser.services.telegram_bot import keyboards as _kb
     bot._build_admin_notify_keyboard = _kb._build_admin_notify_keyboard
-    from services.telegram_bot.state import UserState, ReportMachine
+    from dns_shop_parser.services.telegram_bot.state import UserState, ReportMachine
     bot._user_state = UserState()
     bot._report_state = bot._user_state.report_state
     bot._report_cat_page = bot._user_state.report_cat_page
@@ -246,9 +246,9 @@ def _make_bot(db=None, parser_controller=None, admin_id="999"):
     # _waiting_for_interval accessed via @property in TelegramBot class
     _rm = ReportMachine(bot._user_state)
     bot._get_report_state = _rm.get_state
-    from services.telegram_bot.handlers.reports import ReportWizard
-    from services.telegram_bot.handlers.settings import SettingsHandler
-    from services.telegram_bot.handlers.admin import AdminHandler
+    from dns_shop_parser.services.telegram_bot.handlers.reports import ReportWizard
+    from dns_shop_parser.services.telegram_bot.handlers.settings import SettingsHandler
+    from dns_shop_parser.services.telegram_bot.handlers.admin import AdminHandler
     bot._report_wizard = ReportWizard(bot)
     bot._settings = SettingsHandler(bot, bot._report_wizard)
     bot._admin = AdminHandler(bot)
@@ -431,7 +431,7 @@ async def test_callback_admin_back_returns_to_admin_panel():
 
 
 def test_admin_menu_includes_user_rights_button():
-    from services.telegram_bot import keyboards as _kb
+    from dns_shop_parser.services.telegram_bot import keyboards as _kb
 
     keyboard = _kb._build_admin_menu_keyboard()
     flat = [button for row in keyboard["inline_keyboard"] for button in row]
@@ -439,7 +439,7 @@ def test_admin_menu_includes_user_rights_button():
 
 
 def test_admin_menu_includes_force_city_parse_button():
-    from services.telegram_bot import keyboards as _kb
+    from dns_shop_parser.services.telegram_bot import keyboards as _kb
 
     keyboard = _kb._build_admin_menu_keyboard()
     flat = [button for row in keyboard["inline_keyboard"] for button in row]
@@ -447,8 +447,8 @@ def test_admin_menu_includes_force_city_parse_button():
 
 
 def test_admin_force_city_keyboard_uses_supported_cities():
-    from data.cities import CITIES
-    from services.telegram_bot import keyboards as _kb
+    from dns_shop_parser.data.cities import CITIES
+    from dns_shop_parser.services.telegram_bot import keyboards as _kb
 
     keyboard = _kb._build_admin_force_city_keyboard()
     callbacks = {
@@ -482,7 +482,7 @@ async def test_admin_force_city_callback_enqueues_selected_city():
 
 
 def test_admin_rights_keyboard_marks_draft_change():
-    from services.telegram_bot import keyboards as _kb
+    from dns_shop_parser.services.telegram_bot import keyboards as _kb
 
     keyboard = _kb._build_admin_rights_users_keyboard(
         [{"user_id": "1", "username": "biba", "plan_type": "free"}],

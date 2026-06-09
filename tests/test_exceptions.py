@@ -1,6 +1,6 @@
 import pytest
 
-from parser.exceptions import CookiesExpiredError
+from dns_shop_parser.parser.exceptions import CookiesExpiredError
 
 
 def test_cookies_expired_error_is_exception():

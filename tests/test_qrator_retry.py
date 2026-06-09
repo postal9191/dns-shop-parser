@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-from parser.qrator_resolver import (
+from dns_shop_parser.parser.qrator_resolver import (
     NodeSolverResult,
     cleanup_chromium_profile,
     resolve_qrator_cookies,
@@ -72,10 +72,10 @@ class TestResolveQratorWithRetry:
         cookies = {'qrator_jsid2': 'test_jsid2_value', 'PHPSESSID': 'test_session'}
         cookies_output = f"__QRATOR_COOKIES__\n{json.dumps(cookies)}\n__END_COOKIES__"
 
-        with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
-            with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
+        with patch('dns_shop_parser.parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
+            with patch('dns_shop_parser.parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
+                    with patch('dns_shop_parser.parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
                         mock_run.return_value = NodeSolverResult(0, cookies_output, '')
 
                         result = await resolve_qrator_cookies()
@@ -92,10 +92,10 @@ class TestResolveQratorWithRetry:
         cookies = {'qrator_jsid2': 'test_jsid2_value'}
         cookies_output = f"__QRATOR_COOKIES__\n{json.dumps(cookies)}\n__END_COOKIES__"
 
-        with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
-            with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
+        with patch('dns_shop_parser.parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
+            with patch('dns_shop_parser.parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
+                    with patch('dns_shop_parser.parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
                         # Первый раз ошибка, второй раз успех
                         mock_run.side_effect = [
                             NodeSolverResult(1, '', '403 Forbidden'),
@@ -113,10 +113,10 @@ class TestResolveQratorWithRetry:
     @pytest.mark.asyncio
     async def test_resolve_qrator_exhausts_retries(self):
         """После 3 неудачных попыток возвращает None."""
-        with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
-            with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
+        with patch('dns_shop_parser.parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
+            with patch('dns_shop_parser.parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
+                    with patch('dns_shop_parser.parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
                         # Все попытки падают
                         mock_run.return_value = NodeSolverResult(1, '', '403 Forbidden')
 
@@ -130,10 +130,10 @@ class TestResolveQratorWithRetry:
     @pytest.mark.asyncio
     async def test_resolve_qrator_exponential_backoff(self):
         """Проверяет экспоненциальную задержку между попытками (1, 2, 4 сек)."""
-        with patch('parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
-            with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
+        with patch('dns_shop_parser.parser.qrator_resolver._find_node_executable', return_value='/usr/bin/node'):
+            with patch('dns_shop_parser.parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
                 with patch('pathlib.Path.exists', return_value=True):
-                    with patch('parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
+                    with patch('dns_shop_parser.parser.qrator_resolver._run_node_solver', new_callable=AsyncMock) as mock_run:
                         mock_run.return_value = NodeSolverResult(1, '', 'error')
 
                         sleep_calls = []
@@ -153,7 +153,7 @@ class TestResolveQratorWithRetry:
     @pytest.mark.asyncio
     async def test_resolve_qrator_missing_script(self):
         """Возвращает None если скрипт не найден."""
-        with patch('parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
+        with patch('dns_shop_parser.parser.qrator_resolver.get_solve_script_path', return_value=Path('/fake/solve_qrator.js')):
             with patch('pathlib.Path.exists', return_value=False):
                 result = await resolve_qrator_cookies()
 
@@ -162,7 +162,7 @@ class TestResolveQratorWithRetry:
     @pytest.mark.asyncio
     async def test_resolve_qrator_missing_node(self):
         """Возвращает None если Node.js не найден."""
-        with patch('parser.qrator_resolver._find_node_executable', return_value=None):
+        with patch('dns_shop_parser.parser.qrator_resolver._find_node_executable', return_value=None):
             result = await resolve_qrator_cookies()
 
             assert result is None
@@ -174,7 +174,7 @@ class TestSessionInitWithRetryAndCleanup:
     @pytest.mark.asyncio
     async def test_init_session_success_first_try(self):
         """Успешная инициализация с первой попытки."""
-        from parser.session_manager import SessionManager
+        from dns_shop_parser.parser.session_manager import SessionManager
 
         session_mgr = SessionManager()
 
@@ -190,7 +190,7 @@ class TestSessionInitWithRetryAndCleanup:
     @pytest.mark.asyncio
     async def test_init_session_qrator_fails_first_try_succeeds_second(self):
         """При ошибке Qrator повторяет, со 2-й раз успех."""
-        from parser.session_manager import SessionManager
+        from dns_shop_parser.parser.session_manager import SessionManager
 
         session_mgr = SessionManager()
         resolve_count = 0
@@ -213,7 +213,7 @@ class TestSessionInitWithRetryAndCleanup:
     @pytest.mark.asyncio
     async def test_init_session_qrator_fails_twice_returns_false(self):
         """При двух неудачах Qrator возвращает False и не инициализирует."""
-        from parser.session_manager import SessionManager
+        from dns_shop_parser.parser.session_manager import SessionManager
 
         session_mgr = SessionManager()
 

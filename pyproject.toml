@@ -15,6 +15,11 @@ dependencies = [
   "python-dotenv==1.0.0",
 ]
 
+[project.scripts]
+dns-parser = "dns_shop_parser.__main__:run_cli"
+dns-parser-once = "dns_shop_parser.__main__:parse_cli"
+dns-parser-bot = "dns_shop_parser.__main__:bot_cli"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-from parser.qrator_resolver import (
+from dns_shop_parser.parser.qrator_resolver import (
     NodeSolverResult,
     cleanup_chromium_profile,
     get_solve_script_path,
@@ -123,27 +123,27 @@ class TestCheckNodeHealth:
     """Тесты для check_node_health."""
 
     def test_returns_true_when_node_works(self):
-        with patch("parser.qrator_resolver._find_node_executable", return_value="/usr/bin/node"):
-            with patch("parser.qrator_resolver._run_command") as mock_run:
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", return_value="/usr/bin/node"):
+            with patch("dns_shop_parser.parser.qrator_resolver._run_command") as mock_run:
                 mock_run.return_value = Mock(returncode=0, stdout="v20.0.0\n")
                 result = check_node_health()
         assert result is True
 
     def test_returns_false_when_node_not_found(self):
-        with patch("parser.qrator_resolver._find_node_executable", return_value=None):
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", return_value=None):
             result = check_node_health()
         assert result is False
 
     def test_returns_false_when_version_fails(self):
-        with patch("parser.qrator_resolver._find_node_executable", return_value="/usr/bin/node"):
-            with patch("parser.qrator_resolver._run_command") as mock_run:
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", return_value="/usr/bin/node"):
+            with patch("dns_shop_parser.parser.qrator_resolver._run_command") as mock_run:
                 mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
                 result = check_node_health()
         assert result is False
 
     def test_handles_no_result(self):
-        with patch("parser.qrator_resolver._find_node_executable", return_value="/usr/bin/node"):
-            with patch("parser.qrator_resolver._run_command", return_value=None):
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", return_value="/usr/bin/node"):
+            with patch("dns_shop_parser.parser.qrator_resolver._run_command", return_value=None):
                 result = check_node_health()
         assert result is False
 
@@ -152,20 +152,20 @@ class TestCheckPlaywrightChromium:
     """Тесты для _check_playwright_chromium."""
 
     def test_returns_true_when_chromium_available(self):
-        with patch("parser.qrator_resolver._node_eval") as mock_eval:
+        with patch("dns_shop_parser.parser.qrator_resolver._node_eval") as mock_eval:
             mock_result = Mock(returncode=0, stdout="/some/path/ms-playwright/chromium-1234/chrome-win/chrome.exe\n")
             mock_eval.return_value = mock_result
             result = _check_playwright_chromium("/usr/bin/node")
         assert result is True
 
     def test_returns_false_on_nonzero_returncode(self):
-        with patch("parser.qrator_resolver._node_eval") as mock_eval:
+        with patch("dns_shop_parser.parser.qrator_resolver._node_eval") as mock_eval:
             mock_eval.return_value = Mock(returncode=1, stdout="", stderr="error")
             result = _check_playwright_chromium("/usr/bin/node")
         assert result is False
 
     def test_handles_exception(self):
-        with patch("parser.qrator_resolver._node_eval", side_effect=Exception("boom")):
+        with patch("dns_shop_parser.parser.qrator_resolver._node_eval", side_effect=Exception("boom")):
             result = _check_playwright_chromium("/usr/bin/node")
         assert result is False
 
@@ -184,7 +184,7 @@ class TestLogNpmDependencies:
 
     def test_calls_npm_ls_when_found(self):
         with patch("shutil.which", return_value="/usr/bin/npm"):
-            with patch("parser.qrator_resolver._run_command") as mock_run:
+            with patch("dns_shop_parser.parser.qrator_resolver._run_command") as mock_run:
                 mock_run.return_value = Mock(returncode=0, stdout="ok\n", stderr="")
                 _log_npm_dependencies()
                 assert mock_run.called
@@ -335,12 +335,12 @@ class TestCheckProxyConnectivity:
     """Тесты для _check_proxy_connectivity."""
 
     def test_returns_true_when_proxy_disabled(self):
-        with patch("parser.qrator_resolver.config") as mock_cfg:
+        with patch("dns_shop_parser.parser.qrator_resolver.config") as mock_cfg:
             mock_cfg.proxy_enabled.return_value = False
             result = shutil.which  # сохраним ссылку
-        from parser.qrator_resolver import _check_proxy_connectivity
+        from dns_shop_parser.parser.qrator_resolver import _check_proxy_connectivity
 
-        with patch("parser.qrator_resolver._find_node_executable", return_value=None):
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", return_value=None):
             pass
 
         # Проверяем через qrator_preflight, так как _check_proxy_connectivity требует node_exe
@@ -348,29 +348,29 @@ class TestCheckProxyConnectivity:
         def mock_find(_):
             return "/usr/bin/node"
 
-        with patch("parser.qrator_resolver.config") as mock_cfg:
-            with patch("parser.qrator_resolver._find_node_executable", side_effect=mock_find):
+        with patch("dns_shop_parser.parser.qrator_resolver.config") as mock_cfg:
+            with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", side_effect=mock_find):
                 mock_cfg.proxy_enabled.return_value = False
                 result = _check_proxy_connectivity("/usr/bin/node")
         assert result is True
 
     def test_returns_false_on_exception(self):
         import os
-        with patch("parser.qrator_resolver.config") as mock_cfg:
-            with patch("parser.qrator_resolver._find_node_executable", return_value=None):
+        with patch("dns_shop_parser.parser.qrator_resolver.config") as mock_cfg:
+            with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", return_value=None):
                 pass
 
         def raise_proxy(_):
-            from parser.qrator_resolver import config
+            from dns_shop_parser.parser.qrator_resolver import config
             with patch.object(config, 'proxy_enabled', return_value=True):
                 with patch('os.environ.get', side_effect=Exception("env fail")):
-                    from parser.qrator_resolver import _check_proxy_connectivity
+                    from dns_shop_parser.parser.qrator_resolver import _check_proxy_connectivity
                     return _check_proxy_connectivity("/usr/bin/node")
 
-        from parser.qrator_resolver import config
+        from dns_shop_parser.parser.qrator_resolver import config
         with patch.object(config, 'proxy_enabled', return_value=True):
             with patch('os.environ.get', side_effect=Exception("env fail")):
-                from parser.qrator_resolver import _check_proxy_connectivity
+                from dns_shop_parser.parser.qrator_resolver import _check_proxy_connectivity
                 result = _check_proxy_connectivity("/usr/bin/node")
         assert result is False
 
@@ -379,32 +379,32 @@ class TestQratorPreflight:
     """Тесты для qrator_preflight."""
 
     def test_returns_false_when_node_not_found(self):
-        from parser.qrator_resolver import qrator_preflight
-        with patch("parser.qrator_resolver._find_node_executable", return_value=None):
+        from dns_shop_parser.parser.qrator_resolver import qrator_preflight
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", return_value=None):
             result = qrator_preflight()
         assert result is False
 
     def test_returns_false_when_chromium_missing(self):
-        from parser.qrator_resolver import qrator_preflight
+        from dns_shop_parser.parser.qrator_resolver import qrator_preflight
         mock_find = lambda _: "/usr/bin/node"
-        with patch("parser.qrator_resolver._find_node_executable", side_effect=mock_find):
-            with patch("parser.qrator_resolver._check_playwright_chromium", return_value=False):
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", side_effect=mock_find):
+            with patch("dns_shop_parser.parser.qrator_resolver._check_playwright_chromium", return_value=False):
                 result = qrator_preflight()
         assert result is False
 
     def test_returns_false_on_exception(self):
-        from parser.qrator_resolver import qrator_preflight
-        with patch("parser.qrator_resolver._find_node_executable", side_effect=Exception("boom")):
+        from dns_shop_parser.parser.qrator_resolver import qrator_preflight
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", side_effect=Exception("boom")):
             result = qrator_preflight()
         assert result is False
 
     def test_warns_when_init_timeout_not_greater(self):
-        from parser.qrator_resolver import qrator_preflight, config as cfg
+        from dns_shop_parser.parser.qrator_resolver import qrator_preflight, config as cfg
         mock_find = lambda: "/usr/bin/node"
-        with patch("parser.qrator_resolver._find_node_executable", side_effect=mock_find):
+        with patch("dns_shop_parser.parser.qrator_resolver._find_node_executable", side_effect=mock_find):
             with patch.object(cfg, 'qrator_init_timeout', 10):
                 with patch.object(cfg, 'qrator_node_timeout', 20):
-                    with patch("parser.qrator_resolver._check_playwright_chromium", return_value=True):
-                        with patch("parser.qrator_resolver._check_proxy_connectivity", return_value=True):
+                    with patch("dns_shop_parser.parser.qrator_resolver._check_playwright_chromium", return_value=True):
+                        with patch("dns_shop_parser.parser.qrator_resolver._check_proxy_connectivity", return_value=True):
                             result = qrator_preflight()
             assert result is True

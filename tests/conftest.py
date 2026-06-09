@@ -23,8 +23,8 @@ _plat.architecture = staticmethod(lambda: ("64bit", ""))
 _plat.processor = "x86_64"
 sys.modules["platform"] = _plat
 
-from parser.db_manager import DBManager
-from parser.models import Product
+from dns_shop_parser.parser.db_manager import DBManager
+from dns_shop_parser.parser.models import Product
 
 
 @pytest.fixture

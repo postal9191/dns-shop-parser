@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import run
+from dns_shop_parser.entrypoints import run
 
 
 def test_can_start_city_parse_allows_start_until_0600_deadline():

@@ -1,21 +1,16 @@
 """Tests for parser soft-sold safeguards and disappeared-category handling."""
 
-import importlib.util
-from pathlib import Path
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from parser.models import Category, Product
+from dns_shop_parser.parser.models import Category, Product
 
 
 def _load_parser_entrypoint():
-    module_path = Path(__file__).resolve().parents[1] / "parser.py"
-    spec = importlib.util.spec_from_file_location("parser_entrypoint", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("dns_shop_parser.entrypoints.parser")
 
 
 class FakeParser:

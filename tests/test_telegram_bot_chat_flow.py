@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from services.telegram_bot import TelegramBot
+from dns_shop_parser.services.telegram_bot import TelegramBot
 
 
 def _make_bot(db=None, parser_controller=None) -> TelegramBot:
@@ -18,14 +18,14 @@ def _make_bot(db=None, parser_controller=None) -> TelegramBot:
     bot.subscribed_users = set()
     bot._session = None
     bot.parser_controller = parser_controller
-    from services.telegram_bot.state import UserState
+    from dns_shop_parser.services.telegram_bot.state import UserState
     # __init__ is not called via __new__, so call UserState.__init__ manually
     bot._user_state = object.__new__(UserState)
     UserState.__init__(bot._user_state)
     # Initialize handlers
-    from services.telegram_bot.handlers.reports import ReportWizard
-    from services.telegram_bot.handlers.settings import SettingsHandler
-    from services.telegram_bot.handlers.admin import AdminHandler
+    from dns_shop_parser.services.telegram_bot.handlers.reports import ReportWizard
+    from dns_shop_parser.services.telegram_bot.handlers.settings import SettingsHandler
+    from dns_shop_parser.services.telegram_bot.handlers.admin import AdminHandler
     bot._report_wizard = ReportWizard(bot)
     bot._settings = SettingsHandler(bot, bot._report_wizard)
     bot._admin = AdminHandler(bot)

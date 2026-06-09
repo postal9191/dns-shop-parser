@@ -2,12 +2,14 @@
 .env
 .env.local
 
-# База данных
+# База данных и бэкапы
 *.db
 dns_monitor.db
+backups/
 
-# Куки браузера
+# Куки/профили браузера
 browser_cookies.pkl
+.dns-parser-chromium/
 
 # Python
 __pycache__/
@@ -17,42 +19,40 @@ __pycache__/
 .Python
 env/
 venv/
-.venv
+.venv/
 pip-log.txt
 pip-delete-this-directory.txt
 .tox/
 .coverage
 .coverage.*
-.cache
+.cache/
+.pytest_cache/
 nosetests.xml
 coverage.xml
 *.cover
+coverage_html/
 
-# IDE
+# IDE / локальные ассистенты
 .vscode/
 .idea/
+.claude/
+.kilo/
+.playwright-mcp/
 *.swp
 *.swo
 *~
 .DS_Store
 
-# Логи
+# Логи и временные файлы
 logs/
 *.log
-
-# Временные файлы
 *.tmp
-.pytest_cache/
-
-# Зависимости (опционально - если хочешь разработчики сами ставили pip install)
-# Раскомментируй если нужно:
-# .venv/
 
 # Node.js зависимости
 node_modules/
 package-lock.json
-.claude/
-Текстовый документ.txt
 
-# Статьи и черновики
+# Черновики и локальные файлы
+Текстовый документ.txt
 habr_article.md
+.hermes/

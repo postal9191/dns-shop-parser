@@ -2,9 +2,10 @@
   "name": "dns-shop-parser",
   "version": "1.1.0",
   "description": "DNS Shop parser with Qrator WAF bypass",
-  "main": "parser.py",
+  "private": true,
   "scripts": {
-    "test": "node solve_qrator.js"
+    "test:qrator": "node scripts/solve_qrator.js",
+    "collect:cities": "node scripts/collect_cities.js"
   },
   "dependencies": {
     "playwright": "^1.40.0",

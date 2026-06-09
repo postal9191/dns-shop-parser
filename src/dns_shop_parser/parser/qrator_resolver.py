@@ -38,7 +38,7 @@ class NodeSolverResult:
 
 
 def get_solve_script_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "solve_qrator.js"
+    return Path(__file__).resolve().parents[3] / "scripts" / "solve_qrator.js"
 
 
 def cleanup_chromium_profile() -> bool:

@@ -45,7 +45,7 @@ class _DBStub:
 
 def _make_handler(bot_mock=None, db_kw=None) -> "SettingsHandler":
     """Создаёт SettingsHandler с заглушками."""
-    from services.telegram_bot.handlers.settings import SettingsHandler
+    from dns_shop_parser.services.telegram_bot.handlers.settings import SettingsHandler
     if bot_mock is None:
         bot = Mock()
         bot.send_message = AsyncMock()

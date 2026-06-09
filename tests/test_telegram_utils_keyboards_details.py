@@ -1,5 +1,5 @@
-from services.telegram_bot import keyboards as kb
-from services.telegram_bot import utils
+from dns_shop_parser.services.telegram_bot import keyboards as kb
+from dns_shop_parser.services.telegram_bot import utils
 
 
 def _button_texts(markup: dict) -> list[str]:
