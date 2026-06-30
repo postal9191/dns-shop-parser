@@ -4,7 +4,7 @@ DNS парсер без Playwright.
 Вместо headless браузера используем:
 - aiohttp для запросов
 - Автоматический логин при CookiesExpiredError (401/403)
-- Простой регэксп для UUID товаров
+- JSON-парсинг каталога (UUID + hash + оригинальные контейнеры)
 """
 
 import asyncio
@@ -32,11 +32,18 @@ _UUID_RE = re.compile(
 # Только UUID товаров (type:4 = product-buy), без рекомендаций (type:3).
 # В сыром JSON кавычки внутри inlineJs экранированы: \"id\":\"<UUID>\",\"type\":4
 _PRODUCT_UUID_RE = re.compile(
-    r'\\"id\\":\\"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\",\\"type\\":4',
+    r'\\\"id\\\":\\\"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\\",\\\"type\\\":4',
+    re.IGNORECASE,
+)
+# Hash из inline JS конфигурации product-buy (fallback для HTML-ответов)
+_PRODUCT_BUY_HASH_RE = re.compile(
+    r'\\\"hash\\\":\\\"([0-9a-f]{40,})\\\"',
     re.IGNORECASE,
 )
 
-_QRATOR_MARKER = "qauth_handle_validate_success"
+# Тип для batch из каталога: (hash, [контейнеры])
+# Каждая страница каталога = один self-contained batch
+CatalogBatch = tuple[str, list[dict]]
 
 
 def _random_container_id() -> str:
@@ -44,10 +51,6 @@ def _random_container_id() -> str:
     chars = string.ascii_letters + string.digits
     suffix = "".join(random.choices(chars, k=6))
     return f"as-{suffix}"
-
-
-def _is_qrator_challenge(html: str) -> bool:
-    return _QRATOR_MARKER in html
 
 
 class SimpleDNSParser:
@@ -228,11 +231,23 @@ class SimpleDNSParser:
         return categories
 
     # -------------------------------------------------------------------
-    # Шаг 2: UUID товаров из HTML категории
+    # Шаг 2: UUID + hash + оригинальные контейнеры из JSON каталога
     # -------------------------------------------------------------------
 
-    async def fetch_product_uuids(self, category_id: str, expected_count: int = None, status: Optional[int] = None) -> list[str]:
-        """Простой HTTP GET с пагинацией → список UUID товаров из HTML.
+    async def fetch_product_uuids(
+        self, category_id: str, expected_count: int = None, status: Optional[int] = None
+    ) -> tuple[list[str], str, list[CatalogBatch]]:
+        """GET /catalog/markdown/?category=X → JSON → (uuids, hash, batches).
+
+        Каждая страница каталога — self-contained batch:
+            [
+              {"type": "product-buy", "hash": "<hex>", "timeout": 10},
+              [{"id": "as-X", "data": {"id": "UUID", "type": 4, ...}}, ...]
+            ]
+
+        batches — список (hash, [containers]) постранично.
+        Контейнеры в batch — ОРИГИНАЛЬНЫЕ из ответа сервера (с серверными ID).
+        Hash привязан к контейнерам — отправлять можно только парой.
 
         Args:
             category_id: ID категории
@@ -251,17 +266,30 @@ class SimpleDNSParser:
 
             all_uuids: list[str] = []
             seen: set[str] = set()
+            all_batches: list[CatalogBatch] = []
+            product_hash = ""
 
             for page in range(1, _MAX_PAGES + 1):
                 params = dict(base_params)
                 if page > 1:
                     params["p"] = str(page)
 
-                html = await self._get_html(self._catalog_url, params=params)
+                raw = await self._get_html(self._catalog_url, params=params)
 
-                page_uuids = list(dict.fromkeys(
-                    m.group(1).lower() for m in _PRODUCT_UUID_RE.finditer(html)
-                ))
+                # Пытаемся парсить как JSON (основной путь)
+                page_uuids, page_hash, page_containers = self._parse_catalog_json(raw)
+
+                # Fallback на regex если ответ — HTML
+                if not page_uuids:
+                    page_uuids, page_hash = self._parse_catalog_regex(raw)
+                    page_containers = []
+
+                if page_hash and not product_hash:
+                    product_hash = page_hash
+
+                # Сохраняем batch если есть контейнеры
+                if page_containers and page_hash:
+                    all_batches.append((page_hash, page_containers))
 
                 # Только UUID, которых ещё не видели
                 new_uuids = [u for u in page_uuids if u not in seen]
@@ -289,14 +317,102 @@ class SimpleDNSParser:
                 )
                 all_uuids = all_uuids[:expected_count]
 
-            logger.info("[PARSER] Категория %s: итого %d товаров", category_id, len(all_uuids))
-            return all_uuids
+            logger.info("[PARSER] Категория %s: итого %d товаров, %d batches, hash=%s",
+                       category_id, len(all_uuids), len(all_batches),
+                       product_hash[:16] + "..." if product_hash else "(нет)")
+            return all_uuids, product_hash, all_batches
 
         except CookiesExpiredError:
             raise
         except Exception as exc:
             logger.error("Ошибка получения UUID для %s: %s", category_id, exc)
-            return []
+            return [], "", []
+
+    def _parse_catalog_json(self, raw: str) -> tuple[list[str], str, list[dict]]:
+        """Парсит JSON-ответ каталога DNS.
+
+        Два формата ответа:
+        1. dict: {"result":true, "html":"...", "assets":{"inlineJs":{"nonce":"window.AjaxState.register([...])"...}}}
+        2. list: [{"type":"product-buy","hash":"...","timeout":10}, [{containers}...]]
+
+        Возвращает (uuids, hash, raw_containers).
+        """
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return [], "", []
+
+        # Формат 1: dict с inlineJs (актуальный)
+        if isinstance(data, dict):
+            return self._parse_ajax_state_from_inline(data)
+
+        # Формат 2: JSON array (legacy / Postman)
+        if isinstance(data, list) and len(data) >= 2:
+            config_obj = data[0] if isinstance(data[0], dict) else {}
+            product_hash = config_obj.get("hash", "")
+            raw_containers = data[1] if isinstance(data[1], list) else []
+            uuids, valid = self._filter_product_containers(raw_containers)
+            return uuids, product_hash, valid
+
+        return [], "", []
+
+    def _parse_ajax_state_from_inline(self, data: dict) -> tuple[list[str], str, list[dict]]:
+        """Извлекает product-buy batch из assets.inlineJs → AjaxState.register."""
+        inline = data.get("assets", {}).get("inlineJs", {})
+        if not isinstance(inline, dict):
+            return [], "", []
+
+        for _nonce, js_code in inline.items():
+            js_str = str(js_code)
+            if "AjaxState.register" not in js_str:
+                continue
+
+            m = re.search(r'AjaxState\.register\((\[.*\])\)', js_str, re.DOTALL)
+            if not m:
+                continue
+
+            try:
+                batches = json.loads(m.group(1))
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            # Ищем batch с type=product-buy
+            for batch in batches:
+                if not isinstance(batch, list) or len(batch) < 2:
+                    continue
+                cfg = batch[0] if isinstance(batch[0], dict) else {}
+                if cfg.get("type") != "product-buy":
+                    continue
+                product_hash = cfg.get("hash", "")
+                containers = batch[1] if isinstance(batch[1], list) else []
+                uuids, valid = self._filter_product_containers(containers)
+                return uuids, product_hash, valid
+
+        return [], "", []
+
+    def _filter_product_containers(self, containers: list) -> tuple[list[str], list[dict]]:
+        """Фильтрует контейнеры: оставляет только type=4 (товары)."""
+        uuids = []
+        valid = []
+        for c in containers:
+            if not isinstance(c, dict):
+                continue
+            inner = c.get("data", {})
+            uuid = inner.get("id", "")
+            prod_type = inner.get("type")
+            if uuid and prod_type == 4:
+                uuids.append(uuid.lower())
+                valid.append(c)
+        return uuids, valid
+
+    def _parse_catalog_regex(self, raw: str) -> tuple[list[str], str]:
+        """Fallback: извлекает UUID и hash из HTML/inlineJs через regex."""
+        uuids = list(dict.fromkeys(
+            m.group(1).lower() for m in _PRODUCT_UUID_RE.finditer(raw)
+        ))
+        hash_match = _PRODUCT_BUY_HASH_RE.search(raw)
+        product_hash = hash_match.group(1) if hash_match else ""
+        return uuids, product_hash
 
     # -------------------------------------------------------------------
     # Шаг 3: детали товаров
@@ -308,15 +424,96 @@ class SimpleDNSParser:
         category_id: str = "",
         category_name: str = "",
         uuid_to_status: Optional[dict] = None,
+        product_hash: str = "",
+        catalog_batches: Optional[list[CatalogBatch]] = None,
     ) -> list[Product]:
-        """POST ajax-state/product-buy батчами по _BATCH_SIZE UUID."""
+        """POST ajax-state/product-buy.
+
+        Если catalog_batches заданы — отправляет ОРИГИНАЛЬНЫЕ контейнеры
+        из ответа каталога (с серверными ID и привязанным hash).
+        Иначе — генерирует контейнеры из uuids (legacy fallback).
+        """
+        if catalog_batches:
+            return await self._fetch_details_from_batches(
+                catalog_batches, category_id, category_name, uuid_to_status,
+            )
+        # Legacy: генерируем контейнеры сами
+        return await self._fetch_details_generated(
+            uuids, category_id, category_name, uuid_to_status, product_hash,
+        )
+
+    async def _fetch_details_from_batches(
+        self,
+        batches: list[CatalogBatch],
+        category_id: str,
+        category_name: str,
+        uuid_to_status: Optional[dict],
+    ) -> list[Product]:
+        """Отправляет оригинальные batches из каталога."""
+        total_containers = sum(len(c) for _, c in batches)
+        logger.info("[PARSER] Загружаю детали через %d catalog-batches (%d контейнеров)",
+                    len(batches), total_containers)
+
+        container_map: dict[str, str] = {}
+        for _, containers in batches:
+            for c in containers:
+                cid = c.get("id", "")
+                uuid = c.get("data", {}).get("id", "")
+                if cid and uuid:
+                    container_map[cid] = uuid.lower()
+
+        all_products: list[Product] = []
+        for batch_idx, (batch_hash, containers) in enumerate(batches, 1):
+            payload_obj: dict[str, Any] = {
+                "type": "product-buy",
+                "hash": batch_hash,
+                "containers": containers,
+            }
+            raw_data = "data=" + json.dumps(payload_obj, ensure_ascii=False)
+
+            try:
+                resp = await self._post_form(self._product_buy_url, raw_data)
+            except Exception as exc:
+                logger.warning("[PARSER] Batch %d/%d: ошибка product-buy: %s",
+                             batch_idx, len(batches), exc)
+                continue
+
+            if not (isinstance(resp, dict) and resp.get("result")):
+                logger.warning("[PARSER] Batch %d/%d: result=false: %s",
+                             batch_idx, len(batches), str(resp)[:500])
+                continue
+
+            states = resp.get("data", {}).get("states", [])
+            if not states:
+                logger.warning("[PARSER] Batch %d/%d: result=true но states пуст. data=%s",
+                             batch_idx, len(batches),
+                             str(resp.get("data", {}))[:300])
+            for state in states:
+                p = self._parse_state(state, container_map, category_id, category_name, uuid_to_status)
+                if p:
+                    all_products.append(p)
+
+        logger.info("[PARSER] Получено %d товаров из %d контейнеров",
+                    len(all_products), total_containers)
+        return all_products
+
+    async def _fetch_details_generated(
+        self,
+        uuids: list[str],
+        category_id: str,
+        category_name: str,
+        uuid_to_status: Optional[dict],
+        product_hash: str,
+    ) -> list[Product]:
+        """Legacy: генерирует контейнеры из uuids и отправляет."""
         _BATCH_SIZE = 50
-        logger.info("[PARSER] Загружаю детали %d товаров батчами по %d", len(uuids), _BATCH_SIZE)
+        logger.info("[PARSER] Загружаю детали %d товаров (generated containers, hash=%s)",
+                    len(uuids),
+                    product_hash[:16] + "..." if product_hash else "нет!")
 
         all_products: list[Product] = []
         for i in range(0, len(uuids), _BATCH_SIZE):
             batch = uuids[i:i + _BATCH_SIZE]
-            logger.debug("[PARSER] Батч %d–%d из %d", i + 1, min(i + _BATCH_SIZE, len(uuids)), len(uuids))
 
             container_map: dict[str, str] = {}
             containers = []
@@ -332,7 +529,10 @@ class SimpleDNSParser:
                     },
                 })
 
-            payload_obj = {"type": "product-buy", "containers": containers}
+            payload_obj: dict[str, Any] = {"type": "product-buy", "containers": containers}
+            if product_hash:
+                payload_obj["hash"] = product_hash
+
             raw_data = "data=" + json.dumps(payload_obj, ensure_ascii=False)
 
             try:
@@ -342,11 +542,12 @@ class SimpleDNSParser:
                 continue
 
             if not (isinstance(resp, dict) and resp.get("result")):
-                logger.warning("[PARSER] Батч %d–%d: product-buy вернул result=false: %s",
-                             i + 1, min(i + _BATCH_SIZE, len(uuids)), str(resp)[:200])
+                logger.warning("[PARSER] Батч %d–%d: product-buy result=false: %s",
+                             i + 1, min(i + _BATCH_SIZE, len(uuids)), str(resp)[:500])
                 continue
 
-            for state in resp.get("data", {}).get("states", []):
+            states = resp.get("data", {}).get("states", [])
+            for state in states:
                 p = self._parse_state(state, container_map, category_id, category_name, uuid_to_status)
                 if p:
                     all_products.append(p)
@@ -408,13 +609,14 @@ class SimpleDNSParser:
     async def fetch_products(
         self, category_id: str, category_name: str = ""
     ) -> list[Product]:
-        """Шаги 2+3: HTML → UUID → Product list."""
-        uuids = await self.fetch_product_uuids(category_id)
+        """Шаги 2+3: JSON → UUID+hash+batches → Product list."""
+        uuids, product_hash, batches = await self.fetch_product_uuids(category_id)
         if not uuids:
             return []
 
         products = await self.fetch_products_details(
-            uuids, category_id, category_name
+            uuids, category_id, category_name,
+            product_hash=product_hash, catalog_batches=batches,
         )
         logger.info(
             "Категория '%s': загружено %d товаров", category_name, len(products)

@@ -19,7 +19,7 @@ async def test_process_category_passes_expected_count_to_uuid_fetch():
     monitor.db.get_category_state.return_value = None
 
     monitor.parser = MagicMock()
-    monitor.parser.fetch_product_uuids = AsyncMock(side_effect=[[], []])
+    monitor.parser.fetch_product_uuids = AsyncMock(side_effect=[([], "", []), ([], "", [])])
 
     cat = MagicMock()
     cat.id = "category-1"

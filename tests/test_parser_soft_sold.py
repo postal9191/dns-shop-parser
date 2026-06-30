@@ -22,12 +22,12 @@ class FakeParser:
 
     async def fetch_product_uuids(self, category_id: str, expected_count: int = None, status: int = None):
         if status == 0:
-            return list(self.uuids_new)
+            return list(self.uuids_new), "test_hash", []
         if status == 1:
-            return list(self.uuids_used)
-        return []
+            return list(self.uuids_used), "test_hash", []
+        return [], "", []
 
-    async def fetch_products_details(self, uuids, category_id, category_name, uuid_to_status=None):
+    async def fetch_products_details(self, uuids, category_id, category_name, uuid_to_status=None, product_hash="", catalog_batches=None):
         return list(self.products)
 
     async def fetch_categories(self):

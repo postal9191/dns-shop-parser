@@ -75,8 +75,10 @@ class DNSMonitorBrowserless:
         last_hash = state["uuid_hash"] if state else None
 
         try:
-            uuids_new = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count, status=0)
-            uuids_used = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count, status=1)
+            uuids_new, hash_new, batches_new = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count, status=0)
+            uuids_used, hash_used, batches_used = await self.parser.fetch_product_uuids(cat.id, expected_count=cat.count, status=1)
+            product_hash = hash_new or hash_used
+            all_batches = batches_new + batches_used
         except Exception as exc:
             if retry_count < 3:
                 wait_time = (2 ** retry_count) + 0.5
@@ -154,7 +156,8 @@ class DNSMonitorBrowserless:
         for attempt in range(3):
             try:
                 products = await self.parser.fetch_products_details(
-                    uuids, cat.id, cat.label, uuid_to_status=uuid_to_status
+                    uuids, cat.id, cat.label, uuid_to_status=uuid_to_status,
+                    product_hash=product_hash, catalog_batches=all_batches,
                 )
                 break
             except Exception as exc:

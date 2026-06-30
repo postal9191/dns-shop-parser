@@ -1,6 +1,6 @@
 """
 Тесты для simple_dns_parser: вспомогательные функции,
-_parse_state, _is_qrator_challenge, _random_container_id.
+_parse_state, _random_container_id.
 Большая часть уже покрыта в test_parser_utils.py — это добавляет
 покрытие отсутствующих ветвей и edge cases.
 """
@@ -11,11 +11,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from dns_shop_parser.parser.simple_dns_parser import (
     _random_container_id,
-    _is_qrator_challenge,
     _PRODUCT_UUID_RE,
     _UUID_RE,
 )
-
 
 class TestRandomContainerId:
     """Тесты для генерации container ID."""
@@ -37,20 +35,6 @@ class TestRandomContainerId:
         ids = {_random_container_id() for _ in range(50)}
         # Вероятность коллизии мала, но проверим разнообразие
         assert len(ids) >= 48
-
-
-class TestIsQratorChallenge:
-    """Тесты для проверки QRATOR маркера."""
-
-    def test_detects_qrator_challenge(self):
-        html = '<html><body>qauth_handle_validate_success</body></html>'
-        assert _is_qrator_challenge(html) is True
-
-    def test_returns_false_when_marker_missing(self):
-        assert _is_qrator_challenge("<html>nothing here</html>") is False
-
-    def test_returns_false_empty_string(self):
-        assert _is_qrator_challenge("") is False
 
 
 class TestProductUuidRegex:
@@ -243,8 +227,10 @@ class TestFetchProductUuids:
         sm.request.side_effect = Exception("network")
 
         parser = SimpleDNSParser(sm, city_slug="test")
-        uuids = await parser.fetch_product_uuids("cat-1", expected_count=10)
+        uuids, product_hash, batches = await parser.fetch_product_uuids("cat-1", expected_count=10)
         assert uuids == []
+        assert product_hash == ""
+        assert batches == []
 
 
 class TestFetchProductsDetails:

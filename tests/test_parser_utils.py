@@ -7,10 +7,8 @@ from dns_shop_parser.parser.simple_dns_parser import (
     SimpleDNSParser,
     _PRODUCT_UUID_RE,
     _UUID_RE,
-    _is_qrator_challenge,
     _random_container_id,
 )
-
 
 class TestRandomContainerId:
     def test_random_container_id_format(self):
@@ -42,32 +40,6 @@ class TestRandomContainerId:
         # но теоретически возможна, так что тест может иногда падать
         # (очень редко)
         # assert id1 != id2
-
-
-class TestIsQratorChallenge:
-    def test_is_qrator_challenge_with_marker(self):
-        """_is_qrator_challenge - True при маркере."""
-        html = "<html>qauth_handle_validate_success</html>"
-
-        result = _is_qrator_challenge(html)
-
-        assert result is True
-
-    def test_is_qrator_challenge_without_marker(self):
-        """_is_qrator_challenge - False без маркера."""
-        html = "<html>обычная страница</html>"
-
-        result = _is_qrator_challenge(html)
-
-        assert result is False
-
-    def test_is_qrator_challenge_marker_in_middle(self):
-        """_is_qrator_challenge - marker в середине HTML."""
-        html = "<div>некий текст qauth_handle_validate_success другой текст</div>"
-
-        result = _is_qrator_challenge(html)
-
-        assert result is True
 
 
 class TestUUIDRegex:
