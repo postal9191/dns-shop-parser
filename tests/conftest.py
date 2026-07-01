@@ -2,6 +2,7 @@ import sqlite3
 import sys
 import types
 import tempfile
+import asyncio
 from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
@@ -22,6 +23,21 @@ _plat.version = ""
 _plat.architecture = staticmethod(lambda: ("64bit", ""))
 _plat.processor = "x86_64"
 sys.modules["platform"] = _plat
+
+
+class _CompatEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
+    """Restore pre-3.11 get_event_loop() behavior for legacy sync tests."""
+
+    def get_event_loop(self):
+        try:
+            return super().get_event_loop()
+        except RuntimeError:
+            loop = self.new_event_loop()
+            self.set_event_loop(loop)
+            return loop
+
+
+asyncio.set_event_loop_policy(_CompatEventLoopPolicy())
 
 from dns_shop_parser.parser.db_manager import DBManager
 from dns_shop_parser.parser.models import Product

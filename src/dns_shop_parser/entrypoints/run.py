@@ -199,7 +199,9 @@ def calculate_day_sync_sleep(interval_sec: int, now: datetime | None = None) -> 
 
 async def run_parser(city_slug: str | None = None) -> bool:
     """Запускает parser в отдельном процессе асинхронно."""
-    args = ["--city-slug", city_slug] if city_slug else None
+    args = ["--strict-exit-code"]
+    if city_slug:
+        args.extend(["--city-slug", city_slug])
     label = f"Парсинг товаров ({city_slug})" if city_slug else "Парсинг товаров"
     return await _run_module("dns_shop_parser.entrypoints.parser", label, args=args)
 
@@ -348,8 +350,11 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
                 db.mark_scheduled_event_skipped(due_event["event_key"], "insufficient night window")
                 parser_success = False
             else:
-                db.mark_scheduled_event_done(due_event["event_key"])
                 parser_success = await parser_controller.run_parse(city_slug)
+                if parser_success:
+                    db.mark_scheduled_event_done(due_event["event_key"])
+                else:
+                    db.mark_scheduled_event_failed(due_event["event_key"], "parser failed")
             handled_night_iteration = True
         elif is_day_city_time():
             if not startup_day_sync_wait_done:

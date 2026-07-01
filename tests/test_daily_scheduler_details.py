@@ -180,6 +180,73 @@ class TestProcessDailyReport:
         db.get_current_digest_data.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_passes_selected_category_ids_as_strings(self):
+        db = Mock()
+        db.get_user_settings.return_value = {
+            "plan_type": "free",
+            "notifications_on": True,
+            "notify_new": True,
+            "notify_price_drop": True,
+            "city_slug": "moscow",
+            "min_price_drop_pct": 0,
+        }
+        db.get_user_categories.return_value = ["cat-1", "cat-2"]
+        db.get_daily_report_data.return_value = ([], [])
+        notifier = AsyncMock()
+        notifier.send_daily_report_to_user.return_value = "empty"
+        scheduler = DailyScheduler(db, notifier)
+        event = {
+            "event_key": "t:2026-05-30:u1",
+            "event_type": FREE_DAILY_REPORT,
+            "date_msk": "2026-05-30",
+            "user_id": "u1",
+        }
+
+        await scheduler._process_daily_report(event)
+
+        db.get_daily_report_data.assert_called_once_with(
+            "2026-05-30T00:00:00+03:00",
+            "2026-05-31T00:00:00+03:00",
+            "moscow",
+            min_drop_pct=0,
+            category_ids=["cat-1", "cat-2"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_uses_event_date_for_daily_report_data(self):
+        db = Mock()
+        db.get_user_settings.return_value = {
+            "plan_type": "free",
+            "notifications_on": True,
+            "notify_new": True,
+            "notify_price_drop": True,
+            "city_slug": "moscow",
+            "min_price_drop_pct": 15,
+        }
+        db.get_user_categories.return_value = []
+        db.get_daily_report_data.return_value = ([{"title": "A"}], [])
+        notifier = AsyncMock()
+        notifier.send_daily_report_to_user.return_value = "ok"
+        scheduler = DailyScheduler(db, notifier)
+        event = {
+            "event_key": "t:2026-05-30:u1",
+            "event_type": FREE_DAILY_REPORT,
+            "date_msk": "2026-05-30",
+            "user_id": "u1",
+        }
+
+        await scheduler._process_daily_report(event)
+
+        db.get_daily_report_data.assert_called_once_with(
+            "2026-05-30T00:00:00+03:00",
+            "2026-05-31T00:00:00+03:00",
+            "moscow",
+            min_drop_pct=15,
+            category_ids=None,
+        )
+        db.get_current_digest_data.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_honors_notify_new_disabled(self):
         db = Mock()
         db.get_user_settings.return_value = {

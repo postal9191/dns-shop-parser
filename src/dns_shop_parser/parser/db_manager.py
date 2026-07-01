@@ -1539,10 +1539,18 @@ class DBManager:
         end_utc: str,
         city_slug: str,
         min_drop_pct: int = 0,
+        category_ids: list[str] | None = None,
         limit: int = 200,
     ) -> tuple[list[dict], list[dict]]:
         """Returns new products and price drops inside explicit UTC bounds for one city."""
         with sqlite3.connect(self.db_path) as conn:
+            category_filter = ""
+            category_params: list[str] = []
+            if category_ids:
+                placeholders = ",".join("?" * len(category_ids))
+                category_filter = f" AND category_id IN ({placeholders})"
+                category_params.extend(category_ids)
+
             new_rows = conn.execute(
                 """
                 SELECT category_id, category_name, title, current_price, previous_price, url, status, city_slug
@@ -1551,10 +1559,11 @@ class DBManager:
                   AND is_sold = 0
                   AND created_at >= ?
                   AND created_at < ?
+                """ + category_filter + """
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (city_slug, start_utc, end_utc, limit),
+                [city_slug, start_utc, end_utc, *category_params, limit],
             ).fetchall()
             drop_rows = conn.execute(
                 """
@@ -1564,13 +1573,14 @@ class DBManager:
                   AND is_sold = 0
                   AND updated_at >= ?
                   AND updated_at < ?
+                """ + category_filter + """
                   AND previous_price > 0
                   AND current_price < previous_price
                   AND ROUND(100.0 * (previous_price - current_price) / previous_price, 1) >= ?
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
-                (city_slug, start_utc, end_utc, min_drop_pct, limit),
+                [city_slug, start_utc, end_utc, *category_params, min_drop_pct, limit],
             ).fetchall()
         new_products = [
             {

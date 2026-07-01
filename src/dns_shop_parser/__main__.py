@@ -9,18 +9,19 @@ from collections.abc import Awaitable, Callable
 
 from dns_shop_parser.entrypoints import bot_only, parser, run
 
-_COMMANDS: dict[str, Callable[[], Awaitable[None]]] = {
+_COMMANDS: dict[str, Callable[[], Awaitable[int | None]]] = {
     "run": run.main,
     "parse": parser.main,
     "bot": bot_only.main,
 }
 
 
-async def _dispatch(command: str, command_args: list[str]) -> None:
+async def _dispatch(command: str, command_args: list[str]) -> int:
     old_argv = sys.argv[:]
     try:
         sys.argv = [f"dns-parser-{command}", *command_args]
-        await _COMMANDS[command]()
+        result = await _COMMANDS[command]()
+        return result if isinstance(result, int) else 0
     finally:
         sys.argv = old_argv
 
@@ -55,7 +56,7 @@ def main() -> None:
         _print_help()
         raise SystemExit(f"unknown command: {argv[0]}")
 
-    asyncio.run(_dispatch(command, command_args))
+    raise SystemExit(asyncio.run(_dispatch(command, command_args)))
 
 
 def run_cli() -> None:
@@ -63,7 +64,7 @@ def run_cli() -> None:
 
 
 def parse_cli() -> None:
-    asyncio.run(parser.main())
+    raise SystemExit(asyncio.run(parser.main()))
 
 
 def bot_cli() -> None:

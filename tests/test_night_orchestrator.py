@@ -231,3 +231,53 @@ async def test_main_cycle_runs_scheduled_parse_through_controller(db_memory, mon
     await run.main_cycle(controller, db_memory)
 
     assert parser_calls == ["moscow"]
+
+
+@pytest.mark.asyncio
+async def test_failed_night_parse_marks_event_failed(db_memory, monkeypatch):
+    msk = ZoneInfo("Europe/Moscow")
+    monkeypatch.setattr(run, "NIGHT_CITY_SLUGS", ["moscow"])
+    monkeypatch.setattr(run.random, "randrange", lambda span: 0)
+    parser_calls = []
+
+    class State:
+        is_running = True
+        iteration_count = 0
+
+    class Controller:
+        state = State()
+
+        def __init__(self):
+            self._should_stop = False
+
+        def should_stop(self):
+            return self._should_stop
+
+        def get_pending_interval(self):
+            return None
+
+        async def run_parse(self, city_slug=None):
+            parser_calls.append(city_slug)
+            return False
+
+    controller = Controller()
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 5, 7, 0, 30, tzinfo=msk)
+            return value if tz is None else value.astimezone(tz)
+
+    async def fake_sleep(seconds):
+        controller._should_stop = True
+
+    monkeypatch.setattr(run, "datetime", FixedDateTime)
+    monkeypatch.setattr(run.asyncio, "sleep", fake_sleep)
+
+    await run.main_cycle(controller, db_memory)
+
+    events = db_memory.get_scheduled_events(run.NIGHT_CITY_EVENT, "2026-05-07")
+    assert parser_calls == ["moscow"]
+    assert events[0]["status"] == "failed"
+    assert events[0]["attempts"] == 1
+    assert events[0]["last_error"] == "parser failed"

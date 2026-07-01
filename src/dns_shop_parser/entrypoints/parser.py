@@ -229,7 +229,7 @@ class DNSMonitorBrowserless:
         await asyncio.sleep(0.5)
         return (total_new_products, total_updated)
 
-    async def parse_all(self) -> None:
+    async def parse_all(self) -> bool:
         """Парсит все категории и товары в текущем городе."""
         total_before = self.db.get_product_count(city_slug=self.city_slug)
         is_first_run = total_before == 0
@@ -241,12 +241,12 @@ class DNSMonitorBrowserless:
                 categories = await self.parser.fetch_categories()
             except Exception as exc:
                 logger.error("[PARSE] Ошибка при получении категорий: %s", exc)
-                return
+                return False
 
             if not categories:
                 logger.error("[PARSE] Категории не получены — возможно DNS API недоступен")
                 await self.tg.send_admin_alert("⚠️ Парсер: категории не получены, DNS API может быть недоступен")
-                return
+                return False
 
             logger.info("[PARSE] Получено %d категорий", len(categories))
             await self.session_manager.reset_proxy()
@@ -320,19 +320,22 @@ class DNSMonitorBrowserless:
                     delta - total_new_products,
                 )
 
+            return True
+
         except Exception as exc:
             logger.error("[PARSE] ERR Критическая ошибка в цикле парсинга: %s", exc)
+            return False
 
-    async def run_once(self) -> None:
+    async def run_once(self) -> bool:
         """Парсинг один раз (без цикла) с инициализацией сессии."""
         logger.info("[MAIN] Запуск DNS Monitor")
 
         if not check_node_health():
             logger.error("[MAIN] ❌ Node.js недоступен. Установите Node.js: https://nodejs.org/")
-            return
+            return False
         if not qrator_preflight():
             logger.error("[MAIN] Qrator preflight failed. Check Node.js/Playwright/proxy diagnostics above.")
-            return
+            return False
 
         try:
             success = await asyncio.wait_for(
@@ -344,34 +347,40 @@ class DNSMonitorBrowserless:
             await self.tg.send_admin_alert(
                 f"Parser: Qrator init timeout ({config.qrator_init_timeout:.0f} sec)"
             )
-            return
+            return False
         if not success:
             logger.error("[MAIN] ❌ Не удалось инициализировать сессию. Выход.")
-            return
+            return False
 
         logger.info("[MAIN] ✅ Сессия инициализирована успешно")
 
         try:
-            await self.parse_all()
+            return await self.parse_all()
         except Exception as exc:
             logger.error("[MAIN] Ошибка парсинга: %s", exc)
+            return False
         finally:
             await self.session_manager.close()
             self.db.close()
             await self.telegram_bot.close()
 
 
-async def main() -> None:
+async def main() -> int:
     """Точка входа - запуск один раз (безбраузерный режим, цикл управляется package runner)."""
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--city-slug", default=None)
+    arg_parser.add_argument(
+        "--strict-exit-code",
+        action="store_true",
+        help="Return a non-zero process code when the parser did not complete successfully.",
+    )
     args = arg_parser.parse_args()
     monitor = DNSMonitorBrowserless(city_slug=args.city_slug)
-    await monitor.run_once()
+    success = await monitor.run_once()
+    if args.strict_exit_code and not success:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    finally:
-        sys.exit(0)
+    sys.exit(asyncio.run(main()))

@@ -100,14 +100,25 @@ class DailyScheduler:
         # Получаем категории пользователя
         city_slug = settings.get("city_slug", "moscow")
         user_categories = self.db.get_user_categories(user_id, city_slug)
-        category_ids = [cat["category_id"] for cat in user_categories] if user_categories else None
+        category_ids = user_categories if user_categories else None
 
-        # Получаем текущие актуальные данные вместо данных за конкретный день
-        new_products, price_changes = self.db.get_current_digest_data(
-            settings["city_slug"],
-            min_drop_pct=settings.get("min_price_drop_pct", 0),
-            category_ids=category_ids,
-        )
+        date_msk = event.get("date_msk")
+        if date_msk:
+            start_utc, end_utc = report_bounds_utc(str(date_msk))
+            new_products, price_changes = self.db.get_daily_report_data(
+                start_utc,
+                end_utc,
+                settings["city_slug"],
+                min_drop_pct=settings.get("min_price_drop_pct", 0),
+                category_ids=category_ids,
+            )
+        else:
+            logger.warning("[SCHEDULER] daily report event without date_msk: %s", event.get("event_key"))
+            new_products, price_changes = self.db.get_current_digest_data(
+                settings["city_slug"],
+                min_drop_pct=settings.get("min_price_drop_pct", 0),
+                category_ids=category_ids,
+            )
 
         if not settings.get("notify_new", True):
             new_products = []

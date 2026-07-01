@@ -203,3 +203,25 @@ def test_daily_report_data_uses_explicit_utc_bounds(db_memory):
 
     assert [p["title"] for p in new_products] == ["inside"]
     assert [p["title"] for p in price_changes] == ["inside"]
+
+
+def test_daily_report_data_filters_selected_categories(db_memory):
+    products = [
+        Product(id="p1", uuid="u1", title="selected", price=100, price_old=120, url="", category_id="cat-1", category_name="Cat 1", status="Новый", city_slug="moscow"),
+        Product(id="p2", uuid="u2", title="other", price=100, price_old=120, url="", category_id="cat-2", category_name="Cat 2", status="Новый", city_slug="moscow"),
+    ]
+    db_memory.upsert_products(products)
+    start_utc, end_utc = report_bounds_utc("2026-05-06")
+    with sqlite3.connect(db_memory.db_path) as conn:
+        conn.execute("UPDATE products SET created_at = ?, updated_at = ?", (start_utc, start_utc))
+        conn.commit()
+
+    new_products, price_changes = db_memory.get_daily_report_data(
+        start_utc,
+        end_utc,
+        "moscow",
+        category_ids=["cat-1"],
+    )
+
+    assert [p["title"] for p in new_products] == ["selected"]
+    assert [p["title"] for p in price_changes] == ["selected"]
