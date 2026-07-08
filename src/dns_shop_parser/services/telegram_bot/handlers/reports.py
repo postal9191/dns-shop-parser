@@ -611,6 +611,21 @@ class ReportWizard:
                 seen[key] = dict(p, _count=1)
         deduped = list(seen.values())
 
+        # Сложная сортировка: цифры вперед, затем алфавит
+        def sort_key(item):
+            title = (item.get("title") or "Безымянный").strip().lower()
+            if not title:
+                title = "безымянный"
+            priority = 0 if title[0].isdigit() else 1
+            return (priority, title)
+
+        if is_new_report or not is_sold_report:
+            # Единая логика для новых товаров и отчетов скидок: цифры вперед + алфавит
+            deduped.sort(key=sort_key)
+        elif is_sold_report:
+            # Для проданных товаров сортировка по дате продажи (без даты — в конец)
+            deduped.sort(key=lambda x: x.get("sold_at") or "9999")
+
         item_blocks: list[str] = []
         for p in deduped:
             raw_url = p.get("url") or ""
