@@ -290,6 +290,7 @@ class TelegramNotifier:
 
         if new_products:
             grouped = group_products(new_products)
+            grouped.sort(key=lambda x: (0 if (x.get("title") or " ")[0].isdigit() else 1, (x.get("title") or "").lower()))
             total_raw = len(new_products)
             total_grouped = len(grouped)
             batches = [grouped[i : i + _BATCH_DIGEST_NEW] for i in range(0, total_grouped, _BATCH_DIGEST_NEW)]
@@ -313,6 +314,7 @@ class TelegramNotifier:
 
         if price_changes:
             grouped = group_products(price_changes)
+            grouped.sort(key=lambda x: (0 if (x.get("title") or " ")[0].isdigit() else 1, (x.get("title") or "").lower()))
             total = len(grouped)
             batches = [grouped[i : i + _BATCH_DIGEST_PRICE] for i in range(0, total, _BATCH_DIGEST_PRICE)]
             for batch_idx, batch in enumerate(batches, 1):
