@@ -63,19 +63,28 @@ class DailyScheduler:
                     str(sub["user_id"]),
                 )
 
+    # Типы событий, которые scheduler умеет обрабатывать
+    _HANDLED_EVENT_TYPES = {FREE_LIMIT_MAINTENANCE, FREE_DAILY_REPORT}
+
     async def process_pending_events(self) -> None:
         events = self.db.get_pending_scheduled_events(max_attempts=self.max_attempts)
         for event in events:
+            event_key = event["event_key"]
+            # Неизвестные типы не трогаем — не claim-им
+            if event["event_type"] not in self._HANDLED_EVENT_TYPES:
+                continue
+            # Атомарный claim — если другой worker уже захватил, пропускаем
+            if not self.db.claim_scheduled_event(event_key):
+                logger.debug("[SCHEDULER] event %s already claimed, skipping", event_key)
+                continue
             try:
                 if event["event_type"] == FREE_LIMIT_MAINTENANCE:
-                    self.db.mark_scheduled_event_done(event["event_key"])
+                    self.db.mark_scheduled_event_done(event_key)
                 elif event["event_type"] == FREE_DAILY_REPORT:
                     await self._process_daily_report(event)
-                else:
-                    continue
             except Exception as exc:
-                logger.error("[SCHEDULER] event %s failed: %s", event.get("event_key"), exc)
-                self.db.mark_scheduled_event_failed(event["event_key"], str(exc))
+                logger.error("[SCHEDULER] event %s failed: %s", event_key, exc)
+                self.db.mark_scheduled_event_failed(event_key, str(exc))
 
     async def _process_daily_report(self, event: dict) -> None:
         user_id = str(event["user_id"])

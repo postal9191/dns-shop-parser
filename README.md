@@ -119,14 +119,16 @@ TELEGRAM_CHAT_ADMIN=your_telegram_user_id
 ```env
 API_BASE_URL=https://www.dns-shop.ru
 DB_PATH=dns_monitor.db
-PARSE_INTERVAL=3600
-PARSE_CONCURRENCY=5
-LOG_LEVEL=INFO
+PARSE_INTERVAL=3600        # секунды между циклами (> 0, обязательно)
+PARSE_CONCURRENCY=5        # параллельных категорий (> 0, обязательно)
+LOG_LEVEL=INFO             # DEBUG для подробных HTTP-логов
 PROXY_HOST=
 PROXY_PORT=0
 PROXY_USER=
 PROXY_PASSWORD=
 ```
+
+> Shell-переменные окружения имеют приоритет над `.env` файлом.
 
 ## Поддерживаемые города
 
@@ -134,20 +136,48 @@ PROXY_PASSWORD=
 - Москва: ночной парсинг с 00:00 до 06:00 МСК
 - Санкт-Петербург: ночной парсинг с 00:00 до 06:00 МСК
 
+Города можно включать/отключать через админ-панель бота без правки кода.
+
 ## База данных
 
-SQLite (`dns_monitor.db`):
+SQLite (`dns_monitor.db`) с WAL-режимом и автоматическими бэкапами:
 
-- `products`
-- `price_history`
-- `category_state`
-- `telegram_subscribers`
-- `user_settings`
-- `user_categories`
+- `products` — товары с UUID и ценами
+- `price_history` — история изменения цен
+- `category_state` — состояние категорий
+- `telegram_subscribers` — подписчики
+- `user_settings` — настройки пользователей
+- `user_categories` — категории пользователей
+- `scheduled_events` — запланированные события (с claim/lease для защиты от дублей)
+- `global_settings` — глобальные настройки (отключённые города и т.д.)
+
+## Безопасность
+
+- **Single-instance lock**: кроссплатформенный (Linux + Windows), предотвращает запуск двух экземпляров
+- **Redaction секретов**: cookies, CSRF-токены, authorization headers и Telegram-токены не попадают в логи
+- **SQLite integrity check**: каждый backup проходит `PRAGMA integrity_check` перед публикацией
+- **WAL + busy_timeout**: соединения корректно закрываются, `foreign_keys=ON`
+- **Config validation**: `PARSE_INTERVAL` и `PARSE_CONCURRENCY` должны быть > 0
+- **HTML-fallback отключён**: Qrator/HTML ответ не парсится как категории (защита от false sold)
+
+## Exit codes
+
+- `0` — успешный парсинг
+- `1` — ошибка парсинга (по умолчанию; используйте `--lenient-exit-code` для `0` при провале)
+- `75` — уже запущен другой экземпляр (EX_TEMPFAIL)
+
+## Тесты
+
+```bash
+pytest -q                    # быстрый прогон
+pytest --cov=dns_shop_parser # с покрытием
+```
+
+Текущее покрытие: ~70% (branch coverage).
 
 ## Особенности
 
-- single-run parser намеренно завершает процесс с кодом `0`
 - Qrator cookies переиспользуются между циклами
 - расписание разделено на дневной и ночной режимы
+- scheduler использует atomic claim/lease для защиты от двойной обработки
 - root runtime-файлы (`logs/`, `backups/`, `dns_monitor.db`, `coverage_html/`) игнорируются git

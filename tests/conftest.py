@@ -46,24 +46,15 @@ from dns_shop_parser.parser.models import Product
 @pytest.fixture
 def db_memory():
     """Файловая SQLite база для тестирования (в temp)."""
+    import gc
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = str(Path(tmpdir) / "test.db")
         db = DBManager(db_path)
         try:
             yield db
         finally:
-            # Принудительно закрываем все возможные соединения
             db.close()
-            # Дополнительная очистка для Windows
-            import gc
             gc.collect()
-            # Принудительно закрываем все SQLite соединения к этому файлу
-            try:
-                # Создаем временное соединение и сразу закрываем для освобождения файла
-                temp_conn = sqlite3.connect(db_path)
-                temp_conn.close()
-            except:
-                pass
 
 
 @pytest.fixture

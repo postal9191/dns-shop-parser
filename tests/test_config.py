@@ -120,3 +120,31 @@ class TestProxyConfig:
         config = Config.from_env()
 
         assert config.proxy_enabled() is True
+
+
+def test_config_rejects_zero_parse_interval(monkeypatch):
+    """PARSE_INTERVAL=0 должен давать ошибку."""
+    monkeypatch.setenv("PARSE_INTERVAL", "0")
+    with pytest.raises(ValueError, match="PARSE_INTERVAL"):
+        Config.from_env()
+
+
+def test_config_rejects_negative_parse_interval(monkeypatch):
+    """PARSE_INTERVAL=-1 должен давать ошибку."""
+    monkeypatch.setenv("PARSE_INTERVAL", "-1")
+    with pytest.raises(ValueError, match="PARSE_INTERVAL"):
+        Config.from_env()
+
+
+def test_config_rejects_zero_parse_concurrency(monkeypatch):
+    """PARSE_CONCURRENCY=0 должен давать ошибку."""
+    monkeypatch.setenv("PARSE_CONCURRENCY", "0")
+    with pytest.raises(ValueError, match="PARSE_CONCURRENCY"):
+        Config.from_env()
+
+
+def test_config_rejects_negative_parse_concurrency(monkeypatch):
+    """PARSE_CONCURRENCY=-1 должен давать ошибку."""
+    monkeypatch.setenv("PARSE_CONCURRENCY", "-1")
+    with pytest.raises(ValueError, match="PARSE_CONCURRENCY"):
+        Config.from_env()

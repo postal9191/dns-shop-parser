@@ -1,7 +1,8 @@
 [run]
-source = parser,services,config,data,cities,utils
+source = dns_shop_parser
+branch = true
 omit = tests/*,.*
 
 [report]
 show_missing = true
-fail_under = 0
+fail_under = 50

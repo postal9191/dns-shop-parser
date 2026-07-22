@@ -7,7 +7,8 @@ from dns_shop_parser.entrypoints import run as run_entrypoint
 
 
 @pytest.mark.asyncio
-async def test_parser_main_keeps_zero_exit_without_strict_flag(monkeypatch):
+async def test_parser_main_returns_nonzero_on_failure(monkeypatch):
+    """По умолчанию провал парсинга = ненулевой exit code."""
     class FakeMonitor:
         def __init__(self, city_slug=None):
             self.city_slug = city_slug
@@ -18,11 +19,12 @@ async def test_parser_main_keeps_zero_exit_without_strict_flag(monkeypatch):
     monkeypatch.setattr(parser_entrypoint, "DNSMonitorBrowserless", FakeMonitor)
     monkeypatch.setattr(sys, "argv", ["dns-parser-once"])
 
-    assert await parser_entrypoint.main() == 0
+    assert await parser_entrypoint.main() == 1
 
 
 @pytest.mark.asyncio
-async def test_parser_main_returns_nonzero_with_strict_flag(monkeypatch):
+async def test_parser_main_keeps_zero_with_lenient_flag(monkeypatch):
+    """--lenient-exit-code позволяет вернуть 0 при провале."""
     class FakeMonitor:
         def __init__(self, city_slug=None):
             self.city_slug = city_slug
@@ -31,13 +33,30 @@ async def test_parser_main_returns_nonzero_with_strict_flag(monkeypatch):
             return False
 
     monkeypatch.setattr(parser_entrypoint, "DNSMonitorBrowserless", FakeMonitor)
-    monkeypatch.setattr(sys, "argv", ["dns-parser-once", "--strict-exit-code"])
+    monkeypatch.setattr(sys, "argv", ["dns-parser-once", "--lenient-exit-code"])
 
-    assert await parser_entrypoint.main() == 1
+    assert await parser_entrypoint.main() == 0
 
 
 @pytest.mark.asyncio
-async def test_runner_uses_strict_parser_exit_code(monkeypatch):
+async def test_parser_main_returns_zero_on_success(monkeypatch):
+    """Успешный парсинг = exit code 0."""
+    class FakeMonitor:
+        def __init__(self, city_slug=None):
+            self.city_slug = city_slug
+
+        async def run_once(self):
+            return True
+
+    monkeypatch.setattr(parser_entrypoint, "DNSMonitorBrowserless", FakeMonitor)
+    monkeypatch.setattr(sys, "argv", ["dns-parser-once"])
+
+    assert await parser_entrypoint.main() == 0
+
+
+@pytest.mark.asyncio
+async def test_runner_passes_city_slug(monkeypatch):
+    """run_parser передаёт --city-slug без --strict-exit-code."""
     called = {}
 
     async def fake_run_module(module, log_name, args=None):
@@ -49,4 +68,4 @@ async def test_runner_uses_strict_parser_exit_code(monkeypatch):
 
     assert await run_entrypoint.run_parser("moscow") is True
     assert called["module"] == "dns_shop_parser.entrypoints.parser"
-    assert called["args"] == ["--strict-exit-code", "--city-slug", "moscow"]
+    assert called["args"] == ["--city-slug", "moscow"]

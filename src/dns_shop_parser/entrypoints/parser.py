@@ -271,6 +271,14 @@ class DNSMonitorBrowserless:
             tasks = [process_category_with_semaphore(i, cat) for i, cat in enumerate(categories, 1)]
             results = await asyncio.gather(*tasks)
 
+            # Считаем проваленные категории: (0, 0) = ошибка
+            failed_count = sum(1 for r in results if r == (0, 0))
+            if failed_count > 0:
+                logger.warning("[PARSE] ⚠️ %d из %d категорий не обработаны", failed_count, len(categories))
+                await self.tg.send_admin_alert(
+                    f"⚠️ Парсер: {failed_count}/{len(categories)} категорий не обработаны"
+                )
+
             total_new_products = sum(r[0] for r in results)
             total_updated = sum(r[1] for r in results)
 
@@ -370,14 +378,14 @@ async def main() -> int:
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("--city-slug", default=None)
     arg_parser.add_argument(
-        "--strict-exit-code",
+        "--lenient-exit-code",
         action="store_true",
-        help="Return a non-zero process code when the parser did not complete successfully.",
+        help="Always return exit code 0 even when the parser did not complete successfully.",
     )
     args = arg_parser.parse_args()
     monitor = DNSMonitorBrowserless(city_slug=args.city_slug)
     success = await monitor.run_once()
-    if args.strict_exit_code and not success:
+    if not success and not args.lenient_exit_code:
         return 1
     return 0
 

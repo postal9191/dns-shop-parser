@@ -187,10 +187,11 @@ class TestCategoryParsingJson:
 
 
 class TestCategoryParsingFallback:
-    """Тесты fallback парсинга категорий из HTML."""
+    """Тесты: HTML-ответ НЕ парсится как категории (безопасность)."""
 
     @pytest.mark.asyncio
-    async def test_fallback_uuid_parsing(self):
+    async def test_html_response_returns_empty(self):
+        """HTML (Qrator/ошибка) не должен извлекать UUID — категории пустые."""
         from dns_shop_parser.parser.simple_dns_parser import SimpleDNSParser
 
         sm = Mock()
@@ -200,7 +201,6 @@ class TestCategoryParsingFallback:
         sm.request = AsyncMock()
 
         html = '<div id="cat-123">Laptops</div><div id="456abcde-f012-3456-7890-abcdef123456">Phones</div>'
-        # HTML не является JSON → fallback парсит UUID
 
         response = Mock(status=200, content_type="text/html")
         response.raise_for_status = Mock()
@@ -210,8 +210,8 @@ class TestCategoryParsingFallback:
 
         parser = SimpleDNSParser(sm, city_slug="test")
         cats = await parser.fetch_categories()
-        # Fallback должен найти UUIDs из HTML
-        assert len(cats) >= 1
+        # HTML-ответ безопаснно игнорируется — нет ложных категорий
+        assert len(cats) == 0
 
 
 class TestFetchProductUuids:

@@ -32,9 +32,15 @@ class HTTPLogger:
         if params:
             logger.debug("[HTTP]    Params: %s", params)
         if headers:
-            # Скрываем чувствительные данные
-            safe_headers = {k: (v[:50] + '...' if len(v) > 50 and k.lower() == 'cookie' else v) 
-                           for k, v in headers.items()}
+            # Скрываем чувствительные данные: cookie → только имена
+            safe_headers = {}
+            for k, v in headers.items():
+                if k.lower() == 'cookie':
+                    # Показываем только имена cookies, не значения
+                    cookie_names = [c.split('=')[0].strip() for c in str(v).split(';') if c.strip()]
+                    safe_headers[k] = f"cookies({', '.join(cookie_names)})"
+                else:
+                    safe_headers[k] = v
             logger.debug("[HTTP]    Headers: %s", safe_headers)
         if data:
             data_str = str(data)[:500]
@@ -55,11 +61,12 @@ class HTTPLogger:
 
     @staticmethod
     async def log_cookies(cookies: dict, source: str = "") -> None:
-        """Логирует текущие куки."""
+        """Логирует текущие куки (только имена + fingerprints, не значения)."""
+        from dns_shop_parser.utils.logger import redact_cookie_value
         logger.debug("[COOKIES] %s: %d кук", source, len(cookies))
         for key, value in cookies.items():
-            val_display = value[:30] + '...' if len(value) > 30 else value
-            logger.debug("[COOKIES]   %s = %s", key, val_display)
+            safe = redact_cookie_value(key, value)
+            logger.debug("[COOKIES]   %s", safe)
 
 def _get_platform_ua() -> tuple[str, str]:
     """Возвращает UserAgent и platform для текущей ОС.

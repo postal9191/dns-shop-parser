@@ -28,13 +28,25 @@ PROJECT_DIR = Path(__file__).resolve().parents[3]
 
 
 def acquire_single_instance_lock():
-    """Не даёт запустить два постоянных package runner для одного проекта."""
+    """Не даёт запустить два постоянных package runner для одного проекта.
+
+    Кроссплатформенный: fcntl на Linux/macOS, msvcrt на Windows.
+    Возвращает file handle при успехе, None если уже запущен.
+    """
+    lock_id = hashlib.sha256(str(PROJECT_DIR).encode("utf-8")).hexdigest()[:12]
+
+    if sys.platform.startswith("win"):
+        return _acquire_lock_windows(lock_id)
+    return _acquire_lock_unix(lock_id)
+
+
+def _acquire_lock_unix(lock_id: str):
+    """Lock через fcntl (Linux/macOS)."""
     try:
         import fcntl
     except ImportError:
         return None
 
-    lock_id = hashlib.sha256(str(PROJECT_DIR).encode("utf-8")).hexdigest()[:12]
     lock_path = Path("/tmp") / f"dns-parser-{lock_id}.lock"
     lock_file = lock_path.open("a+", encoding="utf-8")
 
@@ -50,6 +62,30 @@ def acquire_single_instance_lock():
     lock_file.seek(0)
     lock_file.truncate()
     lock_file.write(f"pid={os.getpid()} project={PROJECT_DIR}\n")
+    lock_file.flush()
+    return lock_file
+
+
+def _acquire_lock_windows(lock_id: str):
+    """Lock через msvcrt (Windows). Блокировка одного байта в файле."""
+    import msvcrt
+
+    temp_dir = Path(os.environ.get("TEMP", os.environ.get("TMP", "C:\\Temp")))
+    lock_path = temp_dir / f"dns-parser-{lock_id}.lock"
+    lock_file = lock_path.open("a+b")
+
+    try:
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+    except (OSError, IOError):
+        lock_file.seek(0)
+        owner = lock_file.read().decode("utf-8", errors="replace").strip()
+        logger.error("[RUN] Уже запущен другой package runner для этого проекта%s", f": {owner}" if owner else "")
+        lock_file.close()
+        return None
+
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(f"pid={os.getpid()} project={PROJECT_DIR}\n".encode("utf-8"))
     lock_file.flush()
     return lock_file
 
@@ -211,7 +247,7 @@ def calculate_day_sync_sleep(interval_sec: int, now: datetime | None = None) -> 
 
 async def run_parser(city_slug: str | None = None) -> bool:
     """Запускает parser в отдельном процессе асинхронно."""
-    args = ["--strict-exit-code"]
+    args = []
     if city_slug:
         args.extend(["--city-slug", city_slug])
     label = f"Парсинг товаров ({city_slug})" if city_slug else "Парсинг товаров"
@@ -472,6 +508,11 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
 
 async def main() -> None:
     """Запускает основной цикл и ТГ бота параллельно."""
+    # Single-instance lock — работает для всех точек входа
+    _single_instance_lock = acquire_single_instance_lock()
+    if _single_instance_lock is None:
+        sys.exit(75)  # EX_TEMPFAIL — уникальный код для "already running"
+
     db = DBManager(config.db_path)
     parser_controller = ParserController(run_parser, db)
     telegram_bot = init_telegram_bot(db, parser_controller)
@@ -502,15 +543,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    _single_instance_lock = acquire_single_instance_lock()
-    if _single_instance_lock is None and sys.platform.startswith("linux"):
-        sys.exit(0)
-
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("[RUN] Выход")
         sys.exit(0)
+    except SystemExit:
+        raise
     except Exception as e:
         logger.error("[RUN] Критическая ошибка: %s", e)
         sys.exit(1)

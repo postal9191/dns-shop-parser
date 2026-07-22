@@ -4,7 +4,9 @@
 
 import hashlib
 import json
+import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,6 +24,26 @@ class DBManager:
         self.db_path = Path(db_path)
         self._default_city_slug = default_city_slug
         self._init_db()
+
+    @contextmanager
+    def _conn(self):
+        """Контекст-менеджер для соединения с SQLite.
+
+        Гарантирует: WAL, busy_timeout, foreign_keys=ON, close() при выходе.
+        """
+        conn = sqlite3.connect(str(self.db_path), timeout=10)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.row_factory = sqlite3.Row
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     @staticmethod
     def _report_period_cutoff(period: str) -> str | None:
@@ -41,7 +63,10 @@ class DBManager:
         return datetime.now(MSK).isoformat()
 
     def _backup_db(self, conn: sqlite3.Connection) -> None:
-        """Создает бэкап БД через SQLite online-backup API (безопасно при открытом соединении)."""
+        """Создает бэкап БД через SQLite online-backup API (безопасно при открытом соединении).
+
+        После backup выполняет integrity_check. Публикует файл только при ok.
+        """
         if str(self.db_path) == ":memory:":
             return
 
@@ -54,10 +79,20 @@ class DBManager:
         try:
             backup_conn = sqlite3.connect(str(backup_path))
             conn.backup(backup_conn)
+
+            # Integrity check на backup-копии
+            result = backup_conn.execute("PRAGMA integrity_check").fetchone()
             backup_conn.close()
-            logger.info("Создан бэкап БД: %s", backup_path)
+
+            if result and result[0] == "ok":
+                logger.info("Создан бэкап БД (integrity ok): %s", backup_path)
+            else:
+                # Удаляем битый backup
+                backup_path.unlink(missing_ok=True)
+                logger.error("Backup не прошёл integrity_check, файл удалён: %s", backup_path)
         except Exception as exc:
             logger.error("Ошибка при создании бэкапа БД: %s", exc)
+            backup_path.unlink(missing_ok=True)
 
     def _init_db(self) -> None:
         """Создает таблицы если их нет. Создает бэкап только перед реальными миграциями."""
@@ -458,6 +493,10 @@ class DBManager:
                 conn.execute("ALTER TABLE scheduled_events ADD COLUMN subject_id TEXT")
             if "run_at_utc" not in scheduled_cols:
                 conn.execute("ALTER TABLE scheduled_events ADD COLUMN run_at_utc TEXT")
+            if "owner_pid" not in scheduled_cols:
+                conn.execute("ALTER TABLE scheduled_events ADD COLUMN owner_pid INTEGER")
+            if "lease_expires_at" not in scheduled_cols:
+                conn.execute("ALTER TABLE scheduled_events ADD COLUMN lease_expires_at TEXT")
             conn.execute(
                 """
                 UPDATE scheduled_events
@@ -1440,15 +1479,19 @@ class DBManager:
             return cursor.fetchone() is not None
 
     def get_pending_scheduled_events(self, max_attempts: int = 3) -> list[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
+            # Возвращаем только события без активной lease или с истёкшей lease
+            now = self._now_msk()
             cursor = conn.execute(
                 """
                 SELECT event_key, event_type, date_msk, user_id, subject_id, run_at_utc, status, attempts, last_error
                 FROM scheduled_events
-                WHERE status IN ('pending', 'failed') AND attempts < ?
+                WHERE status IN ('pending', 'failed')
+                  AND attempts < ?
+                  AND (lease_expires_at IS NULL OR lease_expires_at < ?)
                 ORDER BY date_msk, event_type, COALESCE(user_id, subject_id, '')
                 """,
-                (max_attempts,),
+                (max_attempts, now),
             )
             rows = cursor.fetchall()
         return [
@@ -1465,6 +1508,32 @@ class DBManager:
             }
             for row in rows
         ]
+
+    def claim_scheduled_event(self, event_key: str, lease_seconds: int = 600) -> bool:
+        """Атомарно захватывает событие для обработки.
+
+        Возвращает True если событие успешно захвачено, False если уже занято.
+        НЕ увеличивает attempts — это делает mark_scheduled_event_failed.
+        """
+        now = self._now_msk()
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        MSK_TZ = ZoneInfo("Europe/Moscow")
+        lease_until = (datetime.now(MSK_TZ) + timedelta(seconds=lease_seconds)).isoformat()
+        pid = os.getpid()
+
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE scheduled_events
+                SET status = 'processing', owner_pid = ?, lease_expires_at = ?, updated_at = ?
+                WHERE event_key = ?
+                  AND status IN ('pending', 'failed')
+                  AND (lease_expires_at IS NULL OR lease_expires_at < ?)
+                """,
+                (pid, lease_until, now, event_key, now),
+            )
+            return cursor.rowcount > 0
 
     def get_scheduled_events(self, event_type: str, date_msk: str) -> list[dict]:
         with sqlite3.connect(self.db_path) as conn:
@@ -1496,42 +1565,42 @@ class DBManager:
 
     def mark_scheduled_event_done(self, event_key: str) -> None:
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE scheduled_events
-                SET status = 'done', updated_at = ?, processed_at = ?, last_error = NULL
+                SET status = 'done', updated_at = ?, processed_at = ?, last_error = NULL,
+                    owner_pid = NULL, lease_expires_at = NULL
                 WHERE event_key = ?
                 """,
                 (now, now, event_key),
             )
-            conn.commit()
 
     def mark_scheduled_event_failed(self, event_key: str, error: str) -> None:
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE scheduled_events
-                SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = ?
+                SET status = 'failed', attempts = attempts + 1, last_error = ?, updated_at = ?,
+                    owner_pid = NULL, lease_expires_at = NULL
                 WHERE event_key = ?
                 """,
                 (str(error)[:1000], now, event_key),
             )
-            conn.commit()
 
     def mark_scheduled_event_skipped(self, event_key: str, reason: str) -> None:
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE scheduled_events
-                SET status = 'skipped', updated_at = ?, processed_at = ?, last_error = ?
+                SET status = 'skipped', updated_at = ?, processed_at = ?, last_error = ?,
+                    owner_pid = NULL, lease_expires_at = NULL
                 WHERE event_key = ?
                 """,
                 (now, now, str(reason)[:1000], event_key),
             )
-            conn.commit()
 
     def get_scheduled_event(self, event_key: str) -> dict | None:
         with sqlite3.connect(self.db_path) as conn:

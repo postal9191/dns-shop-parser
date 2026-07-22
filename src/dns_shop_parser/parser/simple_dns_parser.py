@@ -211,18 +211,11 @@ class SimpleDNSParser:
                             ))
 
         except json.JSONDecodeError:
-            logger.debug("HTML не является JSON, извлекаем UUID и labels из разметки")
-            # Fallback: парсим UUID из HTML если это HTML
-            uuids = list(dict.fromkeys(
-                m.group(0).lower() for m in _UUID_RE.finditer(html)
-            ))
-            if uuids:
-                for i, uuid in enumerate(uuids[:10]):  # макс 10 категорий
-                    categories.append(Category(
-                        id=uuid,
-                        label=f"Категория {i+1}",
-                        count=0,
-                    ))
+            # НЕ извлекаем UUID из HTML — это небезопасно.
+            # Qrator challenge, страница ошибки или любой HTML с UUID
+            # будет ошибочно принят за список категорий → реальные
+            # категории помечаются проданными.
+            logger.warning("[PARSER] Ответ фильтров не является JSON (Qrator/ошибка?), категории не получены. Фрагмент: %s", html[:200])
 
         if not categories:
             logger.debug("Сырой ответ filters: %s", html[:500])

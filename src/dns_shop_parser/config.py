@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 from dns_shop_parser.utils.logger import logger
 
-load_dotenv(override=True)
+load_dotenv(override=False)  # .env как defaults; shell-переменные приоритетнее
 
 
 @dataclass
@@ -82,6 +82,12 @@ class Config:
         # Валидация админского токена
         if self.admin_telegram_token and len(self.admin_telegram_token) < 10:
             raise ValueError("Invalid admin telegram token format")
+
+        # Валидация критических числовых параметров
+        if self.parse_interval <= 0:
+            raise ValueError(f"PARSE_INTERVAL must be > 0, got {self.parse_interval}")
+        if self.parse_concurrency <= 0:
+            raise ValueError(f"PARSE_CONCURRENCY must be > 0, got {self.parse_concurrency}")
 
         # Логирование настройки прокси без раскрытия пароля
         if self.proxy_password:
