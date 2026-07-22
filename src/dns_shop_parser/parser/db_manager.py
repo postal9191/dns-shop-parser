@@ -467,8 +467,33 @@ class DBManager:
                   AND user_id IS NOT NULL
                 """
             )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS global_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
             conn.commit()
         logger.debug("БД инициализирована: %s", self.db_path)
+
+    # ── Global settings ────────────────────────────────────────────────────
+
+    def get_global_setting(self, key: str, default: str = "") -> str:
+        """Получить значение глобальной настройки."""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM global_settings WHERE key = ?", (key,)
+            ).fetchone()
+            return row[0] if row else default
+
+    def set_global_setting(self, key: str, value: str) -> None:
+        """Установить значение глобальной настройки."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO global_settings (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            conn.commit()
 
     def upsert_products(self, products: list[Product]) -> tuple[int, list[dict]]:
         """

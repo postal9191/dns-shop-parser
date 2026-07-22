@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from dns_shop_parser.data.cities import CITIES, SLUG_TO_CITY
 from dns_shop_parser.utils.logger import logger
 
+# Ключ в global_settings для хранения отключённых городов
+_DISABLED_CITIES_KEY = "disabled_cities"
+
 
 @dataclass
 class ParserState:
@@ -21,7 +24,7 @@ class ParserState:
     iteration_count: int = 0
 
 
-QueueStatus = Literal["queued", "duplicate", "invalid_city", "runner_missing"]
+QueueStatus = Literal["queued", "duplicate", "invalid_city", "runner_missing", "city_disabled"]
 
 
 @dataclass(frozen=True)
@@ -35,7 +38,7 @@ class QueueResult:
 class ParserController:
     """Контроллер для управления парсером из админ-панели."""
 
-    def __init__(self, parser_runner: Callable[[str | None], Awaitable[bool]] | None = None) -> None:
+    def __init__(self, parser_runner: Callable[[str | None], Awaitable[bool]] | None = None, db_manager=None) -> None:
         self.state = ParserState()
         self._stop_event = asyncio.Event()
         self._pause_event = asyncio.Event()
@@ -47,6 +50,7 @@ class ParserController:
         self._manual_city_queue: list[str] = []
         self._manual_queue_task: asyncio.Task | None = None
         self._current_manual_city: str | None = None
+        self._db = db_manager
 
     def set_parser_runner(self, parser_runner: Callable[[str | None], Awaitable[bool]]) -> None:
         """Sets async parser runner used by scheduled and manual parses."""
@@ -72,6 +76,8 @@ class ParserController:
         """Queues a manual parser run for a supported city."""
         if city_slug not in set(CITIES.values()):
             return QueueResult("invalid_city", city_slug)
+        if not self.is_city_enabled(city_slug):
+            return QueueResult("city_disabled", city_slug)
         if not self._parser_runner:
             return QueueResult("runner_missing", city_slug)
 
@@ -209,6 +215,11 @@ class ParserController:
         info = f"{status}\n"
         info += f"📊 <b>Интервал:</b> {self.state.current_interval} сек\n"
 
+        disabled = self.get_disabled_cities()
+        if disabled:
+            disabled_names = ", ".join(SLUG_TO_CITY.get(s, s) for s in sorted(disabled))
+            info += f"🚫 <b>Отключены:</b> {disabled_names}\n"
+
         if self.state.last_start_time:
             info += f"⏰ <b>Запущен:</b> {self.state.last_start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
 
@@ -232,3 +243,32 @@ class ParserController:
     def increment_iteration(self) -> None:
         """Увеличивает счетчик итераций."""
         self.state.iteration_count += 1
+
+    # ── Disabled cities management ─────────────────────────────────────────
+
+    def get_disabled_cities(self) -> set[str]:
+        """Возвращает множество slug'ов отключённых городов."""
+        if not self._db:
+            return set()
+        raw = self._db.get_global_setting(_DISABLED_CITIES_KEY, "")
+        return set(raw.split(",")) if raw else set()
+
+    def toggle_city(self, city_slug: str) -> bool:
+        """Переключает город. Возвращает True если город теперь включён."""
+        if not self._db:
+            return True
+        disabled = self.get_disabled_cities()
+        if city_slug in disabled:
+            disabled.discard(city_slug)
+        else:
+            # Нельзя отключить единственный включённый город
+            enabled = set(CITIES.values()) - disabled
+            if len(enabled) <= 1:
+                return True  # не трогаем
+            disabled.add(city_slug)
+        self._db.set_global_setting(_DISABLED_CITIES_KEY, ",".join(sorted(disabled)))
+        return city_slug not in disabled
+
+    def is_city_enabled(self, city_slug: str) -> bool:
+        """Проверяет, включён ли город для парсинга."""
+        return city_slug not in self.get_disabled_cities()

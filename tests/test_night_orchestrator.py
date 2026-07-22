@@ -70,6 +70,12 @@ async def test_restart_inside_day_window_waits_for_env_timer_before_krasnodar(mo
         def get_pending_interval(self):
             return None
 
+        def get_disabled_cities(self):
+            return set()
+
+        def is_city_enabled(self, city_slug):
+            return True
+
     controller = Controller()
 
     class FixedDateTime(datetime):
@@ -206,6 +212,12 @@ async def test_main_cycle_runs_scheduled_parse_through_controller(db_memory, mon
         def get_pending_interval(self):
             return None
 
+        def get_disabled_cities(self):
+            return set()
+
+        def is_city_enabled(self, city_slug):
+            return True
+
         async def run_parse(self, city_slug=None):
             parser_calls.append(city_slug)
             return True
@@ -255,6 +267,12 @@ async def test_failed_night_parse_marks_event_failed(db_memory, monkeypatch):
 
         def get_pending_interval(self):
             return None
+
+        def get_disabled_cities(self):
+            return set()
+
+        def is_city_enabled(self, city_slug):
+            return True
 
         async def run_parse(self, city_slug=None):
             parser_calls.append(city_slug)

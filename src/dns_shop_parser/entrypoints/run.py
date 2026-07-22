@@ -94,6 +94,18 @@ DAY_LAST_RUN_MINUTE = 0
 DAY_CITY_SLUG = "krasnodar"
 NIGHT_CITY_SLUGS = [slug for slug in CITIES.values() if slug != DAY_CITY_SLUG]
 NIGHT_CITY_EVENT = "night_city_parse"
+
+
+def get_enabled_night_city_slugs(parser_controller) -> list[str]:
+    """Возвращает slug'и ночных городов, исключая отключённые."""
+    disabled = parser_controller.get_disabled_cities()
+    return [slug for slug in NIGHT_CITY_SLUGS if slug not in disabled]
+
+
+def is_day_city_enabled(parser_controller) -> bool:
+    """Проверяет, включён ли дневной город."""
+    return DAY_CITY_SLUG not in parser_controller.get_disabled_cities()
+
 NIGHT_LOOP_POLL_SECONDS = 60
 
 
@@ -220,7 +232,7 @@ def skip_invalid_night_city_events(db: DBManager, events: list[dict]) -> list[st
     return skipped
 
 
-def ensure_night_city_schedule(db: DBManager, now: datetime | None = None) -> list[dict]:
+def ensure_night_city_schedule(db: DBManager, now: datetime | None = None, parser_controller=None) -> list[dict]:
     now = (now or datetime.now(_MSK)).astimezone(_MSK)
     schedule_date = night_schedule_date(now)
     date_msk = schedule_date.isoformat()
@@ -231,9 +243,11 @@ def ensure_night_city_schedule(db: DBManager, now: datetime | None = None) -> li
             return db.get_scheduled_events(NIGHT_CITY_EVENT, date_msk)
         return existing
 
+    city_slugs = list(get_enabled_night_city_slugs(parser_controller) if parser_controller else NIGHT_CITY_SLUGS)
+    if not city_slugs:
+        return []
     start, end = night_window_bounds_for_date(schedule_date)
-    slots = max(1, int((end - start).total_seconds()) // max(1, len(NIGHT_CITY_SLUGS)))
-    city_slugs = list(NIGHT_CITY_SLUGS)
+    slots = max(1, int((end - start).total_seconds()) // max(1, len(city_slugs)))
     for index, city_slug in enumerate(city_slugs):
         slot_start = start + timedelta(seconds=index * slots)
         slot_end = min(end, slot_start + timedelta(seconds=slots))
@@ -248,10 +262,10 @@ def ensure_night_city_schedule(db: DBManager, now: datetime | None = None) -> li
     return db.get_scheduled_events(NIGHT_CITY_EVENT, date_msk)
 
 
-def get_due_night_city_event(db: DBManager, now: datetime | None = None) -> dict | None:
+def get_due_night_city_event(db: DBManager, now: datetime | None = None, parser_controller=None) -> dict | None:
     now = now or datetime.now(timezone.utc)
     now_msk = now.astimezone(_MSK)
-    events = ensure_night_city_schedule(db, now_msk)
+    events = ensure_night_city_schedule(db, now_msk, parser_controller)
     for event in events:
         if event["status"] != "pending":
             continue
@@ -323,12 +337,12 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
             logger.info("[RUN] Night events skipped after downtime: %s", ", ".join(skipped))
 
         if is_night_time():
-            due_event = get_due_night_city_event(db)
+            due_event = get_due_night_city_event(db, parser_controller=parser_controller)
             if due_event is None:
                 now_local = datetime.now(_MSK)
                 next_morning = night_window_end(now_local)
                 pending_events = [
-                    event for event in ensure_night_city_schedule(db, now_local)
+                    event for event in ensure_night_city_schedule(db, now_local, parser_controller)
                     if event["status"] == "pending" and event.get("run_at_utc")
                 ]
                 if pending_events:
@@ -346,6 +360,11 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
                 continue
 
             city_slug = str(due_event["subject_id"])
+            if not parser_controller.is_city_enabled(city_slug):
+                db.mark_scheduled_event_skipped(due_event["event_key"], "city disabled by admin")
+                logger.info("[RUN] Night city %s disabled, skipping", city_slug)
+                handled_night_iteration = True
+                continue
             if not can_start_city_parse():
                 db.mark_scheduled_event_skipped(due_event["event_key"], "insufficient night window")
                 parser_success = False
@@ -357,6 +376,16 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
                     db.mark_scheduled_event_failed(due_event["event_key"], "parser failed")
             handled_night_iteration = True
         elif is_day_city_time():
+            if not is_day_city_enabled(parser_controller):
+                logger.info("[RUN] Day city %s disabled, skipping", DAY_CITY_SLUG)
+                now_local = datetime.now(_MSK)
+                sleep_seconds = calculate_sleep_until_next_active_window(now_local)
+                try:
+                    await asyncio.sleep(sleep_seconds)
+                except KeyboardInterrupt:
+                    logger.info("[RUN] Stopped by user (Ctrl+C)")
+                    break
+                continue
             if not startup_day_sync_wait_done:
                 startup_day_sync_wait_done = True
                 now_local = datetime.now(_MSK)
@@ -415,7 +444,7 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
             now = datetime.now(_MSK)
             next_morning = night_window_end(now)
             pending_events = [
-                event for event in ensure_night_city_schedule(db, now)
+                event for event in ensure_night_city_schedule(db, now, parser_controller)
                 if event["status"] == "pending" and event.get("run_at_utc")
             ]
             if pending_events:
@@ -443,8 +472,8 @@ async def main_cycle(parser_controller: ParserController, db: DBManager, telegra
 
 async def main() -> None:
     """Запускает основной цикл и ТГ бота параллельно."""
-    parser_controller = ParserController(run_parser)
     db = DBManager(config.db_path)
+    parser_controller = ParserController(run_parser, db)
     telegram_bot = init_telegram_bot(db, parser_controller)
     notifier = TelegramNotifier(bot=telegram_bot, db=db)
     daily_scheduler = DailyScheduler(db, notifier)

@@ -125,6 +125,20 @@ def _build_admin_force_city_keyboard() -> dict:
     return {"inline_keyboard": rows}
 
 
+def _build_admin_cities_keyboard(disabled_cities: set[str]) -> dict:
+    """Inline keyboard с галочками для включения/отключения городов."""
+    cities = list(CITIES.items())
+    rows = []
+    for name, slug in cities:
+        mark = "✅" if slug not in disabled_cities else "❌"
+        rows.append([{
+            "text": f"{mark} {name}",
+            "callback_data": f"admin_city_toggle:{slug}",
+        }])
+    rows.append([{"text": "← Назад в админ-панель", "callback_data": "admin_back"}])
+    return {"inline_keyboard": rows}
+
+
 def _build_admin_menu_keyboard() -> dict:
     """Main admin parser menu."""
     return {
@@ -142,6 +156,7 @@ def _build_admin_menu_keyboard() -> dict:
             ],
             [
                 {"text": "🏙 Принудительный парсинг", "callback_data": "admin_force_parse"},
+                {"text": "🏙 Города", "callback_data": "admin_cities"},
             ],
             [
                 {"text": "📊 Статус", "callback_data": "admin_status"},

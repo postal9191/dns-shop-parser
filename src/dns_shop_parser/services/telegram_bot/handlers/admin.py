@@ -47,6 +47,7 @@ class AdminHandler:
             "admin_logs":     self._on_admin_logs,
             "admin_status":   self._on_admin_status,
             "admin_force_parse": self._on_admin_force_parse,
+            "admin_cities":    self._on_admin_cities,
         }
 
         for prefix, handler in branches.items():
@@ -56,6 +57,9 @@ class AdminHandler:
 
         if data.startswith("admin_force_city:"):
             await self._on_admin_force_city(callback_id, user_id, chat_id, message_id, data)
+            return
+        if data.startswith("admin_city_toggle:"):
+            await self._on_admin_city_toggle(callback_id, user_id, chat_id, message_id, data)
             return
         if data.startswith("admin_rights_page:"):
             await self._on_admin_rights_page(callback_id, user_id, chat_id, message_id, data)
@@ -232,10 +236,58 @@ class AdminHandler:
         if result.status == "duplicate":
             await self._bot._answer_callback(callback_id, f"Уже в очереди или выполняется: {city_name}", alert=True)
             return
+        if result.status == "city_disabled":
+            await self._bot._answer_callback(callback_id, f"⚠️ {city_name}: парсинг отключён", alert=True)
+            return
         if result.status == "runner_missing":
             await self._bot._answer_callback(callback_id, "Runner парсера не настроен", alert=True)
             return
         await self._bot._answer_callback(callback_id, "Неизвестный город", alert=True)
+
+    async def _on_admin_cities(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        if not self._bot.parser_controller:
+            await self._bot._answer_callback(callback_id, "❌ Контроллер не готов", alert=True)
+            return
+        await self._bot._answer_callback(callback_id, "")
+        disabled = self._bot.parser_controller.get_disabled_cities()
+        text = "🏙 <b>Управление городами</b>\n\n✅ — парсинг включён\n❌ — парсинг отключён"
+        if message_id:
+            await self._bot.edit_message_text(
+                chat_id, message_id, text,
+                reply_markup=kb._build_admin_cities_keyboard(disabled),
+            )
+        else:
+            await self._bot.send_message(
+                chat_id, text,
+                reply_markup=kb._build_admin_cities_keyboard(disabled),
+            )
+
+    async def _on_admin_city_toggle(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
+    ) -> None:
+        if not self._bot.parser_controller:
+            await self._bot._answer_callback(callback_id, "❌ Контроллер не готов", alert=True)
+            return
+        try:
+            city_slug = data.split(":", 1)[1]
+        except IndexError:
+            await self._bot._answer_callback(callback_id, "Ошибка", alert=True)
+            return
+        now_enabled = self._bot.parser_controller.toggle_city(city_slug)
+        city_name = SLUG_TO_CITY.get(city_slug, city_slug)
+        await self._bot._answer_callback(
+            callback_id,
+            f"{city_name}: {'включён' if now_enabled else 'отключён'}",
+        )
+        disabled = self._bot.parser_controller.get_disabled_cities()
+        text = "🏙 <b>Управление городами</b>\n\n✅ — парсинг включён\n❌ — парсинг отключён"
+        if message_id:
+            await self._bot.edit_message_text(
+                chat_id, message_id, text,
+                reply_markup=kb._build_admin_cities_keyboard(disabled),
+            )
 
     def _rights_state(self, admin_id: str) -> tuple[list[dict], dict[str, str], int]:
         us = self._bot._user_state
