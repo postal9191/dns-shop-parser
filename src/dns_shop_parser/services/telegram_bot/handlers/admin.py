@@ -2,16 +2,25 @@
 Обработчик админ-панели — извлечён из telegram_bot.py.
 Управляет командами /admin, admin callbacks, интервалом и логами.
 """
+import asyncio
 import html as _html
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from dns_shop_parser.config import config
 from dns_shop_parser.data.cities import SLUG_TO_CITY
+from dns_shop_parser.utils.logger import logger
 from .. import keyboards as kb
 
 if TYPE_CHECKING:
     from ..core import TelegramBot
+
+# Корень проекта: от handlers/admin.py → parents[5] = dns/
+_PROJECT_DIR = Path(__file__).resolve().parents[5]
 
 
 class AdminHandler:
@@ -48,6 +57,9 @@ class AdminHandler:
             "admin_status":   self._on_admin_status,
             "admin_force_parse": self._on_admin_force_parse,
             "admin_cities":    self._on_admin_cities,
+            "admin_update":    self._on_admin_update,
+            "admin_update_latest": self._on_admin_update_latest,
+            "admin_update_rollback_list": self._on_admin_update_rollback_list,
         }
 
         for prefix, handler in branches.items():
@@ -60,6 +72,9 @@ class AdminHandler:
             return
         if data.startswith("admin_city_toggle:"):
             await self._on_admin_city_toggle(callback_id, user_id, chat_id, message_id, data)
+            return
+        if data.startswith("admin_update_rollback:"):
+            await self._on_admin_update_rollback(callback_id, user_id, chat_id, message_id, data)
             return
         if data.startswith("admin_rights_page:"):
             await self._on_admin_rights_page(callback_id, user_id, chat_id, message_id, data)
@@ -288,6 +303,257 @@ class AdminHandler:
                 chat_id, message_id, text,
                 reply_markup=kb._build_admin_cities_keyboard(disabled),
             )
+
+    # ── Server update handlers ──────────────────────────────────────────────
+
+    async def _on_admin_update(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        """Показывает подменю обновления сервера."""
+        await self._bot._answer_callback(callback_id, "")
+        current = self._git_current_info()
+        text = (
+            "🚀 <b>Обновление сервера</b>\n\n"
+            f"Текущий коммит: <code>{current}</code>\n\n"
+            "Выберите действие:"
+        )
+        if message_id:
+            await self._bot.edit_message_text(
+                chat_id, message_id, text,
+                reply_markup=kb._build_admin_update_keyboard(),
+            )
+        else:
+            await self._bot.send_message(
+                chat_id, text,
+                reply_markup=kb._build_admin_update_keyboard(),
+            )
+
+    async def _on_admin_update_latest(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        """Запускает обновление на последний master в фоне."""
+        await self._bot._answer_callback(callback_id, "🔄 Запускаю обновление...")
+        asyncio.create_task(self._run_server_update(chat_id, action="update"))
+
+    async def _on_admin_update_rollback_list(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int],
+    ) -> None:
+        """Показывает список последних коммитов для отката."""
+        await self._bot._answer_callback(callback_id, "")
+        commits = await self._git_log_recent()
+        if not commits:
+            await self._bot.send_message(chat_id, "❌ Не удалось получить список коммитов")
+            return
+        text = "⏪ <b>Откат на предыдущий коммит</b>\n\nВыберите коммит:"
+        if message_id:
+            await self._bot.edit_message_text(
+                chat_id, message_id, text,
+                reply_markup=kb._build_admin_rollback_commits_keyboard(commits),
+            )
+        else:
+            await self._bot.send_message(
+                chat_id, text,
+                reply_markup=kb._build_admin_rollback_commits_keyboard(commits),
+            )
+
+    async def _on_admin_update_rollback(
+        self, callback_id: str, user_id: str, chat_id: str, message_id: Optional[int], data: str,
+    ) -> None:
+        """Запускает откат на указанный коммит в фоне."""
+        try:
+            ref = data.split(":", 1)[1]
+        except IndexError:
+            await self._bot._answer_callback(callback_id, "Ошибка", alert=True)
+            return
+        await self._bot._answer_callback(callback_id, f"⏪ Откатываю на {ref}...")
+        asyncio.create_task(self._run_server_update(chat_id, action="rollback", ref=ref))
+
+    # ── Git helpers ──────────────────────────────────────────────────────────
+
+    def _git_current_info(self) -> str:
+        """Возвращает текущий короткий хеш и сообщение коммита."""
+        try:
+            result = subprocess.run(
+                ["git", "log", "--oneline", "-1"],
+                cwd=str(_PROJECT_DIR), capture_output=True, text=True, timeout=10,
+            )
+            return result.stdout.strip() or "unknown"
+        except Exception:
+            return "unknown"
+
+    async def _git_log_recent(self, count: int = 5) -> list[dict]:
+        """Возвращает последние N коммитов [{short, message}]."""
+        def _run():
+            try:
+                result = subprocess.run(
+                    ["git", "log", "--oneline", f"-{count}", "--skip=1"],
+                    cwd=str(_PROJECT_DIR), capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode != 0:
+                    return []
+                commits = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2:
+                        commits.append({"short": parts[0], "message": parts[1]})
+                return commits
+            except Exception:
+                return []
+
+        return await asyncio.to_thread(_run)
+
+    # ── Update/rollback background task ──────────────────────────────────────
+
+    async def _run_server_update(
+        self, chat_id: str, action: str, ref: str | None = None,
+    ) -> None:
+        """Выполняет обновление/откат сервера в фоновой задаче.
+
+        Безопасность: каждая шаг проверяется, при ошибке — сообщение админу
+        и отмена оставшихся шагов. Перезапуск через systemd в самом конце.
+        """
+        admin_id = self._bot.admin_id
+        if not admin_id:
+            return
+
+        async def notify(text: str) -> None:
+            await self._bot.send_admin_message(admin_id, text)
+
+        # Шаг 0: проверяем git
+        await notify(f"🔄 <b>Обновление сервера</b> — начато ({action})")
+
+        def _check_git():
+            try:
+                r = subprocess.run(
+                    ["git", "rev-parse", "--is-inside-work-tree"],
+                    cwd=str(_PROJECT_DIR), capture_output=True, text=True, timeout=10,
+                )
+                return r.returncode == 0 and "true" in r.stdout
+            except Exception:
+                return False
+
+        if not await asyncio.to_thread(_check_git):
+            await notify("❌ Не git-репозиторий. Обновление отменено.")
+            return
+
+        # Шаг 1: git fetch
+        await notify("📡 <code>git fetch --all --tags --prune</code>...")
+        ok = await self._run_subprocess(["git", "fetch", "--all", "--tags", "--prune"])
+        if not ok:
+            await notify("❌ <code>git fetch</code> завершился с ошибкой. Обновление отменено.")
+            return
+
+        # Шаг 2: git pull (update) или git checkout (rollback)
+        current_ref = await self._run_subprocess_output(["git", "rev-parse", "--short", "HEAD"])
+
+        if action == "update":
+            await notify("⬇️ <code>git pull --ff-only</code>...")
+            ok = await self._run_subprocess(["git", "pull", "--ff-only"])
+            if not ok:
+                await notify(
+                    "❌ <code>git pull --ff-only</code> не удался.\n"
+                    "Возможно, есть конфликты. Обновление отменено.\n"
+                    "Сервер продолжает работать на текущем коммите."
+                )
+                return
+        elif action == "rollback" and ref:
+            await notify(f"⏪ <code>git checkout --detach {ref}</code>...")
+            ok = await self._run_subprocess(["git", "checkout", "--detach", ref])
+            if not ok:
+                await notify(f"❌ Не удалось переключиться на <code>{ref}</code>. Откат отменён.")
+                return
+        else:
+            await notify("❌ Неизвестное действие. Отмена.")
+            return
+
+        new_ref = await self._run_subprocess_output(["git", "rev-parse", "--short", "HEAD"])
+        await notify(f"✅ Код обновлён: <code>{current_ref}</code> → <code>{new_ref}</code>")
+
+        # Шаг 3: обновление pip зависимостей
+        venv_python = _PROJECT_DIR / "venv" / "bin" / "python3"
+        if not venv_python.exists():
+            venv_python = _PROJECT_DIR / "venv" / "bin" / "python"
+        if venv_python.exists():
+            req_file = _PROJECT_DIR / "requirements.txt"
+            if req_file.exists():
+                await notify("📦 <code>pip install -r requirements.txt</code>...")
+                ok = await self._run_subprocess([
+                    str(venv_python), "-m", "pip", "install",
+                    "-r", str(req_file), "--quiet",
+                ])
+                if not ok:
+                    await notify("⚠️ pip install завершился с ошибкой, продолжаем...")
+
+        # Шаг 4: обновление npm зависимостей
+        if (_PROJECT_DIR / "package.json").exists():
+            await notify("📦 <code>npm install</code>...")
+            ok = await self._run_subprocess(["npm", "install", "--quiet"], cwd=str(_PROJECT_DIR))
+            if not ok:
+                await notify("⚠️ npm install завершился с ошибкой, продолжаем...")
+
+        # Шаг 5: перезапуск через systemd
+        service_file = Path("/etc/systemd/system/dns-parser.service")
+        if service_file.exists():
+            await notify("🔄 Перезапускаю systemd сервис...")
+            ok = await self._run_subprocess(["sudo", "systemctl", "restart", "dns-parser"])
+            if ok:
+                await notify("✅ Сервис перезапущен! Бот перезагрузится через несколько секунд.")
+                return
+            else:
+                await notify("⚠️ systemd restart не удался, пробую перезапуск вручную...")
+
+        # Fallback: если нет systemd, пробуем перезапустить текущий процесс
+        await notify("🔄 Перезапускаю процесс...")
+        await notify("✅ Обновление завершено! Перезапуск...")
+
+        # Даём время отправить сообщение перед перезапуском
+        await asyncio.sleep(2)
+
+        # Перезапуск через os.execv (замена текущего процесса)
+        os.execv(sys.executable, [sys.executable, "-m", "dns_shop_parser", "run"])
+
+    async def _run_subprocess(
+        self, cmd: list[str], cwd: str | None = None, timeout: int = 120,
+    ) -> bool:
+        """Запускает subprocess в executor. Возвращает True при успехе."""
+        def _run():
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=cwd or str(_PROJECT_DIR),
+                    capture_output=True, text=True, timeout=timeout,
+                )
+                if result.returncode != 0:
+                    logger.error(
+                        "[ADMIN UPDATE] %s exit=%d stderr=%s",
+                        " ".join(cmd), result.returncode, result.stderr[:500],
+                    )
+                return result.returncode == 0
+            except subprocess.TimeoutExpired:
+                logger.error("[ADMIN UPDATE] %s timeout", " ".join(cmd))
+                return False
+            except Exception as e:
+                logger.error("[ADMIN UPDATE] %s error: %s", " ".join(cmd), e)
+                return False
+
+        return await asyncio.to_thread(_run)
+
+    async def _run_subprocess_output(
+        self, cmd: list[str], cwd: str | None = None, timeout: int = 15,
+    ) -> str:
+        """Запускает subprocess и возвращает stdout.strip()."""
+        def _run():
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=cwd or str(_PROJECT_DIR),
+                    capture_output=True, text=True, timeout=timeout,
+                )
+                return result.stdout.strip() if result.returncode == 0 else ""
+            except Exception:
+                return ""
+
+        return await asyncio.to_thread(_run)
 
     def _rights_state(self, admin_id: str) -> tuple[list[dict], dict[str, str], int]:
         us = self._bot._user_state

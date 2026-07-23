@@ -166,10 +166,46 @@ def _build_admin_menu_keyboard() -> dict:
                 {"text": "Права пользователей", "callback_data": "admin_rights"},
             ],
             [
+                {"text": "🚀 Обновление сервера", "callback_data": "admin_update"},
+            ],
+            [
                 {"text": "⬅️ Назад в главное меню", "callback_data": "menu_back"},
             ],
         ]
     }
+
+
+def _build_admin_update_keyboard() -> dict:
+    """Submenu for server update operations."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🔄 Обновить на последний master", "callback_data": "admin_update_latest"},
+            ],
+            [
+                {"text": "⏪ Откатить на предыдущий коммит", "callback_data": "admin_update_rollback_list"},
+            ],
+            [
+                {"text": "← Назад в админ-панель", "callback_data": "admin_back"},
+            ],
+        ]
+    }
+
+
+def _build_admin_rollback_commits_keyboard(commits: list[dict]) -> dict:
+    """Keyboard with recent commits for rollback selection.
+
+    commits: list of {"short": "abc1234", "message": "fix: something"}
+    """
+    rows: list[list[dict]] = []
+    for commit in commits:
+        label = f"⏪ {commit['short']} — {commit['message'][:40]}"
+        rows.append([{
+            "text": label,
+            "callback_data": f"admin_update_rollback:{commit['short']}",
+        }])
+    rows.append([{"text": "← Назад", "callback_data": "admin_update"}])
+    return {"inline_keyboard": rows}
     
 
 
