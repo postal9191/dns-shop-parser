@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from importlib.resources import files
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,7 +39,7 @@ class NodeSolverResult:
 
 
 def get_solve_script_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "scripts" / "solve_qrator.js"
+    return Path(files("dns_shop_parser").joinpath("resources/solve_qrator.js"))
 
 
 def cleanup_chromium_profile() -> bool:
@@ -347,7 +348,7 @@ async def _run_node_solver(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
-        cwd=str(_project_root()),
+        cwd=str(script_path.parent),
         creationflags=creationflags,
         preexec_fn=preexec_fn,
     )

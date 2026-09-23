@@ -162,31 +162,31 @@ class DBManager:
                 try:
                     conn.execute("ALTER TABLE products ADD COLUMN uuid TEXT")
                     logger.info("Добавлен столбец uuid в таблицу products")
-                except sqlite3.OperationalError:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    raise RuntimeError("schema migration failed") from exc
 
             if 'uuid_hash' not in category_cols:
                 try:
                     conn.execute("ALTER TABLE category_state ADD COLUMN uuid_hash TEXT")
                     logger.info("Добавлен столбец uuid_hash в таблицу category_state")
-                except sqlite3.OperationalError:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    raise RuntimeError("schema migration failed") from exc
 
             if 'status' not in product_cols:
                 try:
                     conn.execute("ALTER TABLE products ADD COLUMN status TEXT DEFAULT ''")
                     conn.execute("UPDATE category_state SET uuid_hash = NULL")
                     logger.info("Добавлен столбец status, uuid_hash сброшен для перемаркировки товаров")
-                except sqlite3.OperationalError:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    raise RuntimeError("schema migration failed") from exc
 
             # Миграция: добавить city_slug в products
             if 'city_slug' not in product_cols:
                 try:
                     conn.execute("ALTER TABLE products ADD COLUMN city_slug TEXT NOT NULL DEFAULT ''")
                     logger.info("Добавлен столбец city_slug в таблицу products")
-                except sqlite3.OperationalError:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    raise RuntimeError("schema migration failed") from exc
 
             product_state_migrations = {
                 'is_sold': "ALTER TABLE products ADD COLUMN is_sold INTEGER NOT NULL DEFAULT 0",
@@ -249,7 +249,7 @@ class DBManager:
                         city,
                     )
                 except sqlite3.OperationalError as exc:
-                    logger.error("Ошибка миграции category_state: %s", exc)
+                    raise RuntimeError("category_state migration failed") from exc
 
             # Удаляем осиротевшие записи с city_slug='' если для той же категории
             # уже есть запись с реальным городом (артефакт некорректной первой миграции)
