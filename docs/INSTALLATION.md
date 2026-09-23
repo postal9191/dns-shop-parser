@@ -1,113 +1,45 @@
 # Installation
 
-## 1. Install Dependencies
+## Prerequisites
+
+Python >=3.10, Node/npm, and Chromium managed by Playwright are required. From a source checkout:
 
 ```bash
-npm install
+uv sync --extra test
+npm ci
 npx playwright install chromium
-pip install -r requirements.txt
 ```
 
-For test dependencies:
+On Linux hosts with missing browser libraries use `npx playwright install chromium --with-deps`. Copy `.env.example` to `.env`; shell variables override file values.
+
+## Preflight and tests
+
+Run the safe local prerequisite check before starting. It never starts Telegram polling or a live Qrator challenge.
 
 ```bash
-pip install -r tests/requirements-test.txt
+uv run preflight --db dns_monitor.db --state-dir . --log-dir logs --backup-dir backups
+uv run pytest -q
+uv run python -m compileall -q src
 ```
 
-## 2. Create Config
+Exit code `0` means all checks pass; nonzero names the missing or invalid prerequisite. The test command does not require production credentials and runtime files are ignored by git.
+
+## Run
 
 ```bash
-cp .env.example .env
+uv run python -m dns_shop_parser run
+uv run python -m dns_shop_parser parse --city-slug krasnodar
+uv run python -m dns_shop_parser bot
 ```
 
-Minimum required values:
+After editable installation (`uv pip install -e .`), use `dns-parser`, `dns-parser-once --city-slug krasnodar`, and `dns-parser-bot`. A wheel built with `uv build` includes the packaged Qrator resource; install it outside the checkout with `uv pip install dist/dns_shop_parser-*.whl`.
 
-```env
-TELEGRAM_TOKEN=...
-TELEGRAM_CHAT_ADMIN=...
-```
+## Configuration
 
-> Shell environment variables take priority over `.env` file values.
+Required Telegram values are `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ADMIN`; optional values include `TELEGRAM_CHAT_ID`, `DB_PATH`, `PARSE_INTERVAL`, `PARSE_CONCURRENCY`, `MAX_RETRIES`, `RETRY_DELAY`, `LOG_LEVEL`, `QRATOR_*`, and `PROXY_*`. Invalid non-positive parse intervals/concurrency fail startup without revealing secrets.
 
-Validation: `PARSE_INTERVAL` and `PARSE_CONCURRENCY` must be > 0. Invalid values will raise `ValueError` at startup.
+## Runtime behavior
 
-## 3. Run The App
+SQLite defaults to `dns_monitor.db`; logs use `logs/`; migration backups use `backups/` beside the database. Backups pass `PRAGMA integrity_check` before publication. A migration failure aborts initialization; keep and verify the pre-migration backup before retrying. The parser prevents duplicate instances with exit code `75`.
 
-Git Bash / Linux / macOS:
-
-```bash
-PYTHONPATH=src python -m dns_shop_parser run
-```
-
-PowerShell:
-
-```powershell
-$env:PYTHONPATH="src"; python -m dns_shop_parser run
-```
-
-cmd.exe:
-
-```cmd
-set PYTHONPATH=src && python -m dns_shop_parser run
-```
-
-After editable install:
-
-```bash
-pip install -e .
-dns-parser
-```
-
-## Single Parse
-
-```bash
-PYTHONPATH=src python -m dns_shop_parser parse --city-slug krasnodar
-```
-
-After editable install:
-
-```bash
-dns-parser-once --city-slug krasnodar
-```
-
-Exit codes:
-- `0` — success
-- `1` — parse failure (default; use `--lenient-exit-code` for `0` on failure)
-- `75` — another instance already running
-
-## Telegram Bot Only
-
-```bash
-PYTHONPATH=src python -m dns_shop_parser bot
-```
-
-After editable install:
-
-```bash
-dns-parser-bot
-```
-
-## Qrator Solver Check
-
-```bash
-node scripts/solve_qrator.js
-```
-
-## Tests
-
-```bash
-pytest -q
-pytest --cov=dns_shop_parser  # with coverage (~70% branch)
-```
-
-## Notes
-
-- Source code lives only in `src/dns_shop_parser`.
-- Root compatibility files (`run.py`, `parser.py`, `bot_only.py`, `config.py`) were removed.
-- `scripts/solve_qrator.js` is the Node/Playwright Qrator helper.
-- Supported cities are defined in `src/dns_shop_parser/data/cities.py`.
-- Cities can be enabled/disabled via the Telegram admin panel without code changes.
-- If you use proxy, fill `PROXY_*` variables in `.env`.
-- SQLite uses WAL mode, `busy_timeout=5000`, and `foreign_keys=ON` automatically.
-- Backups run `PRAGMA integrity_check` before publishing.
-- Cookies, CSRF tokens, and auth headers are redacted from logs.
+For restore, scheduler retry/backoff, monitoring, upgrade, and rollback instructions see [`OPERATIONS.md`](OPERATIONS.md).

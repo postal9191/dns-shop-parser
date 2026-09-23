@@ -1,187 +1,64 @@
 # DNS Shop Parser
 
-Автоматический мониторинг скидок в DNS Shop с персонализированными уведомлениями через Telegram-бот.
+Автоматический мониторинг DNS Shop с уведомлениями через Telegram.
 
-## Структура
-
-Проект приведен к стандартной Python-упаковке:
-
-- `src/dns_shop_parser/` - единственный исходный код приложения
-- `tests/` - тесты
-- `scripts/` - shell/Node утилиты и Qrator solver
-- `docs/` - инструкции по установке и Linux-запуску
-- корень - только конфиги, README и файлы зависимостей
-
-## Быстрый старт
+## Быстрый старт из исходников
 
 ```bash
+uv sync --extra test
 npm ci
 npx playwright install chromium
-pip install -r requirements.txt
 cp .env.example .env
-```
-
-Запуск из Git Bash / Linux / macOS:
-
-```bash
-PYTHONPATH=src python -m dns_shop_parser run
-```
-
-PowerShell:
-
-```powershell
-$env:PYTHONPATH="src"; python -m dns_shop_parser run
-```
-
-cmd.exe:
-
-```cmd
-set PYTHONPATH=src && python -m dns_shop_parser run
-```
-
-После editable install можно использовать console scripts без `PYTHONPATH`:
-
-```bash
-pip install -e .
-dns-parser
-dns-parser-once --city-slug krasnodar
-dns-parser-bot
-```
-
-## Команды разработчика
-
-```bash
-PYTHONPATH=src python -m dns_shop_parser --help
-PYTHONPATH=src python -m dns_shop_parser run
-PYTHONPATH=src python -m dns_shop_parser parse --city-slug krasnodar
-PYTHONPATH=src python -m dns_shop_parser bot
-node scripts/solve_qrator.js
-npm run collect:cities
-
-uv sync --extra test
+uv run preflight --db dns_monitor.db --state-dir . --log-dir logs --backup-dir backups
 uv run pytest -q
+uv run python -m dns_shop_parser run
 ```
 
-## Структура проекта
+Python >=3.10, Node/npm, Playwright and Chromium are required. On Linux, use `npx playwright install chromium --with-deps` if browser libraries are missing. The safe preflight returns `0` when Python/config/directories/SQLite/Node/Playwright/Chromium and the packaged Qrator resource are available; otherwise it returns nonzero and names the failed check. It does not start polling or contact production services.
 
-```text
-.
-|-- docs/
-|   |-- INSTALLATION.md
-|   `-- LINUX_SETUP.md
-|-- scripts/
-|   |-- solve_qrator.js
-|   |-- collect_cities.js
-|   |-- cities_data.json
-|   |-- dns-parser.sh
-|   `-- QUICKSTART_LINUX.sh
-|-- src/
-|   `-- dns_shop_parser/
-|       |-- __init__.py
-|       |-- __main__.py
-|       |-- config.py
-|       |-- data/
-|       |-- entrypoints/
-|       |-- parser/
-|       |-- services/
-|       `-- utils/
-|-- tests/
-|-- pyproject.toml
-|-- package.json
-|-- requirements.txt
-`-- README.md
-```
+For a complete installation, state, backup, scheduler, restore, rollback, and monitoring procedure see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Linux-specific service setup is in [`docs/LINUX_SETUP.md`](docs/LINUX_SETUP.md).
 
-## Архитектура
+## Wheel installation
 
-```text
-dns_shop_parser.entrypoints.run
-`-- main_cycle()
-    `-- subprocess: python -m dns_shop_parser.entrypoints.parser
-        |-- parser/qrator_resolver.py -> scripts/solve_qrator.js
-        |-- parser/session_manager.py
-        |-- parser/simple_dns_parser.py
-        |-- parser/db_manager.py
-        `-- services/telegram_notifier.py
-```
-
-## Конфигурация
-
-Обязательные параметры `.env`:
-
-```env
-TELEGRAM_TOKEN=your_bot_token
-TELEGRAM_CHAT_ADMIN=your_telegram_user_id
-```
-
-Дополнительные настройки:
-
-```env
-API_BASE_URL=https://www.dns-shop.ru
-DB_PATH=dns_monitor.db
-PARSE_INTERVAL=3600        # секунды между циклами (> 0, обязательно)
-PARSE_CONCURRENCY=5        # параллельных категорий (> 0, обязательно)
-LOG_LEVEL=INFO             # DEBUG для подробных HTTP-логов
-PROXY_HOST=
-PROXY_PORT=0
-PROXY_USER=
-PROXY_PASSWORD=
-```
-
-> Shell-переменные окружения имеют приоритет над `.env` файлом.
-
-## Поддерживаемые города
-
-- Краснодар: парсинг каждый час с 07:00 до 20:00 МСК
-- Москва: ночной парсинг с 00:00 до 06:00 МСК
-- Санкт-Петербург: ночной парсинг с 00:00 до 06:00 МСК
-
-Города можно включать/отключать через админ-панель бота без правки кода.
-
-## База данных
-
-SQLite (`dns_monitor.db`) с WAL-режимом и автоматическими бэкапами:
-
-- `products` — товары с UUID и ценами
-- `price_history` — история изменения цен
-- `category_state` — состояние категорий
-- `telegram_subscribers` — подписчики
-- `user_settings` — настройки пользователей
-- `user_categories` — категории пользователей
-- `scheduled_events` — запланированные события (с claim/lease для защиты от дублей)
-- `global_settings` — глобальные настройки (отключённые города и т.д.)
-
-## Безопасность
-
-- **Single-instance lock**: кроссплатформенный (Linux + Windows), предотвращает запуск двух экземпляров
-- **Redaction секретов**: cookies, CSRF-токены, authorization headers и Telegram-токены не попадают в логи
-- **SQLite integrity check**: каждый backup проходит `PRAGMA integrity_check` перед публикацией
-- **WAL + busy_timeout**: соединения корректно закрываются, `foreign_keys=ON`
-- **Config validation**: `PARSE_INTERVAL` и `PARSE_CONCURRENCY` должны быть > 0
-- **HTML-fallback отключён**: Qrator/HTML ответ не парсится как категории (защита от false sold)
-
-## Exit codes
-
-- `0` — успешный парсинг
-- `1` — ошибка парсинга (по умолчанию; используйте `--lenient-exit-code` для `0` при провале)
-- `75` — уже запущен другой экземпляр (EX_TEMPFAIL)
-
-## Тесты
+Build with `uv build`, then from outside the checkout install the wheel and check its commands:
 
 ```bash
-uv sync --extra test
-uv run pytest -q                    # быстрый прогон
-uv run pytest --cov=dns_shop_parser # с покрытием
+uv pip install dist/dns_shop_parser-*.whl
+preflight --help
+dns-parser --help
+dns-parser-once --help
+dns-parser-bot --help
 ```
 
-`pyproject.toml` — единственный источник Python-зависимостей для тестов;
-`tests/requirements-test.txt` оставлен только как совместимая точка входа для `pip`.
+## Commands
 
-Текущее покрытие: ~70% (branch coverage).
+```bash
+uv run python -m dns_shop_parser --help
+uv run python -m dns_shop_parser run
+uv run python -m dns_shop_parser parse --city-slug krasnodar
+uv run python -m dns_shop_parser bot
+uv run preflight --db dns_monitor.db --state-dir . --log-dir logs --backup-dir backups
+```
 
-## Особенности
+After installation the equivalent console scripts are `dns-parser`, `dns-parser-once`, `dns-parser-bot`, and `preflight`. The parser uses exit code `75` when another instance owns the lock and `1` for an ordinary parse failure.
 
-- Qrator cookies переиспользуются между циклами
-- расписание разделено на дневной и ночной режимы
-- scheduler использует atomic claim/lease для защиты от двойной обработки
-- root runtime-файлы (`logs/`, `backups/`, `dns_monitor.db`, `coverage_html/`) игнорируются git
+## Configuration and runtime state
+
+Copy `.env.example` to `.env`; shell variables override it. Required Telegram settings are `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ADMIN`. Common settings include `DB_PATH`, `PARSE_INTERVAL`, `PARSE_CONCURRENCY`, `LOG_LEVEL`, `QRATOR_*`, and `PROXY_*`. State defaults to `dns_monitor.db`, logs to `logs/`, and migration backups to `backups/` beside the database. Secrets, cookies, CSRF tokens, and authorization headers are redacted from logs. SQLite uses WAL, `busy_timeout=5000`, and foreign keys.
+
+## Tests and CI-equivalent verification
+
+```bash
+uv sync --extra test --locked
+uv run pytest -q
+uv run python -m compileall -q src
+uv build
+npm ci
+```
+
+## Project layout
+
+- `src/dns_shop_parser/` — application code and packaged `resources/solve_qrator.js`
+- `scripts/` — Node and Linux helpers
+- `docs/` — installation, Linux, and operations procedures
+- `tests/` — automated tests

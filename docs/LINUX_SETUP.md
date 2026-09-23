@@ -1,75 +1,42 @@
 # Linux Setup
 
-## Quick Start
+## Install and preflight
 
-Run from the project root:
+From the project root:
+
+```bash
+python3 -m venv venv
+. venv/bin/activate
+uv sync --extra test
+npm ci
+npx playwright install chromium --with-deps
+cp .env.example .env
+uv run preflight --db dns_monitor.db --state-dir . --log-dir logs --backup-dir backups
+uv run pytest -q
+```
+
+`preflight` exits `0` only when the local runtime prerequisites pass; failures are printed to stderr. It does not poll Telegram or contact DNS Shop.
+
+## Run manually
+
+```bash
+uv run python -m dns_shop_parser run
+uv run python -m dns_shop_parser parse --city-slug krasnodar
+```
+
+The installed console equivalents are `dns-parser` and `dns-parser-once`. The bot-only command is `dns-parser-bot`.
+
+## systemd helper
 
 ```bash
 chmod +x scripts/dns-parser.sh
-./scripts/dns-parser.sh
-```
-
-Or use the quick-start helper:
-
-```bash
-bash scripts/QUICKSTART_LINUX.sh
-```
-
-`scripts/dns-parser.sh` resolves the project root automatically, even though the script itself lives in `scripts/`.
-
-## Manual Run
-
-```bash
-npm install
-npx playwright install chromium --with-deps
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-PYTHONPATH=src python -m dns_shop_parser run
-```
-
-## Single Parse
-
-```bash
-PYTHONPATH=src python -m dns_shop_parser parse --city-slug krasnodar
-```
-
-Exit codes: `0` = success, `1` = failure, `75` = another instance already running.
-
-## systemd
-
-```bash
 ./scripts/dns-parser.sh enable-systemd
 sudo systemctl status dns-parser
 journalctl -u dns-parser -f
 ```
 
-The generated systemd unit runs:
+The helper resolves the project root and the generated unit runs the package from `src`. A second instance exits `75`; ordinary parse failure exits `1`.
 
-```bash
-PYTHONPATH="$PROJECT_DIR/src" python -m dns_shop_parser run
-```
+## State, backups, and recovery
 
-## Single-Instance Lock
-
-The parser uses a cross-platform file lock (`fcntl` on Linux, `msvcrt` on Windows) to prevent running two instances of the same project. If another instance is already running, the process exits with code `75`.
-
-The lock is acquired in `main()`, so it works for all entrypoints: `python -m dns_shop_parser run`, `dns-parser`, and direct script execution.
-
-## SQLite
-
-The database uses:
-- **WAL mode** for concurrent reads during writes
-- **busy_timeout=5000ms** to retry on lock contention
-- **foreign_keys=ON** for referential integrity
-- **Online backup** via `sqlite3.Connection.backup()` with `PRAGMA integrity_check`
-
-## Important
-
-- City config in `.env` is not needed: cities and city cookies live in `src/dns_shop_parser/data/cities.py`.
-- Cities can be enabled/disabled via the Telegram admin panel.
-- Krasnodar runs during the day; Moscow and Saint Petersburg use the night window from `dns_shop_parser.entrypoints.run`.
-- For one-off parses, use `PYTHONPATH=src python -m dns_shop_parser parse --city-slug <slug>`.
-- Cookies, CSRF tokens, and auth headers are automatically redacted from log files.
-- Scheduler uses atomic claim/lease to prevent duplicate event processing.
+The default database is `dns_monitor.db`, logs are in `logs/`, and migration backups are in `backups/` beside the database. SQLite uses WAL, a 5000 ms busy timeout, foreign keys, and online backups validated with `PRAGMA integrity_check`. Stop the service before restoring a verified backup. Migration errors abort startup; retain the pre-migration backup. For scheduler failed-event retries, exponential backoff, pause/resume, upgrade, and rollback, follow [`OPERATIONS.md`](OPERATIONS.md).
