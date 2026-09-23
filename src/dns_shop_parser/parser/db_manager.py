@@ -1298,7 +1298,8 @@ class DBManager:
 
     def toggle_user_category(self, user_id: str, category_id: str, city_slug: str) -> bool:
         """Переключает категорию для пользователя. Возвращает True если добавлена, False если удалена."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 "SELECT 1 FROM user_categories WHERE user_id = ? AND city_slug = ? AND category_id = ?",
                 (user_id, city_slug, category_id),
@@ -1309,24 +1310,18 @@ class DBManager:
                     "DELETE FROM user_categories WHERE user_id = ? AND city_slug = ? AND category_id = ?",
                     (user_id, city_slug, category_id),
                 )
-                conn.commit()
                 return False
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT category_name FROM category_state
-                    WHERE category_id = ? AND city_slug = ? AND is_sold = 0
-                    """,
-                    (category_id, city_slug),
-                )
-                row = cursor.fetchone()
-                cat_name = row[0] if row else None
-                conn.execute(
-                    "INSERT INTO user_categories (user_id, city_slug, category_id, category_name) VALUES (?, ?, ?, ?)",
-                    (user_id, city_slug, category_id, cat_name),
-                )
-                conn.commit()
-                return True
+            cursor = conn.execute(
+                "SELECT category_name FROM category_state WHERE category_id = ? AND city_slug = ? AND is_sold = 0",
+                (category_id, city_slug),
+            )
+            row = cursor.fetchone()
+            cat_name = row[0] if row else None
+            conn.execute(
+                "INSERT INTO user_categories (user_id, city_slug, category_id, category_name) VALUES (?, ?, ?, ?)",
+                (user_id, city_slug, category_id, cat_name),
+            )
+            return True
 
     def get_all_known_categories(self, city_slug: str | None = None) -> list[dict]:
         """Получает активные категории из category_state (заполняется при парсинге)."""

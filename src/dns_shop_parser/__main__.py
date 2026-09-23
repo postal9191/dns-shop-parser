@@ -8,6 +8,7 @@ import sys
 from collections.abc import Awaitable, Callable
 
 from dns_shop_parser.entrypoints import bot_only, parser, run
+from dns_shop_parser.entrypoints.preflight import run_preflight
 
 _COMMANDS: dict[str, Callable[[], Awaitable[int | None]]] = {
     "run": run.main,
@@ -49,6 +50,8 @@ def main() -> None:
     elif argv[0] in ("-h", "--help"):
         _print_help()
         return
+    elif argv[0] == "preflight":
+        raise SystemExit(preflight_cli(argv[1:]))
     elif argv[0] in _COMMANDS:
         command = argv[0]
         command_args = argv[1:]
@@ -57,6 +60,19 @@ def main() -> None:
         raise SystemExit(f"unknown command: {argv[0]}")
 
     raise SystemExit(asyncio.run(_dispatch(command, command_args)))
+
+
+def preflight_cli(argv: list[str] | None = None) -> int:
+    parser_ = argparse.ArgumentParser(prog="preflight")
+    parser_.add_argument("--db", default="dns_monitor.db")
+    parser_.add_argument("--state-dir", default=".")
+    parser_.add_argument("--log-dir", default="logs")
+    parser_.add_argument("--backup-dir", default="backups")
+    parser_.add_argument("--no-node", action="store_true")
+    args = parser_.parse_args(argv)
+    result = run_preflight(db_path=args.db, state_dir=args.state_dir, log_dir=args.log_dir, backup_dir=args.backup_dir, checks={"node": not args.no_node})
+    print(result.summary, file=sys.stderr if not result.ok else sys.stdout)
+    return 0 if result.ok else 1
 
 
 def run_cli() -> None:
