@@ -1,8 +1,8 @@
-# DNS Shop Parser
+# Парсер уценённых товаров DNS
 
-Автоматический мониторинг DNS Shop с уведомлениями через Telegram.
+Автоматический мониторинг уценённых товаров DNS с уведомлениями в Telegram.
 
-## Быстрый старт из исходников
+## Быстрый запуск из исходников
 
 ```bash
 uv sync --extra test
@@ -14,13 +14,15 @@ uv run pytest -q
 uv run python -m dns_shop_parser run
 ```
 
-Python >=3.10, Node/npm, Playwright and Chromium are required. On Linux, use `npx playwright install chromium --with-deps` if browser libraries are missing. The safe preflight returns `0` when Python/config/directories/SQLite/Node/Playwright/Chromium and the packaged Qrator resource are available; otherwise it returns nonzero and names the failed check. It does not start polling or contact production services.
+Нужны Python версии 3.10 или новее, Node.js, npm, Playwright и Chromium. В Linux, если не хватает системных библиотек браузера, выполните `npx playwright install chromium --with-deps`. Команда `preflight` проверяет Python, настройки, каталоги, SQLite, Node.js, Playwright, Chromium и файл Qrator внутри пакета. Она возвращает код `0` при успехе, а при ошибке сообщает, какая проверка не прошла. Telegram и DNS при этом не вызываются.
 
-For a complete installation, state, backup, scheduler, restore, rollback, and monitoring procedure see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Linux-specific service setup is in [`docs/LINUX_SETUP.md`](docs/LINUX_SETUP.md).
+**Не обновляйте Playwright без проверки Qrator на сервере.** Зафиксированная версия `1.59.0` с Chromium build `1217` позволила получить товары; после обновления до `1.63.0` / build `1243` Qrator стал отвечать `403`. Подробности и порядок проверки перед обновлением — в [руководстве по эксплуатации](docs/OPERATIONS.md#совместимость-с-qrator).
 
-## Wheel installation
+Полная инструкция по установке, состоянию, резервным копиям, планировщику, восстановлению и откату — в [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Настройка службы Linux — в [`docs/LINUX_SETUP.md`](docs/LINUX_SETUP.md).
 
-Build with `uv build`, then from outside the checkout install the wheel and check its commands:
+## Установка из wheel-пакета
+
+Соберите пакет командой `uv build`. Затем вне каталога исходников установите его и проверьте доступные команды:
 
 ```bash
 uv pip install dist/dns_shop_parser-*.whl
@@ -30,7 +32,7 @@ dns-parser-once --help
 dns-parser-bot --help
 ```
 
-## Commands
+## Команды
 
 ```bash
 uv run python -m dns_shop_parser --help
@@ -40,13 +42,13 @@ uv run python -m dns_shop_parser bot
 uv run preflight --db dns_monitor.db --state-dir . --log-dir logs --backup-dir backups
 ```
 
-After installation the equivalent console scripts are `dns-parser`, `dns-parser-once`, `dns-parser-bot`, and `preflight`. The parser uses exit code `75` when another instance owns the lock and `1` for an ordinary parse failure.
+После установки доступны также `dns-parser`, `dns-parser-once`, `dns-parser-bot` и `preflight`. Если другой экземпляр удерживает блокировку, парсер возвращает код `75`; при обычной ошибке парсинга — `1`.
 
-## Configuration and runtime state
+## Настройки и рабочие файлы
 
-Copy `.env.example` to `.env`; shell variables override it. Required Telegram settings are `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ADMIN`. Common settings include `DB_PATH`, `PARSE_INTERVAL`, `PARSE_CONCURRENCY`, `LOG_LEVEL`, `QRATOR_*`, and `PROXY_*`. State defaults to `dns_monitor.db`, logs to `logs/`, and migration backups to `backups/` beside the database. Secrets, cookies, CSRF tokens, and authorization headers are redacted from logs. SQLite uses WAL, `busy_timeout=5000`, and foreign keys.
+Скопируйте `.env.example` в `.env`; переменные окружения имеют приоритет над значениями файла. Для Telegram нужны `TELEGRAM_TOKEN` и `TELEGRAM_CHAT_ADMIN`. Часто используемые настройки: `DB_PATH`, `PARSE_INTERVAL`, `PARSE_CONCURRENCY`, `LOG_LEVEL`, `QRATOR_*`, `PROXY_*`. По умолчанию база находится в `dns_monitor.db`, журналы — в `logs/`, а резервные копии после миграций — в `backups/` рядом с базой. Секреты, значения cookies, CSRF-токены и заголовки авторизации скрываются в журналах. SQLite работает с WAL, `busy_timeout=5000` и внешними ключами.
 
-## Tests and CI-equivalent verification
+## Тесты и проверки, аналогичные CI
 
 ```bash
 uv sync --extra test --locked
@@ -56,9 +58,9 @@ uv build
 npm ci
 ```
 
-## Project layout
+## Структура проекта
 
-- `src/dns_shop_parser/` — application code and packaged `resources/solve_qrator.js`
-- `scripts/` — Node and Linux helpers
-- `docs/` — installation, Linux, and operations procedures
-- `tests/` — automated tests
+- `src/dns_shop_parser/` — код приложения и файл `resources/solve_qrator.js` внутри пакета;
+- `scripts/` — скрипты Node.js и Linux;
+- `docs/` — инструкции по установке и эксплуатации;
+- `tests/` — автоматические тесты.

@@ -9,7 +9,7 @@
     "collect:cities": "node scripts/collect_cities.js"
   },
   "dependencies": {
-    "playwright": "1.63.0",
+    "playwright": "1.59.0",
     "playwright-extra": "4.3.6"
   }
 }

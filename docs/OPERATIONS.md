@@ -1,13 +1,13 @@
-# Operations
+# Эксплуатация
 
-This document is the runtime contract for operators. Run commands from the repository root (or use absolute paths in a service unit). Do not put tokens, databases, logs, or backups in source control.
+Это руководство для работы с запущенным парсером. Команды выполняйте из корня проекта либо указывайте абсолютные пути в настройках службы. Не добавляйте в Git токены, базы данных, журналы и резервные копии.
 
-## Install and verify
+## Установка и проверка
 
-### Source checkout
+### Запуск из исходников
 
 ```bash
-git clone <repository-url> dns-shop-parser
+git clone <адрес-репозитория> dns-shop-parser
 cd dns-shop-parser
 uv sync --extra test
 npm ci
@@ -17,11 +17,17 @@ uv run pytest -q
 uv run python -m compileall -q src
 ```
 
-`uv sync --extra test` creates the locked development environment. `npm ci` installs the exact Node dependencies from `package-lock.json`; Chromium is installed by Playwright. Node/npm, Python >=3.10, and a Chromium browser are required. For Linux hosts, use `npx playwright install chromium --with-deps` when system libraries are absent.
+`uv sync --extra test` создаёт окружение по файлу блокировки зависимостей. `npm ci` устанавливает точные версии Node-пакетов из `package-lock.json`; Chromium устанавливается через Playwright. Нужны Python версии 3.10 или новее, Node.js, npm и Chromium. Если в Linux не хватает библиотек браузера, используйте `npx playwright install chromium --with-deps`.
 
-### Wheel installation
+### Совместимость с Qrator
 
-From a directory outside the checkout, after building with `uv build`:
+**Сохраняйте Playwright `1.59.0` в `package.json` и `package-lock.json`.** На рабочем Linux-сервере эта версия с Chromium build `1217` прошла проверку Qrator, после чего парсер загрузил категории и товары. После установки Playwright `1.63.0` с Chromium build `1243` тот же неизменённый `solve_qrator.js` получил HTTP `403` от `/__qrator/validate` и парсинг остановился. `xvfb-run` с этой версией не помог.
+
+Не обновляйте Playwright и не заменяйте сборку Chromium отдельно от него в рамках обычного обновления зависимостей. Перед будущей сменой версии проверьте её **отдельно на рабочем сервере**, не меняя запущенную службу: требуется успешное прохождение живой проверки Qrator, получение куки и загрузка реальных товаров с ценами. Команды `preflight`, `npm run smoke:qrator` и модульные тесты эту совместимость не проверяют.
+
+### Установка wheel-пакета
+
+После сборки командой `uv build` перейдите в каталог вне исходников, установите пакет и проверьте команды:
 
 ```bash
 uv pip install dist/dns_shop_parser-*.whl
@@ -31,21 +37,21 @@ dns-parser-once --help
 dns-parser-bot --help
 ```
 
-The wheel includes `resources/solve_qrator.js`. The preflight command is local and does not start Telegram, contact DNS Shop, or launch a Qrator challenge. Exit code `0` means all checks passed; nonzero means inspect stderr and fix the named prerequisite.
+Wheel-пакет содержит `resources/solve_qrator.js`. Команда `preflight` проверяет локальные компоненты; она не запускает Telegram, не обращается к DNS Shop и не проходит живую проверку Qrator. Код возврата `0` означает, что локальные проверки пройдены; при другом коде изучите сообщение об ошибке.
 
-## Configuration and runtime files
+## Настройки и рабочие файлы
 
-Copy `.env.example` to `.env`. Required values for Telegram operation are `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ADMIN`; `TELEGRAM_CHAT_ID` may be used for notifications. Shell variables override `.env`. Other supported settings include `API_BASE_URL`, `DB_PATH`, `PARSE_INTERVAL`, `PARSE_CONCURRENCY`, `MAX_RETRIES`, `RETRY_DELAY`, `LOG_LEVEL`, `QRATOR_*`, `PROXY_HOST`, `PROXY_PORT`, `PROXY_USER`, `PROXY_PASSWORD`, and `USE_PLATFORM_UA`. Secrets are redacted from safe config output and logs.
+Скопируйте `.env.example` в `.env`. Для Telegram нужны `TELEGRAM_TOKEN` и `TELEGRAM_CHAT_ADMIN`; для уведомлений можно задать `TELEGRAM_CHAT_ID`. Переменные окружения имеют приоритет над `.env`. Другие настройки: `API_BASE_URL`, `DB_PATH`, `PARSE_INTERVAL`, `PARSE_CONCURRENCY`, `MAX_RETRIES`, `RETRY_DELAY`, `LOG_LEVEL`, `QRATOR_*`, `PROXY_HOST`, `PROXY_PORT`, `PROXY_USER`, `PROXY_PASSWORD`, `USE_PLATFORM_UA`. Секреты скрываются в безопасном выводе настроек и журналах.
 
-By default the SQLite state is `dns_monitor.db`, logs are under `logs/`, and migration backups are under `backups/` beside the database. Set `DB_PATH` to relocate the database; the backup directory remains the `backups/` directory beside that database. Ensure all three locations are writable. Runtime files are intentionally git-ignored.
+По умолчанию база SQLite — `dns_monitor.db`, журналы — `logs/`, резервные копии миграций — `backups/` рядом с базой. Для переноса базы задайте `DB_PATH`; каталог резервных копий останется рядом с новой базой. Все три расположения должны быть доступны для записи. Рабочие файлы исключены из Git.
 
-Start the long-running service with `dns-parser` (or `uv run python -m dns_shop_parser run` from a checkout). Run one city with `dns-parser-once --city-slug krasnodar`; run bot polling only with `dns-parser-bot`. A second instance exits with code 75 (exit code 75). Parse failures return 1 unless the entrypoint's lenient option is selected.
+Долгоживущую службу запускайте через `dns-parser` либо `uv run python -m dns_shop_parser run` из исходников. Для однократной обработки города используйте `dns-parser-once --city-slug krasnodar`, для отдельного опроса Telegram — `dns-parser-bot`. Второй экземпляр возвращает код `75`. При ошибке парсинга возвращается `1`, если для команды не выбран режим, допускающий ошибки.
 
-## Migrations, backups, and restore
+## Миграции, резервные копии и восстановление
 
-On opening an existing database, schema migrations run before normal work. A migration backup is created first; if migration fails, initialization raises an error and the original database is not treated as successfully upgraded. Do not delete the backup until the upgraded database has been exercised. Backups use SQLite online backup and are published only after `PRAGMA integrity_check` returns `ok`; invalid copies are removed. Retention is limited by the configured DB manager policy (10 recent backups and 30 days by default).
+При открытии существующей базы сначала выполняются миграции схемы. Перед миграцией создаётся резервная копия. Если миграция завершилась ошибкой, запуск прерывается; не считайте базу обновлённой и не удаляйте копию до проверки результата. Резервные копии создаются штатным механизмом SQLite и публикуются после успешного `PRAGMA integrity_check`; повреждённые копии удаляются. Хранение ограничено политикой менеджера БД: по умолчанию не более 10 последних копий и 30 дней.
 
-Before restoring, stop every parser/bot process. Verify a candidate without modifying live state:
+Перед восстановлением остановите все процессы парсера и бота. Проверьте кандидатную копию, не изменяя рабочую базу:
 
 ```bash
 python - <<'PY'
@@ -53,29 +59,29 @@ import sys
 sys.path.insert(0, "src")
 from dns_shop_parser.parser.db_manager import DBManager
 import os
-print(DBManager(os.environ.get("DB_PATH", "dns_monitor.db")).verify_backup("backups/<verified-backup>.db"))
+print(DBManager(os.environ.get("DB_PATH", "dns_monitor.db")).verify_backup("backups/<проверенная-копия>.db"))
 PY
 ```
 
-The command must print `True`. Copy the verified backup to a separate staging path, preserve the current database, then replace the live DB atomically where practical. Run preflight and a one-off parse before resuming the service. Never restore while SQLite is open by the application.
+Команда должна вывести `True`. Скопируйте проверенную базу в отдельное промежуточное место, сохраните действующую базу и по возможности замените её атомарно. Перед возобновлением службы запустите `preflight` и однократный парсинг. Не восстанавливайте базу, пока она открыта приложением.
 
-## Scheduler and failure behavior
+## Планировщик и обработка ошибок
 
-The scheduler claims events atomically, leaves failed events in `failed` state for retry up to the configured maximum attempts, and records the last error. Unknown event types are left untouched. The main loop resets its failure counter after a successful iteration. Repeated loop failures use exponential backoff capped at 3600 seconds; cancellation stops the loop. A parser/circuit-breaker failure is logged and delays the next attempt rather than starting overlapping work. An operator may pause/resume parsing through the admin controls; a paused parser must be resumed explicitly.
+Планировщик захватывает события атомарно. Неудачные события остаются в состоянии `failed` и повторяются до установленного предела; последняя ошибка сохраняется. Неизвестные типы событий не обрабатываются. После успешной итерации основной цикл сбрасывает счётчик ошибок. При повторяющихся сбоях задержка растёт экспоненциально, но не превышает 3600 секунд; отмена останавливает цикл. Ошибка парсера или размыкание защитного автомата записывается в журнал и откладывает следующую попытку без параллельного запуска. Через административное управление можно приостановить и возобновить парсинг; после паузы его нужно возобновить явно.
 
-Monitor `logs/` and service-manager output. Investigate repeated `failed`, `Circuit breaker`, or preflight errors before deleting state.
+Следите за `logs/` и журналом службы. До удаления состояния разберитесь с повторяющимися событиями `failed`, сообщениями `Circuit breaker` и ошибками `preflight`.
 
-## Upgrade and rollback
+## Обновление и откат
 
-1. Stop the service and record the current Git commit or wheel version.
-2. Copy the database and current `backups/` directory to protected storage.
-3. Update the checkout, run `uv sync --extra test`, `npm ci`, and browser installation as needed.
-4. Run preflight, tests, and compile verification before starting.
-5. Start the service and confirm logs show a healthy cycle; retain the migration backup.
+1. Остановите службу и запишите текущий коммит Git либо версию wheel-пакета.
+2. Сохраните базу и каталог `backups/` в защищённом месте.
+3. Обновите исходники; при необходимости выполните `uv sync --extra test`, `npm ci` и установку браузера. **Перед изменением Playwright следуйте разделу «Совместимость с Qrator».**
+4. Запустите `preflight`, тесты и проверку компиляции.
+5. Запустите службу, убедитесь в успешном цикле по журналам и сохраните резервную копию до миграции.
 
-To roll back, stop the service, check out the recorded commit (or reinstall the prior wheel), restore the last verified compatible database backup if the migration is not backward-compatible, then run preflight and a one-off parse. Restart only after verification. Keep the failed upgrade's database copy and logs for diagnosis; do not overwrite the only backup.
+Для отката остановите службу, верните записанный коммит либо прежний wheel-пакет. Если миграция несовместима с прежней схемой, восстановите последнюю проверенную совместимую копию базы. Затем запустите `preflight` и однократный парсинг; только после проверки возобновите службу. Сохраните копию базы и журналы неудачного обновления — не перезаписывайте единственный бэкап.
 
-## CI-equivalent check
+## Проверка, аналогичная CI
 
 ```bash
 uv sync --extra test --locked

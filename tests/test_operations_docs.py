@@ -21,5 +21,5 @@ def test_operations_docs_reference_real_operator_surfaces():
 
 def test_operations_docs_describe_recovery_contract():
     text = (ROOT / "docs/OPERATIONS.md").read_text(encoding="utf-8")
-    for phrase in ("migration", "integrity_check", "rollback", "backoff", "exit code 75"):
+    for phrase in ("миграц", "integrity_check", "откат", "задержк", "код `75`"):
         assert phrase in text.lower(), phrase

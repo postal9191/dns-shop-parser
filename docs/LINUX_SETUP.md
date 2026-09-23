@@ -1,8 +1,8 @@
-# Linux Setup
+# Установка в Linux
 
-## Install and preflight
+## Установка и предварительная проверка
 
-From the project root:
+Из корня проекта:
 
 ```bash
 python3 -m venv venv
@@ -15,18 +15,18 @@ uv run preflight --db dns_monitor.db --state-dir . --log-dir logs --backup-dir b
 uv run pytest -q
 ```
 
-`preflight` exits `0` only when the local runtime prerequisites pass; failures are printed to stderr. It does not poll Telegram or contact DNS Shop.
+`preflight` возвращает код `0`, только если локальные компоненты готовы. При ошибке описание выводится в stderr. Эта проверка не обращается к DNS Shop и не запускает Telegram. **Не обновляйте Playwright `1.59.0` без живого испытания Qrator и загрузки товаров на сервере.** Playwright `1.63.0` с Chromium build `1243` получал `403` на `/__qrator/validate`, в том числе с `xvfb-run`; версия `1.59.0` с build `1217` работала. Подробнее — в [разделе о совместимости с Qrator](OPERATIONS.md#совместимость-с-qrator).
 
-## Run manually
+## Ручной запуск
 
 ```bash
 uv run python -m dns_shop_parser run
 uv run python -m dns_shop_parser parse --city-slug krasnodar
 ```
 
-The installed console equivalents are `dns-parser` and `dns-parser-once`. The bot-only command is `dns-parser-bot`.
+После установки доступны `dns-parser` и `dns-parser-once`; для запуска только Telegram-бота используйте `dns-parser-bot`.
 
-## systemd helper
+## Управление службой systemd
 
 ```bash
 chmod +x scripts/dns-parser.sh
@@ -35,8 +35,8 @@ sudo systemctl status dns-parser
 journalctl -u dns-parser -f
 ```
 
-The helper resolves the project root and the generated unit runs the package from `src`. A second instance exits `75`; ordinary parse failure exits `1`.
+Скрипт определяет корень проекта и запускает пакет из `src`. Если второй экземпляр уже запущен, он возвращает код `75`; при обычной ошибке парсинга — `1`.
 
-## State, backups, and recovery
+## Состояние, резервные копии и восстановление
 
-The default database is `dns_monitor.db`, logs are in `logs/`, and migration backups are in `backups/` beside the database. SQLite uses WAL, a 5000 ms busy timeout, foreign keys, and online backups validated with `PRAGMA integrity_check`. Stop the service before restoring a verified backup. Migration errors abort startup; retain the pre-migration backup. For scheduler failed-event retries, exponential backoff, pause/resume, upgrade, and rollback, follow [`OPERATIONS.md`](OPERATIONS.md).
+По умолчанию база данных находится в `dns_monitor.db`, журналы — в `logs/`, резервные копии миграций — в `backups/` рядом с базой. SQLite использует WAL, тайм-аут ожидания блокировки 5000 мс и внешние ключи. Резервные копии создаются через механизм SQLite и проверяются командой `PRAGMA integrity_check`. Перед восстановлением проверенной копии остановите службу. Ошибка миграции прерывает запуск: сохраните копию, созданную до миграции. Повторы задач, задержки планировщика, пауза и возобновление, обновление и откат описаны в [`OPERATIONS.md`](OPERATIONS.md).
