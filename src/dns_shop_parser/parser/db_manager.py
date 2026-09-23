@@ -126,7 +126,7 @@ class DBManager:
             and self.db_path.exists()
             and self.db_path.stat().st_size > 0
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS products (
                     id TEXT PRIMARY KEY,
@@ -374,7 +374,6 @@ class DBManager:
             if user_cat_cols and (
                 "city_slug" not in user_cat_cols or user_cat_pk != expected_user_cat_pk
             ):
-                self._backup_db(conn)
                 conn.execute("ALTER TABLE user_categories RENAME TO user_categories_old")
                 conn.execute("""
                     CREATE TABLE user_categories (
@@ -390,8 +389,9 @@ class DBManager:
                 if has_city and has_name:
                     conn.execute("""
                         INSERT INTO user_categories (user_id, city_slug, category_id, category_name)
-                        SELECT user_id, city_slug, category_id, category_name
+                        SELECT user_id, city_slug, category_id, MAX(category_name)
                         FROM user_categories_old
+                        GROUP BY user_id, city_slug, category_id
                     """)
                 elif has_city and not has_name:
                     conn.execute("""
@@ -545,7 +545,7 @@ class DBManager:
 
     def get_global_setting(self, key: str, default: str = "") -> str:
         """Получить значение глобальной настройки."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT value FROM global_settings WHERE key = ?", (key,)
             ).fetchone()
@@ -553,7 +553,7 @@ class DBManager:
 
     def set_global_setting(self, key: str, value: str) -> None:
         """Установить значение глобальной настройки."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO global_settings (key, value) VALUES (?, ?)",
                 (key, value),
@@ -574,7 +574,7 @@ class DBManager:
         # Все продукты одного вызова принадлежат одному городу
         city_slug = products[0].city_slug
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             # Batch-SELECT с фильтром по городу
             uuids = [p.uuid for p in products]
             placeholders = ",".join("?" * len(uuids))
@@ -595,7 +595,7 @@ class DBManager:
                         prod.category_id, prod.category_name, prod.status, now, now, prod.uuid, prod.city_slug,
                     ))
                     if existing[prod.uuid] != prod.price:
-                        price_history_rows.append((prod.uuid, prod.price, now))
+                        price_history_rows.append((prod.id, prod.price, now))
                         price_changes.append({
                             "title": prod.title,
                             "url": prod.url,
@@ -644,7 +644,7 @@ class DBManager:
     def delete_all_products_in_category(self, category_id: str, city_slug: str) -> int:
         """Помечает категорию и ее товары купленными/исчезнувшими, не удаляя историю."""
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 """
                 UPDATE products
@@ -677,7 +677,7 @@ class DBManager:
             return 0
         now = self._now_msk()
         placeholders = ",".join("?" * len(current_uuids))
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 f"""
                 UPDATE products
@@ -695,7 +695,7 @@ class DBManager:
 
     def get_product_count(self, include_sold: bool = False, city_slug: str | None = None) -> int:
         """Возвращает количество товаров в БД, опционально с фильтром по городу."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             where_clauses: list[str] = []
             params: list[str] = []
             if not include_sold:
@@ -714,7 +714,7 @@ class DBManager:
         self, category_id: str, city_slug: str = None
     ) -> list[Product]:
         """Получает товары по категории. Если city_slug задан — только для этого города."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             if city_slug is not None:
                 cursor = conn.execute("""
                     SELECT id, uuid, title, url, category_id, category_name,
@@ -754,7 +754,7 @@ class DBManager:
             params.append(city_slug)
         params.append(50)  # LIMIT
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 f"""
                 SELECT id, title, current_price, previous_price,
@@ -784,7 +784,7 @@ class DBManager:
 
     def get_category_state(self, category_id: str, city_slug: str) -> dict | None:
         """Получает последнее состояние категории для указанного города."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute("""
                 SELECT category_id, category_name, last_product_count, uuid_hash,
                        last_checked_at, is_sold, sold_at, seen_at
@@ -818,7 +818,7 @@ class DBManager:
         if uuids is not None:
             uuid_hash = hashlib.sha256(json.dumps(sorted(uuids)).encode()).hexdigest()
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO category_state
                 (category_id, city_slug, category_name, last_product_count, uuid_hash,
@@ -837,7 +837,7 @@ class DBManager:
         if not all_product_ids:
             return []
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             placeholders = ",".join("?" * len(all_product_ids))
             cursor = conn.execute(
                 f"""
@@ -861,7 +861,7 @@ class DBManager:
     ) -> None:
         """Добавляет или реактивирует подписчика. subscribed_at пишется только при первой вставке."""
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO telegram_subscribers
                     (user_id, first_name, last_name, username, language_code, is_active, subscribed_at, updated_at)
@@ -879,7 +879,7 @@ class DBManager:
     def remove_telegram_subscriber(self, user_id: str) -> None:
         """Помечает подписчика неактивным (не удаляет из БД)."""
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute("""
                 UPDATE telegram_subscribers SET is_active = 0, updated_at = ? WHERE user_id = ?
             """, (now, user_id))
@@ -887,7 +887,7 @@ class DBManager:
 
     def get_telegram_subscribers(self, limit: int | None = None, offset: int = 0) -> list[str]:
         """Получает активных подписчиков с поддержкой пагинации."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             if limit is not None:
                 cursor = conn.execute(
                     "SELECT user_id FROM telegram_subscribers WHERE is_active = 1 ORDER BY user_id LIMIT ? OFFSET ?",
@@ -901,14 +901,14 @@ class DBManager:
 
     def count_telegram_subscribers(self) -> int:
         """Возвращает количество активных подписчиков."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM telegram_subscribers WHERE is_active = 1")
             return cursor.fetchone()[0]
 
     def get_all_category_states(self, city_slug: str = None) -> dict[str, int]:
         """Возвращает {category_id: last_product_count} для активных категорий в БД.
         Если city_slug задан — только для этого города."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             if city_slug is not None:
                 cursor = conn.execute("""
                     SELECT category_id, last_product_count FROM category_state
@@ -961,7 +961,7 @@ class DBManager:
         params.append(limit)
 
         placeholders = ",".join("?" * len(statuses))
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 f"""
                 SELECT title, url, current_price, previous_price, status, category_name,
@@ -1028,7 +1028,7 @@ class DBManager:
         params.append(limit)
 
         placeholders = ",".join("?" * len(statuses))
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 f"""
                 SELECT title, url, current_price, previous_price, status, category_name, created_at
@@ -1091,7 +1091,7 @@ class DBManager:
         params.append(limit)
 
         placeholders = ",".join("?" * len(statuses))
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 f"""
                 SELECT title, url, current_price, previous_price, status, category_name, sold_at
@@ -1129,7 +1129,7 @@ class DBManager:
         if city_slug is not None:
             params.append(city_slug)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 f"""
                 SELECT id, title, url, current_price, previous_price, category_name,
@@ -1170,7 +1170,7 @@ class DBManager:
 
     def upsert_user_settings(self, user_id: str, **kwargs) -> None:
         """Создает или обновляет настройки пользователя."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute("INSERT OR IGNORE INTO user_settings (user_id) VALUES (?)", (user_id,))
             for key, value in kwargs.items():
                 sql = self._SETTING_SQLS.get(key)
@@ -1180,7 +1180,7 @@ class DBManager:
 
     def get_user_settings(self, user_id: str) -> dict | None:
         """Получает настройки пользователя."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute("""
                 SELECT user_id, city_slug, plan_type, notify_new, notify_price_drop,
                        min_price_drop_pct, notifications_on,
@@ -1204,7 +1204,7 @@ class DBManager:
 
     def get_all_subscribers_with_settings(self) -> list[dict]:
         """Возвращает всех подписчиков с их настройками (дефолты если настроек нет)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute("""
                 SELECT ts.user_id,
                        COALESCE(us.city_slug, 'moscow') AS city_slug,
@@ -1238,7 +1238,7 @@ class DBManager:
 
     def get_active_users_with_plan_types(self) -> list[dict]:
         """Returns active Telegram users for admin plan management."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute("""
                 SELECT ts.user_id,
                        COALESCE(ts.username, '') AS username,
@@ -1269,7 +1269,7 @@ class DBManager:
 
     def set_user_categories(self, user_id: str, category_ids: list[str], city_slug: str) -> None:
         """Устанавливает выбранные категории (пустой список = все категории)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute("DELETE FROM user_categories WHERE user_id = ? AND city_slug = ?", (user_id, city_slug))
             if category_ids:
                 placeholders = ",".join("?" * len(category_ids))
@@ -1289,7 +1289,7 @@ class DBManager:
 
     def get_user_categories(self, user_id: str, city_slug: str) -> list[str]:
         """Получает выбранные категории пользователя (пусто = все)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 "SELECT category_id FROM user_categories WHERE user_id = ? AND city_slug = ?",
                 (user_id, city_slug),
@@ -1325,7 +1325,7 @@ class DBManager:
 
     def get_all_known_categories(self, city_slug: str | None = None) -> list[dict]:
         """Получает активные категории из category_state (заполняется при парсинге)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             if city_slug is None:
                 cursor = conn.execute(
                     """
@@ -1349,7 +1349,7 @@ class DBManager:
 
     def get_sold_known_categories(self, city_slug: str | None = None) -> list[dict]:
         """Получает категории, связанные с историей купленных/исчезнувших товаров."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             if city_slug is None:
                 cursor = conn.execute(
                     """
@@ -1391,7 +1391,7 @@ class DBManager:
     ) -> bool:
         """Consumes one free report quota for a user/category/report-type/day. Returns True if limit not exceeded (< 3)."""
         now = self._now_msk()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             # Сначала проверяем текущее использование
             cursor = conn.execute(
                 """
@@ -1433,7 +1433,7 @@ class DBManager:
             return True
 
     def get_report_limit_usage(self, user_id: str, category_id: str, report_type: str, date_msk: str) -> int:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 """
                 SELECT used_count FROM report_limits
@@ -1464,7 +1464,7 @@ class DBManager:
     ) -> str:
         now = self._now_msk()
         event_key = self._event_key(event_type, date_msk, user_id, subject_id)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO scheduled_events
@@ -1477,7 +1477,7 @@ class DBManager:
         return event_key
 
     def has_scheduled_event_history(self, include_maintenance: bool = True) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             if include_maintenance:
                 cursor = conn.execute("SELECT 1 FROM scheduled_events LIMIT 1")
             else:
@@ -1492,7 +1492,7 @@ class DBManager:
             return cursor.fetchone() is not None
 
     def has_scheduled_event_type(self, event_type: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 "SELECT 1 FROM scheduled_events WHERE event_type = ? LIMIT 1",
                 (event_type,),
@@ -1557,7 +1557,7 @@ class DBManager:
             return cursor.rowcount > 0
 
     def get_scheduled_events(self, event_type: str, date_msk: str) -> list[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 """
                 SELECT event_key, event_type, date_msk, user_id, subject_id, run_at_utc, status, attempts, last_error, processed_at
@@ -1624,7 +1624,7 @@ class DBManager:
             )
 
     def get_scheduled_event(self, event_key: str) -> dict | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             cursor = conn.execute(
                 """
                 SELECT event_key, event_type, date_msk, user_id, subject_id, run_at_utc, status, attempts, last_error, processed_at
@@ -1658,7 +1658,7 @@ class DBManager:
         limit: int = 200,
     ) -> tuple[list[dict], list[dict]]:
         """Returns new products and price drops inside explicit UTC bounds for one city."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             category_filter = ""
             category_params: list[str] = []
             if category_ids:
@@ -1733,7 +1733,7 @@ class DBManager:
         limit: int = 100,
     ) -> tuple[list[dict], list[dict]]:
         """Returns current fresh data for digest: new products and price drops without date restrictions."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._conn() as conn:
             # Базовые условия для фильтрации
             base_conditions = "city_slug = ? AND is_sold = 0"
             base_params = [city_slug]

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -9,6 +10,58 @@ from dns_shop_parser.parser.models import Product
 
 
 class TestDBManagerInit:
+    def test_user_categories_schema_is_unique_on_disk_database(self, tmp_path):
+        db = DBManager(str(tmp_path / "categories.db"))
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute(
+                "INSERT INTO user_categories (user_id, city_slug, category_id) VALUES (?, ?, ?)",
+                ("u", "moscow", "c"),
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO user_categories (user_id, city_slug, category_id) VALUES (?, ?, ?)",
+                    ("u", "moscow", "c"),
+                )
+        db.close()
+
+    def test_legacy_duplicate_user_categories_are_deduplicated(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE user_categories (user_id TEXT, city_slug TEXT, category_id TEXT, category_name TEXT)")
+            conn.executemany("INSERT INTO user_categories VALUES (?, ?, ?, ?)", [("u", "moscow", "c", "old"), ("u", "moscow", "c", "new")])
+        db = DBManager(str(path))
+        with sqlite3.connect(path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM user_categories").fetchone()[0] == 1
+        db.close()
+
+    def test_all_runtime_connections_use_sqlite_safety_pragmas(self, tmp_path):
+        db = DBManager(str(tmp_path / "pragmas.db"))
+        db.set_user_categories("u", [], "moscow")
+        with db._conn() as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        db.close()
+
+    def test_concurrent_toggles_leave_deterministic_membership(self, tmp_path):
+        path = str(tmp_path / "concurrent.db")
+        DBManager(path).close()
+        barrier = threading.Barrier(2)
+        results = []
+
+        def toggle():
+            db = DBManager(path)
+            barrier.wait()
+            results.append(db.toggle_user_category("u", "c", "moscow"))
+            db.close()
+
+        threads = [threading.Thread(target=toggle) for _ in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join()
+        db = DBManager(path)
+        assert sorted(results) == [False, True]
+        assert db.get_user_categories("u", "moscow") == []
+        db.close()
     def test_init_creates_tables(self, db_memory):
         """_init_db создаёт все необходимые таблицы."""
         conn = sqlite3.connect(":memory:")
