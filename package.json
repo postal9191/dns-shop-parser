@@ -5,10 +5,11 @@
   "private": true,
   "scripts": {
     "test:qrator": "node scripts/solve_qrator.js",
+    "smoke:qrator": "node -e \"require('playwright'); require('playwright-extra'); console.log('Qrator dependencies available')\"",
     "collect:cities": "node scripts/collect_cities.js"
   },
   "dependencies": {
-    "playwright": "^1.40.0",
-    "playwright-extra": "^4.3.6"
+    "playwright": "1.63.0",
+    "playwright-extra": "4.3.6"
   }
 }

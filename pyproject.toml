@@ -10,9 +10,16 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Postal" }]
 dependencies = [
-  "aiohttp==3.9.1",
+  "aiohttp==3.13.4",
   "tenacity==8.2.3",
-  "python-dotenv==1.0.0",
+  "python-dotenv==1.2.1",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==9.0.3",
+  "pytest-asyncio==1.3.0",
+  "tzdata==2025.3",
 ]
 
 [project.scripts]
@@ -26,3 +33,6 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["dns_shop_parser*"]
+
+[tool.setuptools.package-data]
+dns_shop_parser = ["resources/solve_qrator.js"]

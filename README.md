@@ -15,7 +15,7 @@
 ## Быстрый старт
 
 ```bash
-npm install
+npm ci
 npx playwright install chromium
 pip install -r requirements.txt
 cp .env.example .env
@@ -58,8 +58,8 @@ PYTHONPATH=src python -m dns_shop_parser bot
 node scripts/solve_qrator.js
 npm run collect:cities
 
-pip install -r tests/requirements-test.txt
-pytest -q
+uv sync --extra test
+uv run pytest -q
 ```
 
 ## Структура проекта
@@ -169,9 +169,13 @@ SQLite (`dns_monitor.db`) с WAL-режимом и автоматическим�
 ## Тесты
 
 ```bash
-pytest -q                    # быстрый прогон
-pytest --cov=dns_shop_parser # с покрытием
+uv sync --extra test
+uv run pytest -q                    # быстрый прогон
+uv run pytest --cov=dns_shop_parser # с покрытием
 ```
+
+`pyproject.toml` — единственный источник Python-зависимостей для тестов;
+`tests/requirements-test.txt` оставлен только как совместимая точка входа для `pip`.
 
 Текущее покрытие: ~70% (branch coverage).
 
