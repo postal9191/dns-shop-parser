@@ -3,6 +3,7 @@
 Не зависит от состояния бота, базы данных или асинхронных операций.
 """
 from typing import Optional
+from html import escape as html_escape
 
 _MAX_SEARCH_LEN = 60
 _VALID_REPORT_PCTS = {10, 20, 30, 40, 50, 60, 70, 80, 90}
@@ -67,7 +68,7 @@ def format_user_status_text(
 
     return (
         f"📋 <b>Ваши настройки</b>\n\n"
-        f"🏙 Город: {city_name}\n"
+        f"🏙 Город: {html_escape(str(city_name), quote=False)}\n"
         f"📂 Категории: {cat_text}\n"
         f"🔔 Уведомления: {notif_text}\n"
         f"🆕 Новые товары: {new_text}\n"

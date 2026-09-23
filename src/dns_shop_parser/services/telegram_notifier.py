@@ -403,7 +403,7 @@ class TelegramNotifier:
         city_name: str = "",
     ) -> None:
         """Отправляет админу сводку о завершённом цикле парсинга."""
-        city_header = f" — {city_name}" if city_name else ""
+        city_header = f" — {html_escape(city_name, quote=False)}" if city_name else ""
         delta_str = f"(+{delta})" if delta > 0 else f"({delta})" if delta < 0 else "(0)"
         text = (
             f"📋 <b>Парсинг завершён{city_header}</b>\n"

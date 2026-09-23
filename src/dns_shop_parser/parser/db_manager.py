@@ -222,8 +222,9 @@ class DBManager:
                     try:
                         conn.execute(sql)
                         logger.info("Добавлен столбец %s в таблицу products", col)
-                    except sqlite3.OperationalError:
-                        pass
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" not in str(exc).lower():
+                            raise RuntimeError("schema migration failed") from exc
 
             # Идемпотентный бэкфилл: заполнить пустые city_slug при каждом старте
             # (страховка если первая миграция прошла без default_city_slug)
@@ -298,8 +299,9 @@ class DBManager:
                     try:
                         conn.execute(sql)
                         logger.info("Добавлен столбец %s в таблицу category_state", col)
-                    except sqlite3.OperationalError:
-                        pass
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column name" not in str(exc).lower():
+                            raise RuntimeError("schema migration failed") from exc
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_subscribers (
