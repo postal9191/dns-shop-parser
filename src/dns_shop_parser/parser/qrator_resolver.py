@@ -447,9 +447,8 @@ async def resolve_qrator_cookies(user_agent: str | None = None, retry_count: int
                 cookies = json.loads(cookies_json)
                 jsid2 = cookies.get("qrator_jsid2", "")
                 logger.info(
-                    "[QRATOR] Qrator solved, imported cookies: %d (jsid2=%s...)",
+                    "[QRATOR] Qrator solved, imported cookies: %d",
                     len(cookies),
-                    jsid2[:16] if jsid2 else "(missing)",
                 )
                 return cookies
             except json.JSONDecodeError as exc:

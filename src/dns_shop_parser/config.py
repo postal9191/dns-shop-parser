@@ -23,6 +23,9 @@ class Config:
     qrator_node_timeout: float
     qrator_proxy_check_timeout: float
 
+    backup_retention_count: int = 10
+    backup_retention_days: int = 30
+
     # Параллельная обработка
     parse_concurrency: int = 3
 

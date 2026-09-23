@@ -146,7 +146,19 @@ class DailyScheduler:
     async def run_forever(self, interval_seconds: int = 300) -> None:
         import asyncio
 
+        failures = 0
         while True:
-            self.ensure_due_events()
-            await self.process_pending_events()
+            try:
+                self.ensure_due_events()
+                await self.process_pending_events()
+                failures = 0
+            except asyncio.CancelledError:
+                logger.info("[SCHEDULER] cancellation requested")
+                raise
+            except Exception:
+                failures += 1
+                delay = min(interval_seconds, 2 ** min(failures, 6))
+                logger.exception("[SCHEDULER] iteration failed; retrying in %ss", delay)
+                await asyncio.sleep(delay)
+                continue
             await asyncio.sleep(interval_seconds)

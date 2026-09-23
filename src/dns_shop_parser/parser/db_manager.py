@@ -78,13 +78,14 @@ class DBManager:
 
         try:
             backup_conn = sqlite3.connect(str(backup_path))
-            conn.backup(backup_conn)
-
-            # Integrity check на backup-копии
-            result = backup_conn.execute("PRAGMA integrity_check").fetchone()
-            backup_conn.close()
+            try:
+                conn.backup(backup_conn)
+                result = backup_conn.execute("PRAGMA integrity_check").fetchone()
+            finally:
+                backup_conn.close()
 
             if result and result[0] == "ok":
+                self._prune_backups(backup_dir)
                 logger.info("Создан бэкап БД (integrity ok): %s", backup_path)
             else:
                 # Удаляем битый backup
@@ -93,6 +94,29 @@ class DBManager:
         except Exception as exc:
             logger.error("Ошибка при создании бэкапа БД: %s", exc)
             backup_path.unlink(missing_ok=True)
+
+    def _prune_backups(self, backup_dir: Path) -> None:
+        """Keep only recent, validly named database backups."""
+        files = sorted(
+            (p for p in backup_dir.glob(f"{self.db_path.stem}_backup_*.db") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        cutoff = datetime.now().timestamp() - (30 * 86400)
+        for path in files[10:]:
+            if path.stat().st_mtime < cutoff or len(files) > 10:
+                path.unlink(missing_ok=True)
+
+    def verify_backup(self, backup_path: str | Path) -> bool:
+        """Verify a backup copy without modifying the live database."""
+        path = Path(backup_path)
+        if not path.is_file():
+            return False
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                return conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        except sqlite3.Error:
+            return False
 
     def _init_db(self) -> None:
         """Создает таблицы если их нет. Создает бэкап только перед реальными миграциями."""
