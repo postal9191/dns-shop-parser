@@ -118,6 +118,19 @@ class TestRunCommand:
         result = _run_command(["/nonexistent_binary_12345"])
         assert result is None
 
+    def test_preserves_non_utf8_output_without_decode_warning(self):
+        result = _run_command(
+            [
+                "python",
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'\\xff\\xfe\\n')",
+            ]
+        )
+
+        assert result is not None
+        assert result.returncode == 0
+        assert "\ufffd" in result.stdout
+
 
 class TestCheckNodeHealth:
     """Тесты для check_node_health."""

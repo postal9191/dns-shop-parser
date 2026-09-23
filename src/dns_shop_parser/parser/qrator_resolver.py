@@ -92,6 +92,8 @@ def _run_command(command: list[str], timeout: float = 10.0) -> subprocess.Comple
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
