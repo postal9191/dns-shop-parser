@@ -79,6 +79,14 @@ class DBManager:
         try:
             backup_conn = sqlite3.connect(str(backup_path))
             try:
+                # КРИТИЧНО: закрываем write-транзакцию до backup. Иначе SQLite
+                # перезапускает копирование при каждом изменении и backup виснет
+                # навсегда (conn.backup() блокирует SHARED-лок, который держит
+                # та же транзакция). Побочный эффект: миграция, вызвавшая бэкап,
+                # фиксируется раньше — это допустимо, бэкап всё равно снимается
+                # до её следующих шагов.
+                if conn.in_transaction:
+                    conn.commit()
                 conn.backup(backup_conn)
                 result = backup_conn.execute("PRAGMA integrity_check").fetchone()
             finally:
@@ -145,15 +153,43 @@ class DBManager:
             cursor = conn.execute("PRAGMA table_info(products)")
             product_cols = [row[1] for row in cursor.fetchall()]
 
+            # price_history ключуется по product_uuid, а не по products.id.
+            # products.id — контейнерный id DNS (as-XXXX), он меняется от ответа
+            # к ответу; ссылка на него рвала FK при каждом обновлении товара.
+            # uuid стабилен и уникален в паре (uuid, city_slug), а товары не
+            # удаляются физически (только is_sold), поэтому FK тут не нужен.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     product_id TEXT NOT NULL,
                     price INTEGER,
-                    timestamp TEXT,
-                    FOREIGN KEY (product_id) REFERENCES products (id)
+                    timestamp TEXT
                 )
             """)
+            # Переезд с products.id на uuid: FK убираем, данные сохраняем.
+            history_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='price_history'"
+            ).fetchone()[0] or ""
+            if "FOREIGN KEY" in history_sql:
+                if is_existing_db:
+                    self._backup_db(conn)
+                conn.execute("ALTER TABLE price_history RENAME TO price_history_old")
+                conn.execute("""
+                    CREATE TABLE price_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_id TEXT NOT NULL,
+                        price INTEGER,
+                        timestamp TEXT
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO price_history (id, product_id, price, timestamp)
+                    SELECT id, product_id, price, timestamp FROM price_history_old
+                """)
+                conn.execute("DROP TABLE price_history_old")
+                logger.info(
+                    "price_history: внешний ключ на products.id убран, ключ — product_uuid"
+                )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS category_state (
                     category_id TEXT PRIMARY KEY,
@@ -476,6 +512,23 @@ class DBManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_products_is_sold ON products(is_sold)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_category_state_is_sold ON category_state(is_sold)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_price_history_product_id ON price_history(product_id)")
+            # Осиротевших строк быть не должно: ключ истории — uuid, а не products.id.
+            # Проверяем и чистим на случай базы, где остались строки по старой схеме.
+            orphans = conn.execute("""
+                SELECT COUNT(*) FROM price_history
+                WHERE product_id IN (SELECT id FROM products)
+            """).fetchone()[0]
+            if orphans:
+                conn.execute("""
+                    UPDATE price_history
+                    SET product_id = (
+                        SELECT p.uuid FROM products p WHERE p.id = price_history.product_id
+                    )
+                    WHERE product_id IN (SELECT id FROM products)
+                """)
+                logger.info(
+                    "price_history: %d записей переведены с products.id на product_uuid", orphans
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_events_status ON scheduled_events(status, event_type, date_msk)")
             cursor = conn.execute("PRAGMA table_info(scheduled_events)")
             scheduled_cols = [row[1] for row in cursor.fetchall()]
@@ -590,17 +643,19 @@ class DBManager:
 
             for prod in products:
                 if prod.uuid in existing:
+                    old_price = existing[prod.uuid]
+                    # products.id не трогаем: контейнерный id DNS меняется от ответа к ответу
                     update_rows.append((
-                        prod.id, prod.title, prod.price, prod.price_old,
+                        prod.title, prod.price, prod.price_old,
                         prod.category_id, prod.category_name, prod.status, now, now, prod.uuid, prod.city_slug,
                     ))
-                    if existing[prod.uuid] != prod.price:
-                        price_history_rows.append((prod.id, prod.price, now))
+                    if old_price != prod.price:
+                        price_history_rows.append((prod.uuid, prod.price, now))
                         price_changes.append({
                             "title": prod.title,
                             "url": prod.url,
                             "new_price": prod.price,
-                            "old_price": existing[prod.uuid],
+                            "old_price": old_price,
                             "price_old": prod.price_old,
                             "status": prod.status,
                             "category_id": prod.category_id,
@@ -616,7 +671,7 @@ class DBManager:
             if update_rows:
                 conn.executemany("""
                     UPDATE products
-                    SET id = ?, title = ?, current_price = ?, previous_price = ?,
+                    SET title = ?, current_price = ?, previous_price = ?,
                         category_id = ?, category_name = ?, status = ?,
                         is_sold = 0, sold_at = NULL, updated_at = ?, seen_at = ?
                     WHERE uuid = ? AND city_slug = ?

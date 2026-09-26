@@ -151,6 +151,105 @@ class TestDBManagerUpsertProducts:
         assert row[1].endswith("+03:00")
         assert row[2].endswith("+03:00")
 
+    def test_upsert_survives_new_container_id_with_existing_history(self, db_memory, sample_product):
+        """DNS отдаёт новый контейнерный id для того же uuid — обновление не должно падать.
+
+        Регресс на FOREIGN KEY constraint failed: products.id переписывался
+        контейнерным id, на который ссылается price_history.
+        """
+        db_memory.upsert_products([sample_product])
+
+        # Цена изменилась — появилась запись в price_history со старым products.id
+        price_changed = Product(
+            id=sample_product.id,
+            uuid=sample_product.uuid,
+            title=sample_product.title,
+            price=40000,
+            price_old=sample_product.price_old,
+            url=sample_product.url,
+            city_slug=sample_product.city_slug,
+        )
+        db_memory.upsert_products([price_changed])
+
+        # Следующий ответ DNS: тот же uuid, но уже другой контейнерный id
+        new_container = Product(
+            id="as-DIFFERENT",
+            uuid=sample_product.uuid,
+            title=sample_product.title,
+            price=35000,
+            price_old=40000,
+            url=sample_product.url,
+            city_slug=sample_product.city_slug,
+        )
+        upserted, changes = db_memory.upsert_products([new_container])
+
+        assert upserted == 1
+        assert len(changes) == 1
+        assert changes[0]["new_price"] == 35000
+        assert changes[0]["old_price"] == 40000
+
+        with sqlite3.connect(db_memory.db_path) as conn:
+            row = conn.execute(
+                "SELECT id, current_price FROM products WHERE uuid = ?",
+                (sample_product.uuid,),
+            ).fetchone()
+            history = conn.execute(
+                "SELECT product_id, price FROM price_history ORDER BY id"
+            ).fetchall()
+
+        # products.id остался стабильным, цена обновилась
+        assert row[0] == sample_product.id
+        assert row[1] == 35000
+        # история цела и ключуется по uuid, а не по контейнерному id
+        assert history == [
+            (sample_product.uuid, 40000),
+            (sample_product.uuid, 35000),
+        ]
+
+    def test_price_history_migrates_from_products_id_to_uuid(self, tmp_path, sample_product):
+        """Старая схема (FK на products.id) переезжает на uuid без потери строк."""
+        path = tmp_path / "fk_schema.db"
+        db = DBManager(str(path))
+        db.upsert_products([sample_product])
+        db.close()
+
+        # Возвращаем legacy-схему с FK и дописываем строку по products.id
+        with sqlite3.connect(path) as conn:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.executescript("""
+                DROP TABLE price_history;
+                CREATE TABLE price_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id TEXT NOT NULL,
+                    price INTEGER,
+                    timestamp TEXT,
+                    FOREIGN KEY (product_id) REFERENCES products (id)
+                );
+            """)
+            conn.execute(
+                "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?)",
+                (sample_product.id, 12345, "2026-01-01T00:00:00+03:00"),
+            )
+            conn.execute(
+                "INSERT INTO price_history (product_id, price, timestamp) VALUES (?, ?, ?)",
+                (sample_product.uuid, 22222, "2026-01-02T00:00:00+03:00"),
+            )
+            conn.commit()
+
+        DBManager(str(path)).close()
+
+        with sqlite3.connect(path) as conn:
+            rows = conn.execute(
+                "SELECT product_id, price FROM price_history ORDER BY price"
+            ).fetchall()
+            schema = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='price_history'"
+            ).fetchone()[0]
+
+        # FK убран, обе строки сохранены и переведены на uuid
+        assert "FOREIGN KEY" not in schema
+        assert rows == [(sample_product.uuid, 12345), (sample_product.uuid, 22222)]
+
 
 class TestDBManagerDeleteProducts:
     def test_delete_products_not_in_uuids(self, db_memory, sample_product, sample_product_no_discount):

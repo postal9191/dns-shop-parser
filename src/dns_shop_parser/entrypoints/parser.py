@@ -256,6 +256,7 @@ class DNSMonitorBrowserless:
             logger.info("[PARSE] Параллельная обработка: %d потоков", concurrency)
             all_price_changes: list = []
             all_new_products: list = []
+            errors: list[str] = []
 
             async def process_category_with_semaphore(i: int, cat) -> tuple[int, int]:
                 async with semaphore:
@@ -266,18 +267,26 @@ class DNSMonitorBrowserless:
                         return (new_prods, upd)
                     except Exception as exc:
                         logger.error("[PARSE]   ERR Ошибка при загрузке категории %d/%d: %s", i, len(categories), exc)
+                        errors.append(f"{i}/{len(categories)} {cat.label}: {exc}")
                         return (0, 0)
 
             tasks = [process_category_with_semaphore(i, cat) for i, cat in enumerate(categories, 1)]
             results = await asyncio.gather(*tasks)
 
-            # Считаем проваленные категории: (0, 0) = ошибка
-            failed_count = sum(1 for r in results if r == (0, 0))
-            if failed_count > 0:
-                logger.warning("[PARSE] ⚠️ %d из %d категорий не обработаны", failed_count, len(categories))
-                await self.tg.send_admin_alert(
-                    f"⚠️ Парсер: {failed_count}/{len(categories)} категорий не обработаны"
+            # (0, 0) бывает и у legitimately пустых категорий, поэтому успех цикла
+            # определяем по списку пойманных исключений, а не по нулевым результатам.
+            empty_count = sum(1 for r in results if r == (0, 0))
+            if errors:
+                logger.warning(
+                    "[PARSE] ⚠️ %d из %d категорий завершились ошибкой (%d без новых данных)",
+                    len(errors), len(categories), empty_count - len(errors),
                 )
+                await self.tg.send_admin_alert(
+                    f"⚠️ Парсер: {len(errors)}/{len(categories)} категорий завершились ошибкой. "
+                    f"Первая: {errors[0][:200]}"
+                )
+            else:
+                logger.debug("[PARSE] Все категории обработаны без ошибок")
 
             total_new_products = sum(r[0] for r in results)
             total_updated = sum(r[1] for r in results)
@@ -328,7 +337,9 @@ class DNSMonitorBrowserless:
                     delta - total_new_products,
                 )
 
-            return True
+            # Частичный цикл (есть категории с ошибками) — не считаем успешным,
+            # иначе раннер зелёным отметит цикл, где половина товаров не сохранилась.
+            return not errors
 
         except Exception as exc:
             logger.error("[PARSE] ERR Критическая ошибка в цикле парсинга: %s", exc)
