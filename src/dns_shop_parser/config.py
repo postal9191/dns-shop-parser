@@ -29,6 +29,13 @@ class Config:
     # Параллельная обработка
     parse_concurrency: int = 3
 
+    # Rate limiting — минимальная/максимальная пауза между запросами (сек)
+    request_delay_min: float = 1.5
+    request_delay_max: float = 4.0
+
+    # Таймаут одного HTTP-запроса (сек)
+    timeout_total: int = 15
+
     # Эндпоинты DNS (паттерн по аналогии с products-filters)
     filters_path: str = "/catalogMarkdown/markdown/products-filters/"
     products_path: str = "/catalogMarkdown/markdown/products/"
@@ -63,6 +70,9 @@ class Config:
             db_path=os.getenv("DB_PATH", "dns_monitor.db"),
             parse_interval=int(os.getenv("PARSE_INTERVAL") or "3600"),  # 1 час
             parse_concurrency=int(os.getenv("PARSE_CONCURRENCY") or "5"),
+            request_delay_min=float(os.getenv("REQUEST_DELAY_MIN") or "1.5"),
+            request_delay_max=float(os.getenv("REQUEST_DELAY_MAX") or "4.0"),
+            timeout_total=int(os.getenv("TIMEOUT_TOTAL") or "15"),
             max_retries=int(os.getenv("MAX_RETRIES") or "4"),
             retry_delay=float(os.getenv("RETRY_DELAY") or "5.0"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),  # INFO, DEBUG

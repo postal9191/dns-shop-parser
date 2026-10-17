@@ -10,6 +10,7 @@
 
 import asyncio
 import platform
+import random
 import re
 
 import aiohttp
@@ -232,6 +233,7 @@ class SessionManager:
         self._proxy_pool: ProxyPool | None = None
         self._proxy_semaphore: asyncio.Semaphore | None = None
         self._native_semaphore = asyncio.Semaphore(2)  # строго 2 при fallback
+        self._last_request_time: float = 0.0
 
         if config.proxy_enabled():
             self._proxy_pool = ProxyPool(
@@ -381,7 +383,7 @@ class SessionManager:
         """Вызывает REST API DNS для установки города."""
         logger.debug("[SESSION] Устанавливаю город через REST API")
 
-        connector = aiohttp.TCPConnector(ssl=True, limit=5)
+        connector = aiohttp.TCPConnector(ssl=True, limit=config.parse_concurrency + 1)
         temp_session = aiohttp.ClientSession(connector=connector)
 
         try:
@@ -441,7 +443,7 @@ class SessionManager:
             if not self._initialized:
                 await self._init_session()
 
-            connector = aiohttp.TCPConnector(ssl=True, limit=5)
+            connector = aiohttp.TCPConnector(ssl=True, limit=config.parse_concurrency + 1)
             try:
                 # ВАЖНО: DummyCookieJar — aiohttp НЕ должен управлять куками за нас.
                 # Куки отправляем вручную через Cookie header.
@@ -563,6 +565,15 @@ class SessionManager:
             session = await self.get_session()
             return await session.request(method, url, headers=headers, **kwargs)
 
+    async def _apply_rate_limit(self):
+        """Ограничивает частоту запросов к DNS (jitter между запросами)."""
+        now = asyncio.get_running_loop().time()
+        elapsed = now - self._last_request_time
+        delay = random.uniform(config.request_delay_min, config.request_delay_max)
+        if elapsed < delay:
+            await asyncio.sleep(delay - elapsed)
+        self._last_request_time = asyncio.get_running_loop().time()
+
     async def request(
         self,
         method: str,
@@ -570,7 +581,8 @@ class SessionManager:
         headers: dict | None = None,
         **kwargs,
     ):
-        """Универсальный запрос: с прокси или напрямую."""
+        """Универсальный запрос: с прокси или напрямую + rate limiting."""
+        await self._apply_rate_limit()
         if not config.proxy_enabled():
             session = await self.get_session()
             return await session.request(method, url, headers=headers, **kwargs)

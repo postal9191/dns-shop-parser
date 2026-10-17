@@ -98,7 +98,7 @@ async def test_restart_inside_day_window_waits_for_env_timer_before_krasnodar(mo
 
     await run.main_cycle(controller, db_memory)
 
-    assert sleep_calls == [3420]
+    assert sleep_calls == [7020]
     assert parser_calls == []
 
 

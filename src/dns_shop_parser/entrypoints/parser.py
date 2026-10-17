@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -81,7 +82,11 @@ class DNSMonitorBrowserless:
             all_batches = batches_new + batches_used
         except Exception as exc:
             if retry_count < 3:
-                wait_time = (2 ** retry_count) + 0.5
+                is_network_error = any(kw in str(exc).lower() for kw in ("timeout", "connection", "rate_limited", "429"))
+                if is_network_error:
+                    wait_time = min(30 * (2 ** retry_count), 120)
+                else:
+                    wait_time = (2 ** retry_count) + 0.5
                 logger.warning(
                     "[PARSE] Категория %d/%d: %s - ошибка: %s. Retry %d/3 через %.1f сек",
                     i, total_categories, cat.label, exc, retry_count + 1, wait_time
@@ -162,7 +167,11 @@ class DNSMonitorBrowserless:
                 break
             except Exception as exc:
                 if attempt < 2:
-                    wait_time = (2 ** attempt) + 0.5
+                    is_network_error = any(kw in str(exc).lower() for kw in ("timeout", "connection", "rate_limited", "429"))
+                    if is_network_error:
+                        wait_time = min(20 * (2 ** attempt), 90)
+                    else:
+                        wait_time = (2 ** attempt) + 0.5
                     logger.warning(
                         "[PARSE] Категория %d/%d: %s - ошибка fetch_products_details: %s. Retry %d/3 через %.1f сек",
                         i, total_categories, cat.label, exc, attempt + 1, wait_time
@@ -226,7 +235,7 @@ class DNSMonitorBrowserless:
             logger.info("[PARSE]   SOLD Помечено купленными %d товаров", deleted)
 
         self.db.update_category_state(cat.id, cat.label, len(uuids), self.city_slug, uuids)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(random.uniform(config.request_delay_min, config.request_delay_max))
         return (total_new_products, total_updated)
 
     async def parse_all(self) -> bool:
@@ -272,6 +281,9 @@ class DNSMonitorBrowserless:
 
             tasks = [process_category_with_semaphore(i, cat) for i, cat in enumerate(categories, 1)]
             results = await asyncio.gather(*tasks)
+
+            # Пауза между категориями — мягкий jitter чтобы не провоцировать rate-limit
+            await asyncio.sleep(random.uniform(1.0, 3.0))
 
             # (0, 0) бывает и у legitimately пустых категорий, поэтому успех цикла
             # определяем по списку пойманных исключений, а не по нулевым результатам.

@@ -23,7 +23,10 @@ from dns_shop_parser.parser.session_manager import SessionManager, HTTPLogger
 from dns_shop_parser.utils.logger import logger
 
 
-_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
+_TIMEOUT = aiohttp.ClientTimeout(
+    total=config.timeout_total,
+    connect=5,
+)
 
 _UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
@@ -72,6 +75,7 @@ class SimpleDNSParser:
         await HTTPLogger.log_request("POST", url, data=payload)
 
         resp = await self._sm.request("POST", url, json=payload, headers=headers, timeout=_TIMEOUT)
+
         async with resp as post_resp:
             await HTTPLogger.log_response(
                 post_resp.status, url,
@@ -94,6 +98,7 @@ class SimpleDNSParser:
         await HTTPLogger.log_request("POST", url, headers=headers, data=raw_data[:300])
 
         resp = await self._sm.request("POST", url, data=raw_data, headers=headers, timeout=_TIMEOUT)
+
         async with resp as form_resp:
             await HTTPLogger.log_response(
                 form_resp.status, url,
@@ -115,6 +120,7 @@ class SimpleDNSParser:
         await HTTPLogger.log_request("GET", url, params=params)
 
         resp = await self._sm.request("GET", url, params=params, headers=headers, timeout=_TIMEOUT)
+
         async with resp as get_resp:
             await HTTPLogger.log_response(
                 get_resp.status, url,
@@ -299,7 +305,7 @@ class SimpleDNSParser:
                 if expected_count is not None and len(all_uuids) >= expected_count:
                     break
 
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(random.uniform(config.request_delay_min, config.request_delay_max))
 
             # Применяем ограничение по expected_count
             if expected_count is not None and len(all_uuids) > expected_count:
