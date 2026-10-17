@@ -102,7 +102,7 @@ async def _run_module(module: str, log_name: str, args: list[str] | None = None)
                 command,
                 cwd=str(PROJECT_DIR),
                 check=False,
-                timeout=600,
+                timeout=21600,  # 6 часов — с rate limiting парсинг занимает ~2-3 часа
             ),
         )
         if result.returncode == 0:
